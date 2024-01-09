@@ -245,6 +245,7 @@ pub struct IndexerTimings {
   insertion: Duration,
   metadata_insertion: Duration,
   sat_insertion: Duration,
+  edition_insertion: Duration,
   content_insertion: Duration,
   locking: Duration
 }
@@ -326,9 +327,12 @@ impl Vermilion {
       Self::create_metadata_table(pool.clone()).await.unwrap();
       Self::create_sat_table(pool.clone()).await.unwrap();
       Self::create_content_table(pool.clone()).await.unwrap();
+      Self::create_edition_table(pool.clone()).await.unwrap();
+      Self::create_editions_total_table(pool.clone()).await.unwrap();
       Self::create_procedure_log(pool.clone()).await.unwrap();
       Self::create_edition_procedure(pool.clone()).await.unwrap();
       Self::create_weights_procedure(pool.clone()).await.unwrap();
+      Self::create_edition_insert_trigger(pool.clone()).await.unwrap();
       let start_number = match start_number_override {
         Some(start_number_override) => start_number_override,
         None => Self::get_last_number(pool.clone()).await.unwrap() + 1
@@ -489,10 +493,12 @@ impl Vermilion {
 
           //4.1 Insert metadata
           let t51 = Instant::now();
-          let insert_result = Self::bulk_insert_metadata(cloned_pool.clone(), metadata_vec).await;
+          let insert_result = Self::bulk_insert_metadata2(cloned_pool.clone(), metadata_vec.clone()).await;
           let t51a = Instant::now();
           let sat_insert_result = Self::bulk_insert_sat_metadata(cloned_pool.clone(), sat_metadata_vec).await;
           let t51b = Instant::now();
+          let edition_insert_result = Self::bulk_insert_editions(cloned_pool.clone(), metadata_vec).await;
+          let t51c = Instant::now();
           //4.2 Upload content to db
           let mut content_vec: Vec<ContentBlob> = Vec::new();
           for inscription in inscriptions {
@@ -514,13 +520,16 @@ impl Vermilion {
 
           //4.3 Update status
           let t52 = Instant::now();
-          if insert_result.is_err() || sat_insert_result.is_err() || content_result.is_err() {
+          if insert_result.is_err() || sat_insert_result.is_err() || content_result.is_err() || edition_insert_result.is_err() {
             log::info!("Error bulk inserting into db for sequence numbers: {}-{}. Will retry after 60s", first_number, last_number);
             if insert_result.is_err() {
               log::info!("Metadata Error: {:?}", insert_result.unwrap_err());
             }
             if sat_insert_result.is_err() {
               log::info!("Sat Error: {:?}", sat_insert_result.unwrap_err());
+            }
+            if edition_insert_result.is_err() {
+              log::info!("Edition Error: {:?}", edition_insert_result.unwrap_err());
             }
             if content_result.is_err() {
               log::info!("Content Error: {:?}", content_result.unwrap_err());
@@ -570,7 +579,8 @@ impl Vermilion {
             insertion: t52.duration_since(t51),
             metadata_insertion: t51a.duration_since(t51),
             sat_insertion: t51b.duration_since(t51a),
-            content_insertion: t52.duration_since(t51b),
+            edition_insertion: t51c.duration_since(t51b),
+            content_insertion: t52.duration_since(t51c),
             locking: t6.duration_since(t52)
           };
           cloned_timing_vector.lock().await.push(timing);
@@ -728,7 +738,7 @@ impl Vermilion {
           let t5 = Instant::now();
           let insert_transfer_result = Self::bulk_insert_transfers2(pool.clone(), transfer_vec.clone()).await;
           let t6 = Instant::now();
-          let insert_address_result = Self::bulk_insert_addresses(pool.clone(), transfer_vec).await;
+          let insert_address_result = Self::bulk_insert_addresses2(pool.clone(), transfer_vec).await;
           if insert_transfer_result.is_err() || insert_address_result.is_err() {
             log::info!("Error bulk inserting addresses into db for block height: {:?}, waiting a minute", height);
             if insert_transfer_result.is_err() {
@@ -1138,6 +1148,35 @@ impl Vermilion {
     Ok(())
   }
 
+  pub(crate) async fn create_edition_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = Self::get_conn(pool).await?;
+    conn.query_drop(
+      r"CREATE TABLE IF NOT EXISTS editions (
+          id varchar(80) not null,
+          number bigint,
+          sequence_number bigint unsigned,
+          sha256 varchar(64),
+          edition bigint unsigned,
+          INDEX index_id (id),
+          INDEX index_number (number),
+          INDEX index_sha256 (sha256)
+      )").await.unwrap();
+    Ok(())
+  }
+
+  pub(crate) async fn create_editions_total_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = Self::get_conn(pool).await?;
+    conn.query_drop(
+      r"CREATE TABLE IF NOT EXISTS editions_total (
+          sha256 varchar(64) not null primary key,
+          total bigint unsigned,
+          INDEX index_id (id),
+          INDEX index_number (number),
+          INDEX index_sha256 (sha256)
+      )").await.unwrap();
+    Ok(())
+  }
+
   pub(crate) async fn create_sat_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await?;
     conn.query_drop(
@@ -1185,6 +1224,9 @@ impl Vermilion {
     F: Fn(&T) -> P,
     P: Into<Params>,
   {
+    if objects.len() == 0 {
+      return Ok(());
+    }
     let mut stmt = format!("INSERT IGNORE INTO {} ({}) VALUES ", table, cols.join(","));
     let row = format!(
         "({}),",
@@ -1233,6 +1275,10 @@ impl Vermilion {
     F: Fn(&T) -> P,
     P: Into<Params>,
   {
+    if objects.len() == 0 {
+      return Ok(());
+    }
+    
     let mut stmt = format!("INSERT INTO {} ({}) VALUES ", table, cols.join(","));
     let row = format!(
         "({}),",
@@ -1568,6 +1614,33 @@ impl Vermilion {
     }
   }
 
+  pub(crate) async fn bulk_insert_editions(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut conn = Self::get_conn(pool).await?;
+    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
+    let insert_query = r"INSERT INTO editions (id, number, sequence_number, sha256, edition, total) VALUES (:id, :number, :sequence_number, :sha256, 0, 0) ON DUPLICATE KEY UPDATE number=Values(number), sequence_number=Values(sequence_number), sha256=Values(sha256), edition=0, total=0";
+
+    let _insert_exec = tx.exec_batch(
+      insert_query,
+        metadata_vec.iter().map(|metadata| params! {
+          "id" => &metadata.id,
+          "number" => &metadata.number,
+          "sequence_number" => &metadata.sequence_number,
+          "sha256" => &metadata.sha256
+      })
+    ).await;
+    match _insert_exec {
+      Ok(_) => {
+        tx.commit().await?;
+      },
+      Err(error) => {
+        tx.rollback().await?;
+        log::warn!("Error bulk inserting edition: {}", error);
+        return Err(Box::new(error));
+      }
+    };
+    Ok(())
+  }
+
   pub(crate) async fn get_last_number(pool: mysql_async::Pool) -> Result<u64, Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await?;
     let row = conn.query_iter("select min(previous) from (select sequence_number, Lag(sequence_number,1) over (order BY sequence_number) as previous from ordinals) a where sequence_number != previous+1 and sequence_number!=0")
@@ -1709,6 +1782,7 @@ impl Vermilion {
     let mut insertion_total = Duration::new(0,0);
     let mut metadata_insertion_total = Duration::new(0,0);
     let mut sat_insertion_total = Duration::new(0,0);
+    let mut edition_insertion_total = Duration::new(0,0);
     let mut content_insertion_total = Duration::new(0,0);
     let mut locking_total = Duration::new(0,0);
     let mut last_start = relevant_timings.first().unwrap().acquire_permit_start;
@@ -1724,6 +1798,7 @@ impl Vermilion {
       insertion_total = insertion_total + timing.insertion;
       metadata_insertion_total = metadata_insertion_total + timing.metadata_insertion;
       sat_insertion_total = sat_insertion_total + timing.sat_insertion;
+      edition_insertion_total = edition_insertion_total + timing.edition_insertion;
       content_insertion_total = content_insertion_total + timing.content_insertion;
       locking_total = locking_total + timing.locking;
       last_start = timing.acquire_permit_start;
@@ -1743,6 +1818,7 @@ impl Vermilion {
     log::info!("--Insertion time avg per thread: {:?}", insertion_total/n_threads);
     log::info!("--Metadata Insertion time avg per thread: {:?}", metadata_insertion_total/n_threads);
     log::info!("--Sat Insertion time avg per thread: {:?}", sat_insertion_total/n_threads);
+    log::info!("--Edition Insertion time avg per thread: {:?}", edition_insertion_total/n_threads);
     log::info!("--Content Insertion time avg per thread: {:?}", content_insertion_total/n_threads);
     log::info!("--Locking time avg per thread: {:?}", locking_total/n_threads);
 
@@ -2346,7 +2422,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   async fn get_matching_inscriptions(pool: mysql_async::Pool, inscription_id: String) -> Vec<InscriptionNumberEdition> {
     let mut conn = Self::get_conn(pool).await.unwrap();
     let editions = conn.exec_map(
-      "with a as (select sha256 from editions where id = :id) select id, number, edition, total from editions,a where editions.sha256=a.sha256 order by edition asc limit 100",
+      "with a as (select sha256 from editions where id = :id) select id, number, edition, t.total from a left join editions e on a.sha256=e.sha256 left join editions_total_test t on t.sha256=a.sha256 order by edition asc limit 100",
       params! {
         "id" => inscription_id
       },
@@ -2363,7 +2439,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   async fn get_matching_inscriptions_by_number(pool: mysql_async::Pool, number: i64) -> Vec<InscriptionNumberEdition> {
     let mut conn = Self::get_conn(pool).await.unwrap();
     let editions = conn.exec_map(
-      "with a as (select sha256 from editions where number = :number) select id, number, edition, total from editions,a where editions.sha256=a.sha256 order by edition asc limit 100", 
+      "with a as (select sha256 from editions where number = :number) select id, number, edition, t.total from a left join editions e on a.sha256=e.sha256 left join editions_total_test t on t.sha256=a.sha256 order by edition asc limit 100", 
       params! {
         "number" => number
       },
@@ -2380,7 +2456,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   async fn get_matching_inscriptions_by_sha256(pool: mysql_async::Pool, sha256: String) -> Vec<InscriptionNumberEdition> {
     let mut conn = Self::get_conn(pool).await.unwrap();
     let editions = conn.exec_map(
-      "select id, number, edition, total from editions where sha256=:sha256 order by edition asc limit 100",
+      " select id, number, edition, t.total from (select * from editions where sha256=:sha256) e inner join editions_total t on t.sha256=e.sha256 order by edition asc limit 100",
       params! {
         "sha256" => sha256
       },
@@ -2731,6 +2807,29 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     result
   }
 
+  async fn create_edition_insert_trigger(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = Self::get_conn(pool).await?;
+    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
+    tx.query_drop(r"DROP PROCEDURE IF EXISTS edition_insert").await.unwrap();
+    tx.query_drop(
+      r#"CREATE TRIGGER before_edition_insert
+      BEFORE INSERT ON editions
+      FOR EACH ROW
+      BEGIN
+        SET @previous_total = (coalesce((select total from editions_total where sha256 = NEW.sha256),0));
+        SET NEW.edition = @previous_total + 1;
+        INSERT INTO editions_total (sha256, total) VALUES (coalesce(NEW.sha256,""), @previous_total + 1) ON DUPLICATE KEY UPDATE total=VALUES(total);
+      END;"#).await.unwrap();
+    let result = tx.commit().await;
+    match result {
+      Ok(_) => Ok(()),
+      Err(error) => {
+        log::warn!("Error creating editions insert stored procedure: {}", error);
+        Err(Box::new(error))
+      }
+    }
+  }
+
   async fn create_edition_procedure(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
@@ -2740,22 +2839,31 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       BEGIN
       IF "editions" NOT IN (SELECT table_name FROM information_schema.tables) THEN
       INSERT into proc_log(proc_name, step_name, ts) values ("EDITIONS", "START_CREATE", now());
-      CREATE TABLE editions as select id, number, sequence_number, sha256, row_number() OVER(PARTITION BY sha256 ORDER BY sequence_number asc) as edition, count(sequence_number) OVER(PARTITION BY sha256) as total from ordinals;
+      CREATE TABLE editions as select id, number, sequence_number, sha256, row_number() OVER(PARTITION BY sha256 ORDER BY sequence_number asc) as edition from ordinals;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_CREATE", now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts) values ("EDITIONS", "START_CREATE_TOTAL", now());
+      CREATE TABLE editions_total as select sha256, count(*) as total from ordinals where sha256 is not null group by sha256;
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_CREATE_TOTAL", now());
       CREATE INDEX idx_id ON editions (id);
       CREATE INDEX idx_number ON editions (number);
       CREATE INDEX idx_sha256 ON editions (sha256);
+      ALTER TABLE editions_total add primary key (sha256);
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_INDEX", now(), found_rows());
       ELSE
       DROP TABLE IF EXISTS editions_new;
       INSERT into proc_log(proc_name, step_name, ts) values ("EDITIONS", "START_CREATE_NEW", now());
-      CREATE TABLE editions_new as select id, number, sequence_number, sha256, row_number() OVER(PARTITION BY sha256 ORDER BY sequence_number asc) as edition, count(sequence_number) OVER(PARTITION BY sha256) as total from ordinals;
+      CREATE TABLE editions_new as select id, number, sequence_number, sha256, row_number() OVER(PARTITION BY sha256 ORDER BY sequence_number asc) as edition from ordinals;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_CREATE_NEW", now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts) values ("EDITIONS", "START_CREATE_TOTAL_NEW", now());
+      CREATE TABLE editions_total_new as select sha256, count(*) as total from ordinals where sha256 is not null group by sha256;
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_CREATE_TOTAL_NEW", now());
       CREATE INDEX idx_id ON editions_new (id);
       CREATE INDEX idx_number ON editions_new (number);
       CREATE INDEX idx_sha256 ON editions_new (sha256);
-      RENAME TABLE editions to editions_old, editions_new to editions;
+      ALTER TABLE editions_total_new add primary key (sha256);
+      RENAME TABLE editions to editions_old, editions_new to editions, editions_total to editions_total_old, editions_total_new to editions_total;
       DROP TABLE IF EXISTS editions_old;
+      DROP TABLE IF EXISTS editions_total_old;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_INDEX_NEW", now(), found_rows());
       END IF;
       END;"#).await.unwrap();
