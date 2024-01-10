@@ -324,6 +324,7 @@ impl Vermilion {
       let sem = Arc::new(Semaphore::new(n_threads));
       let status_vector: Arc<Mutex<Vec<SequenceNumberStatus>>> = Arc::new(Mutex::new(Vec::new()));
       let timing_vector: Arc<Mutex<Vec<IndexerTimings>>> = Arc::new(Mutex::new(Vec::new()));
+      //TODO: handle below db init errors
       Self::create_metadata_table(pool.clone()).await.unwrap();
       Self::create_sat_table(pool.clone()).await.unwrap();
       Self::create_content_table(pool.clone()).await.unwrap();
@@ -1144,7 +1145,7 @@ impl Vermilion {
           INDEX index_sha256 (sha256),
           INDEX index_sat (sat),
           INDEX index_parent (parent)
-      )").await.unwrap();
+      )").await?;
     Ok(())
   }
 
@@ -1160,7 +1161,7 @@ impl Vermilion {
           INDEX index_id (id),
           INDEX index_number (number),
           INDEX index_sha256 (sha256)
-      )").await.unwrap();
+      )").await?;
     Ok(())
   }
 
@@ -1173,7 +1174,7 @@ impl Vermilion {
           INDEX index_id (id),
           INDEX index_number (number),
           INDEX index_sha256 (sha256)
-      )").await.unwrap();
+      )").await?;
     Ok(())
   }
 
@@ -1196,7 +1197,7 @@ impl Vermilion {
         INDEX index_sat (sat),
         INDEX index_block (block),
         INDEX index_rarity (rarity)
-      )").await.unwrap();
+      )").await?;
     Ok(())
   }
 
@@ -1209,7 +1210,7 @@ impl Vermilion {
         content mediumblob,
         content_type text,
         INDEX index_sha256 (sha256)
-      )").await.unwrap();
+      )").await?;
     Ok(())
   }
 
@@ -1844,7 +1845,7 @@ impl Vermilion {
         PRIMARY KEY (`id`,`block_number`),
         INDEX index_id (id),
         INDEX index_block (block_number)
-      )").await.unwrap();
+      )").await?;
     Ok(())
   }
 
@@ -1935,7 +1936,7 @@ impl Vermilion {
         is_genesis boolean,
         INDEX index_id (id),
         INDEX index_address (address)
-      )").await.unwrap();
+      )").await?;
     Ok(())
   }
 
@@ -2809,8 +2810,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
 
   async fn create_edition_insert_trigger(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await?;
-    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
-    tx.query_drop(r"DROP PROCEDURE IF EXISTS edition_insert").await.unwrap();
+    let mut tx = conn.start_transaction(TxOpts::default()).await?;
+    tx.query_drop(r"DROP TRIGGER IF EXISTS before_edition_insert").await?;
     tx.query_drop(
       r#"CREATE TRIGGER before_edition_insert
       BEFORE INSERT ON editions
@@ -2819,7 +2820,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         SET @previous_total = (coalesce((select total from editions_total where sha256 = NEW.sha256),0));
         SET NEW.edition = @previous_total + 1;
         INSERT INTO editions_total (sha256, total) VALUES (coalesce(NEW.sha256,""), @previous_total + 1) ON DUPLICATE KEY UPDATE total=VALUES(total);
-      END;"#).await.unwrap();
+      END;"#).await?;
     let result = tx.commit().await;
     match result {
       Ok(_) => Ok(()),
@@ -2832,8 +2833,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
 
   async fn create_edition_procedure(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await?;
-    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
-    tx.query_drop(r"DROP PROCEDURE IF EXISTS update_editions").await.unwrap();
+    let mut tx = conn.start_transaction(TxOpts::default()).await?;
+    tx.query_drop(r"DROP PROCEDURE IF EXISTS update_editions").await?;
     tx.query_drop(
       r#"CREATE PROCEDURE update_editions()
       BEGIN
@@ -2866,8 +2867,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       DROP TABLE IF EXISTS editions_total_old;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_INDEX_NEW", now(), found_rows());
       END IF;
-      END;"#).await.unwrap();
-    tx.query_drop(r"DROP EVENT IF EXISTS editions_event").await.unwrap();
+      END;"#).await?;
+    tx.query_drop(r"DROP EVENT IF EXISTS editions_event").await?;
     tx.query_drop(r"CREATE EVENT editions_event 
                           ON SCHEDULE EVERY 24 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400) 
                           DO
@@ -2875,7 +2876,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
                             SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;
                             CALL update_editions();
                             SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
-                          END;").await.unwrap();
+                          END;").await?;
     let result = tx.commit().await;
     match result {
       Ok(_) => Ok(()),
@@ -2888,8 +2889,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
 
   async fn create_weights_procedure(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await?;
-    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
-    tx.query_drop(r"DROP PROCEDURE IF EXISTS update_weights").await.unwrap();
+    let mut tx = conn.start_transaction(TxOpts::default()).await?;
+    tx.query_drop(r"DROP PROCEDURE IF EXISTS update_weights").await?;
     tx.query_drop(
       r#"CREATE PROCEDURE update_weights()
       BEGIN
@@ -3027,8 +3028,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       DROP TABLE IF EXISTS weights_3;
       DROP TABLE IF EXISTS weights_4;
       DROP TABLE IF EXISTS weights_5;
-      END;"#).await.unwrap();
-    tx.query_drop(r"DROP EVENT IF EXISTS weights_event").await.unwrap();
+      END;"#).await?;
+    tx.query_drop(r"DROP EVENT IF EXISTS weights_event").await?;
     tx.query_drop(r"CREATE EVENT weights_event 
                           ON SCHEDULE EVERY 24 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400 - 43200) 
                           DO
@@ -3036,7 +3037,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
                             SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;
                             CALL update_weights();
                             SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
-                          END;").await.unwrap();
+                          END;").await?;
     let result = tx.commit().await;
     match result {
       Ok(_) => Ok(()),
@@ -3056,7 +3057,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         step_name varchar(40),
         ts timestamp,
         rows_returned int
-      )").await.unwrap();
+      )").await?;
     Ok(())
   }
 
