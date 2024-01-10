@@ -324,16 +324,11 @@ impl Vermilion {
       let sem = Arc::new(Semaphore::new(n_threads));
       let status_vector: Arc<Mutex<Vec<SequenceNumberStatus>>> = Arc::new(Mutex::new(Vec::new()));
       let timing_vector: Arc<Mutex<Vec<IndexerTimings>>> = Arc::new(Mutex::new(Vec::new()));
-      //TODO: handle below db init errors
-      Self::create_metadata_table(pool.clone()).await.unwrap();
-      Self::create_sat_table(pool.clone()).await.unwrap();
-      Self::create_content_table(pool.clone()).await.unwrap();
-      Self::create_edition_table(pool.clone()).await.unwrap();
-      Self::create_editions_total_table(pool.clone()).await.unwrap();
-      Self::create_procedure_log(pool.clone()).await.unwrap();
-      Self::create_edition_procedure(pool.clone()).await.unwrap();
-      Self::create_weights_procedure(pool.clone()).await.unwrap();
-      Self::create_edition_insert_trigger(pool.clone()).await.unwrap();
+      let init_result = Self::initialize_db_tables(pool.clone()).await;
+      if init_result.is_err() {
+        println!("Error initializing db tables: {:?}", init_result.unwrap_err());
+        return;
+      }
       let start_number = match start_number_override {
         Some(start_number_override) => start_number_override,
         None => Self::get_last_number(pool.clone()).await.unwrap() + 1
@@ -1112,6 +1107,19 @@ impl Vermilion {
 
     log::trace!("index: {:?} metadata: {:?} sat: {:?} total: {:?}", t1.duration_since(t0), t2.duration_since(t1), t3.duration_since(t2), t3.duration_since(t0));
     Ok((metadata, sat_metadata))
+  }
+
+  pub(crate) async fn initialize_db_tables(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+    Self::create_metadata_table(pool.clone()).await?;
+    Self::create_sat_table(pool.clone()).await?;
+    Self::create_content_table(pool.clone()).await?;
+    Self::create_edition_table(pool.clone()).await?;
+    Self::create_editions_total_table(pool.clone()).await?;
+    Self::create_procedure_log(pool.clone()).await?;
+    Self::create_edition_procedure(pool.clone()).await?;
+    Self::create_weights_procedure(pool.clone()).await?;
+    Self::create_edition_insert_trigger(pool.clone()).await?;
+    Ok(())
   }
 
   pub(crate) async fn create_metadata_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
