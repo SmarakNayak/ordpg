@@ -300,8 +300,14 @@ impl Vermilion {
 
     //Wait for other threads to finish before exiting
     // vermilion_server_thread.join().unwrap();
-    ordinals_server_thread.join().unwrap();
-    address_indexer_thread.join().unwrap();
+    let server_thread_result = ordinals_server_thread.join();
+    let address_thread_result = address_indexer_thread.join();
+    if server_thread_result.is_err() {
+      println!("Error joining ordinals server thread: {:?}", server_thread_result.unwrap_err());
+    }
+    if address_thread_result.is_err() {
+      println!("Error joining address indexer thread: {:?}", address_thread_result.unwrap_err());
+    }
     Ok(Box::new(Empty {}) as Box<dyn Output>)
   }
 
@@ -602,8 +608,16 @@ impl Vermilion {
         let config = options.load_config().unwrap();
         let url = config.db_connection_string.unwrap();
         let pool = Pool::new(url.as_str());
-        Self::create_transfers_table(pool.clone()).await.unwrap();
-        Self::create_address_table(pool.clone()).await.unwrap();
+        let create_tranfer_result = Self::create_transfers_table(pool.clone()).await;
+        let create_address_result = Self::create_address_table(pool.clone()).await;
+        if create_tranfer_result.is_err() {
+          println!("Error creating db tables: {:?}", create_tranfer_result.unwrap_err());
+          return;            
+        }
+        if create_address_result.is_err() {
+          println!("Error creating db tables: {:?}", create_address_result.unwrap_err());
+          return;
+        }
 
         let fetcher = fetcher::Fetcher::new(&options).unwrap();
         let first_height = options.first_inscription_height();
