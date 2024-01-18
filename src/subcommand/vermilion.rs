@@ -337,7 +337,15 @@ impl Vermilion {
       }
       let start_number = match start_number_override {
         Some(start_number_override) => start_number_override,
-        None => Self::get_last_number(pool.clone()).await.unwrap() + 1
+        None => {
+          match Self::get_last_number(pool.clone()).await {
+            Ok(last_number) => last_number + 1,
+            Err(err) => {
+              println!("Error getting last number from db: {:?}, stopping, try restarting process", err);
+              return;
+            }
+          }
+        }
       };
       println!("Metadata in db assumed populated up to: {:?}, will only upload metadata for {:?} onwards.", start_number.checked_sub(1), start_number);
       println!("Inscriptions in s3 assumed populated up to: {:?}, will only upload content for {:?} onwards.", std::cmp::max(s3_upload_start_number, start_number).checked_sub(1), std::cmp::max(s3_upload_start_number, start_number));
@@ -621,7 +629,13 @@ impl Vermilion {
 
         let fetcher = fetcher::Fetcher::new(&options).unwrap();
         let first_height = options.first_inscription_height();
-        let db_height = Self::get_start_block(pool.clone()).await.unwrap();
+        let db_height = match Self::get_start_block(pool.clone()).await {
+          Ok(db_height) => db_height,
+          Err(err) => {
+            log::info!("Error getting start block from db: {:?}, waiting a minute", err);
+            return;
+          }
+        };
         let mut height = std::cmp::max(first_height, db_height);
         log::info!("Address indexing block start height: {:?}", height);
         loop {
