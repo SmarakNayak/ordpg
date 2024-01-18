@@ -1568,7 +1568,7 @@ impl Vermilion {
 
   pub(crate) async fn bulk_insert_sat_metadata(pool: mysql_async::Pool, metadata_vec: Vec<SatMetadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool).await?;
-    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
+    let mut tx = conn.start_transaction(TxOpts::default()).await?;
     let _exec = tx.exec_batch(
       r"INSERT INTO sat (sat, sat_decimal, degree, name, block, cycle, epoch, period, offset, rarity, percentile, timestamp)
         VALUES (:sat, :sat_decimal, :degree, :name, :block, :cycle, :epoch, :period, :offset, :rarity, :percentile, :timestamp)
@@ -1608,7 +1608,7 @@ impl Vermilion {
 
   pub(crate) async fn bulk_insert_content(pool: mysql_async::Pool, content_vec: Vec<ContentBlob>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool).await?;
-    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
+    let mut tx = conn.start_transaction(TxOpts::default()).await?;
     let _exec = tx.exec_batch(
       r"INSERT INTO content (sha256, content, content_type) VALUES (:sha256, :content, :content_type) ON DUPLICATE KEY UPDATE sha256=sha256",
       content_vec.iter().map(|content_blob| params! {
@@ -1636,7 +1636,7 @@ impl Vermilion {
 
   pub(crate) async fn bulk_insert_editions(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool).await?;
-    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
+    let mut tx = conn.start_transaction(TxOpts::default()).await?;
     let insert_query = r"INSERT INTO editions (id, number, sequence_number, sha256, edition, total) VALUES (:id, :number, :sequence_number, :sha256, 0, 0) ON DUPLICATE KEY UPDATE number=Values(number), sequence_number=Values(sequence_number), sha256=Values(sha256), edition=0, total=0";
 
     let _insert_exec = tx.exec_batch(
@@ -1664,11 +1664,9 @@ impl Vermilion {
   pub(crate) async fn get_last_number(pool: mysql_async::Pool) -> Result<u64, Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await?;
     let row = conn.query_iter("select min(previous) from (select sequence_number, Lag(sequence_number,1) over (order BY sequence_number) as previous from ordinals) a where sequence_number != previous+1 and sequence_number!=0")
-      .await
-      .unwrap()
+      .await?
       .next()
-      .await
-      .unwrap()
+      .await?
       .unwrap();
     let row = mysql_async::from_row::<Option<u64>>(row);
     let number = match row {
@@ -1678,11 +1676,9 @@ impl Vermilion {
       },
       None => {
         let row = conn.query_iter("select max(sequence_number) from ordinals")
-          .await
-          .unwrap()
+          .await?
           .next()
-          .await
-          .unwrap()
+          .await?
           .unwrap();
         let max = mysql_async::from_row::<Option<u64>>(row);
         match max {
@@ -1870,7 +1866,7 @@ impl Vermilion {
 
   pub(crate) async fn bulk_insert_transfers(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool).await?;
-    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
+    let mut tx = conn.start_transaction(TxOpts::default()).await?;
     let _exec = tx.exec_batch(
       r"INSERT INTO transfers (id, block_number, block_timestamp, satpoint, transaction, offset,  address, is_genesis)
         VALUES (:id, :block_number, :block_timestamp, :satpoint, :transaction, :offset, :address, :is_genesis)
@@ -1961,7 +1957,7 @@ impl Vermilion {
 
   pub(crate) async fn bulk_insert_addresses(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool).await?;
-    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
+    let mut tx = conn.start_transaction(TxOpts::default()).await?;
     let _exec = tx.exec_batch(
       r"INSERT INTO addresses (id, block_number, block_timestamp, satpoint, transaction, offset, address, is_genesis)
         VALUES (:id, :block_number, :block_timestamp, :satpoint, :transaction, :offset, :address, :is_genesis)
@@ -2041,11 +2037,9 @@ impl Vermilion {
   pub(crate) async fn get_start_block(pool: mysql_async::Pool) -> Result<u64, Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await?;
     let row = conn.query_iter("select max(block_number) from transfers")
-      .await
-      .unwrap()
+      .await?
       .next()
-      .await
-      .unwrap()
+      .await?
       .unwrap();
     let row = mysql_async::from_row::<Option<i64>>(row);
     let block_number = match row {
