@@ -1123,20 +1123,20 @@ impl Vermilion {
     Ok((metadata, sat_metadata))
   }
 
-  pub(crate) async fn initialize_db_tables(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
-    Self::create_metadata_table(pool.clone()).await?;
-    Self::create_sat_table(pool.clone()).await?;
-    Self::create_content_table(pool.clone()).await?;
-    Self::create_edition_table(pool.clone()).await?;
-    Self::create_editions_total_table(pool.clone()).await?;
-    Self::create_procedure_log(pool.clone()).await?;
-    Self::create_edition_procedure(pool.clone()).await?;
-    Self::create_weights_procedure(pool.clone()).await?;
-    Self::create_edition_insert_trigger(pool.clone()).await?;
+  pub(crate) async fn initialize_db_tables(pool: mysql_async::Pool) -> anyhow::Result<()> {
+    Self::create_metadata_table(pool.clone()).await.context("Failed to create metadata table")?;
+    Self::create_sat_table(pool.clone()).await.context("Failed to create sat table")?;
+    Self::create_content_table(pool.clone()).await.context("Failed to create content table")?;
+    Self::create_edition_table(pool.clone()).await.context("Failed to create editions table")?;
+    Self::create_editions_total_table(pool.clone()).await.context("Failed to create editions total table")?;
+    Self::create_procedure_log(pool.clone()).await.context("Failed to create proc log")?;
+    Self::create_edition_procedure(pool.clone()).await.context("Failed to create edition proc")?;
+    Self::create_weights_procedure(pool.clone()).await.context("Failed to create weights proc")?;
+    Self::create_edition_insert_trigger(pool.clone()).await.context("Failed to create edition trigger")?;
     Ok(())
   }
 
-  pub(crate) async fn create_metadata_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+  pub(crate) async fn create_metadata_table(pool: mysql_async::Pool) -> anyhow::Result<()> {
     let mut conn = Self::get_conn(pool).await?;
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS ordinals (
@@ -1171,7 +1171,7 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn create_edition_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+  pub(crate) async fn create_edition_table(pool: mysql_async::Pool) -> anyhow::Result<()> {
     let mut conn = Self::get_conn(pool).await?;
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS editions (
@@ -1187,7 +1187,7 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn create_editions_total_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+  pub(crate) async fn create_editions_total_table(pool: mysql_async::Pool) -> anyhow::Result<()> {
     let mut conn = Self::get_conn(pool).await?;
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS editions_total (
@@ -1200,7 +1200,7 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn create_sat_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+  pub(crate) async fn create_sat_table(pool: mysql_async::Pool) -> anyhow::Result<()> {
     let mut conn = Self::get_conn(pool).await?;
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS sat (
@@ -1223,7 +1223,7 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn create_content_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+  pub(crate) async fn create_content_table(pool: mysql_async::Pool) -> anyhow::Result<()> {
     let mut conn = Self::get_conn(pool).await?;
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS content (
@@ -2830,7 +2830,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     result
   }
 
-  async fn create_edition_insert_trigger(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+  async fn create_edition_insert_trigger(pool: mysql_async::Pool) -> anyhow::Result<()> {
     let mut conn = Self::get_conn(pool).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await?;
     tx.query_drop(r"DROP TRIGGER IF EXISTS before_edition_insert").await?;
@@ -2848,12 +2848,12 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       Ok(_) => Ok(()),
       Err(error) => {
         log::warn!("Error creating editions insert stored procedure: {}", error);
-        Err(Box::new(error))
+        Err(anyhow::Error::new(error))
       }
     }
   }
 
-  async fn create_edition_procedure(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+  async fn create_edition_procedure(pool: mysql_async::Pool) -> anyhow::Result<()> {
     let mut conn = Self::get_conn(pool).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await?;
     tx.query_drop(r"DROP PROCEDURE IF EXISTS update_editions").await?;
@@ -2904,12 +2904,12 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       Ok(_) => Ok(()),
       Err(error) => {
         log::warn!("Error creating editions table stored procedure: {}", error);
-        Err(Box::new(error))
+        Err(anyhow::Error::new(error))
       }
     }
   }
 
-  async fn create_weights_procedure(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+  async fn create_weights_procedure(pool: mysql_async::Pool) -> anyhow::Result<()> {
     let mut conn = Self::get_conn(pool).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await?;
     tx.query_drop(r"DROP PROCEDURE IF EXISTS update_weights").await?;
@@ -3065,12 +3065,12 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       Ok(_) => Ok(()),
       Err(error) => {
         log::warn!("Error creating weights table stored procedure: {}", error);
-        Err(Box::new(error))
+        Err(anyhow::Error::new(error))
       }
     }
   }
 
-  async fn create_procedure_log(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+  async fn create_procedure_log(pool: mysql_async::Pool) -> anyhow::Result<()> {
     let mut conn = Self::get_conn(pool).await?;
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS proc_log (
