@@ -2436,7 +2436,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   async fn get_matching_inscriptions(pool: mysql_async::Pool, inscription_id: String) -> Vec<InscriptionNumberEdition> {
     let mut conn = Self::get_conn(pool).await.unwrap();
     let editions = conn.exec_map(
-      "with a as (select sha256 from editions where id = :id) select id, number, edition, t.total from a left join editions e on a.sha256=e.sha256 left join editions_total_test t on t.sha256=a.sha256 order by edition asc limit 100",
+      "with a as (select sha256 from editions where id = :id) select id, number, edition, t.total from a left join editions e on a.sha256=e.sha256 left join editions_total t on t.sha256=a.sha256 order by edition asc limit 100",
       params! {
         "id" => inscription_id
       },
@@ -2453,7 +2453,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   async fn get_matching_inscriptions_by_number(pool: mysql_async::Pool, number: i64) -> Vec<InscriptionNumberEdition> {
     let mut conn = Self::get_conn(pool).await.unwrap();
     let editions = conn.exec_map(
-      "with a as (select sha256 from editions where number = :number) select id, number, edition, t.total from a left join editions e on a.sha256=e.sha256 left join editions_total_test t on t.sha256=a.sha256 order by edition asc limit 100", 
+      "with a as (select sha256 from editions where number = :number) select id, number, edition, t.total from a left join editions e on a.sha256=e.sha256 left join editions_total t on t.sha256=a.sha256 order by edition asc limit 100", 
       params! {
         "number" => number
       },
