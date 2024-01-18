@@ -1192,10 +1192,7 @@ impl Vermilion {
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS editions_total (
           sha256 varchar(64) not null primary key,
-          total bigint unsigned,
-          INDEX index_id (id),
-          INDEX index_number (number),
-          INDEX index_sha256 (sha256)
+          total bigint unsigned
       )").await?;
     Ok(())
   }
