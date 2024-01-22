@@ -1651,7 +1651,7 @@ impl Vermilion {
   pub(crate) async fn bulk_insert_editions(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await?;
-    let insert_query = r"INSERT INTO editions (id, number, sequence_number, sha256, edition, total) VALUES (:id, :number, :sequence_number, :sha256, 0, 0) ON DUPLICATE KEY UPDATE number=Values(number), sequence_number=Values(sequence_number), sha256=Values(sha256), edition=0, total=0";
+    let insert_query = r"INSERT INTO editions (id, number, sequence_number, sha256, edition) VALUES (:id, :number, :sequence_number, :sha256, 0) ON DUPLICATE KEY UPDATE number=Values(number), sequence_number=Values(sequence_number), sha256=Values(sha256), edition=0";
 
     let _insert_exec = tx.exec_batch(
       insert_query,
@@ -2896,11 +2896,12 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       END IF;
       END;"#).await?;
     tx.query_drop(r"DROP EVENT IF EXISTS editions_event").await?;
+    // Repeatable read to block inserts onto ordinals table while editions are being updated
     tx.query_drop(r"CREATE EVENT editions_event 
                           ON SCHEDULE EVERY 24 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400) 
                           DO
                           BEGIN
-                            SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;
+                            SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
                             CALL update_editions();
                             SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
                           END;").await?;
