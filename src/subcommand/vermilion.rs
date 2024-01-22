@@ -509,7 +509,7 @@ impl Vermilion {
           let t51a = Instant::now();
           let sat_insert_result = Self::bulk_insert_sat_metadata(cloned_pool.clone(), sat_metadata_vec).await;
           let t51b = Instant::now();
-          let edition_insert_result = Self::bulk_insert_editions(cloned_pool.clone(), metadata_vec).await;
+          //let edition_insert_result = Self::bulk_insert_editions(cloned_pool.clone(), metadata_vec).await;
           let t51c = Instant::now();
           //4.2 Upload content to db
           let mut content_vec: Vec<ContentBlob> = Vec::new();
@@ -532,7 +532,7 @@ impl Vermilion {
 
           //4.3 Update status
           let t52 = Instant::now();
-          if insert_result.is_err() || sat_insert_result.is_err() || content_result.is_err() || edition_insert_result.is_err() {
+          if insert_result.is_err() || sat_insert_result.is_err() || content_result.is_err() { //|| edition_insert_result.is_err()
             log::info!("Error bulk inserting into db for sequence numbers: {}-{}. Will retry after 60s", first_number, last_number);
             if insert_result.is_err() {
               log::info!("Metadata Error: {:?}", insert_result.unwrap_err());
@@ -540,9 +540,9 @@ impl Vermilion {
             if sat_insert_result.is_err() {
               log::info!("Sat Error: {:?}", sat_insert_result.unwrap_err());
             }
-            if edition_insert_result.is_err() {
-              log::info!("Edition Error: {:?}", edition_insert_result.unwrap_err());
-            }
+            // if edition_insert_result.is_err() {
+            //   log::info!("Edition Error: {:?}", edition_insert_result.unwrap_err());
+            // }
             if content_result.is_err() {
               log::info!("Content Error: {:?}", content_result.unwrap_err());
             }
@@ -1192,12 +1192,11 @@ impl Vermilion {
     let mut conn = Self::get_conn(pool).await?;
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS editions (
-          id varchar(80) not null,
+          id varchar(80) not null primary key,
           number bigint,
           sequence_number bigint unsigned,
           sha256 varchar(64),
           edition bigint unsigned,
-          INDEX index_id (id),
           INDEX index_number (number),
           INDEX index_sha256 (sha256)
       )").await?;
@@ -1443,7 +1442,7 @@ impl Vermilion {
 
   pub(crate) async fn bulk_insert_metadata2(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool.clone()).await?;
-    let tx = conn.start_transaction(TxOpts::default()).await.unwrap();
+    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
     let mut _exec = Self::bulk_insert(pool.clone(),
       "ordinals".to_string(),
       vec![
@@ -1542,7 +1541,7 @@ impl Vermilion {
               "is_bitmap_style".to_string(),
               "is_recursive".to_string()
             ],
-            metadata_vec,
+            metadata_vec.clone(),
             |metadata| params! { 
               "id" => &metadata.id,
               "content_length" => &metadata.content_length,
@@ -1572,16 +1571,34 @@ impl Vermilion {
         }
       }
     };
+
+    let edition_query = r"INSERT INTO editions (id, number, sequence_number, sha256, edition) VALUES (:id, :number, :sequence_number, :sha256, 0) ON DUPLICATE KEY UPDATE number=Values(number), sequence_number=Values(sequence_number), sha256=Values(sha256), edition=0";
+    let _edition_exec = tx.exec_batch(
+      edition_query,
+        metadata_vec.iter().map(|metadata| params! {
+          "id" => &metadata.id,
+          "number" => &metadata.number,
+          "sequence_number" => &metadata.sequence_number,
+          "sha256" => &metadata.sha256
+      })
+    ).await;
+    match _edition_exec {
+      Ok(_) => {},
+      Err(error) => {
+        log::warn!("Error bulk inserting edition: {}", error);
+        return Err(Box::new(error));
+      }
+    };
+
     let result = tx.commit().await;
     match result {
       Ok(_) => Ok(()),
       Err(error) => {
-        log::warn!("Error bulk inserting ordinal metadata: {}", error);
+        log::warn!("Error committing bulk insertion of ordinal metadata: {}", error);
         Err(Box::new(error))
       }
     }
   }
-
 
   pub(crate) async fn bulk_insert_sat_metadata(pool: mysql_async::Pool, metadata_vec: Vec<SatMetadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool).await?;
@@ -1641,6 +1658,7 @@ impl Vermilion {
         return Err(Box::new(error));
       }
     };
+
     let result = tx.commit().await;
     match result {
       Ok(_) => Ok(()),
@@ -2882,6 +2900,9 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     tx.query_drop(
       r#"CREATE PROCEDURE update_editions()
       BEGIN
+      START TRANSACTION;
+      SELECT * FROM ordinals WHERE sequence_number > (select max(sequence_number) from ordinals) FOR UPDATE;
+      SELECT max(sequence_number) from ordinals;
       IF "editions" NOT IN (SELECT table_name FROM information_schema.tables) THEN
       INSERT into proc_log(proc_name, step_name, ts) values ("EDITIONS", "START_CREATE", now());
       CREATE TABLE editions as select id, number, sequence_number, sha256, row_number() OVER(PARTITION BY sha256 ORDER BY sequence_number asc) as edition from ordinals;
@@ -2889,7 +2910,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       INSERT into proc_log(proc_name, step_name, ts) values ("EDITIONS", "START_CREATE_TOTAL", now());
       CREATE TABLE editions_total as select sha256, count(*) as total from ordinals where sha256 is not null group by sha256;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_CREATE_TOTAL", now(), found_rows());
-      CREATE INDEX idx_id ON editions (id);
+      ALTER TABLE editions add primary key (id);
       CREATE INDEX idx_number ON editions (number);
       CREATE INDEX idx_sha256 ON editions (sha256);
       ALTER TABLE editions_total add primary key (sha256);
@@ -2902,7 +2923,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       INSERT into proc_log(proc_name, step_name, ts) values ("EDITIONS", "START_CREATE_TOTAL_NEW", now());
       CREATE TABLE editions_total_new as select sha256, count(*) as total from ordinals where sha256 is not null group by sha256;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_CREATE_TOTAL_NEW", now(), found_rows());
-      CREATE INDEX idx_id ON editions_new (id);
+      ALTER TABLE editions_new add primary key (id);
       CREATE INDEX idx_number ON editions_new (number);
       CREATE INDEX idx_sha256 ON editions_new (sha256);
       ALTER TABLE editions_total_new add primary key (sha256);
@@ -2911,14 +2932,15 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       DROP TABLE IF EXISTS editions_total_old;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_INDEX_NEW", now(), found_rows());
       END IF;
+      COMMIT;
       END;"#).await?;
     tx.query_drop(r"DROP EVENT IF EXISTS editions_event").await?;
-    // Repeatable read to block inserts onto ordinals table while editions are being updated
+    // select for update to block inserts onto ordinals table while editions are being updated
     tx.query_drop(r"CREATE EVENT editions_event 
                           ON SCHEDULE EVERY 168 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400) 
                           DO
                           BEGIN
-                            SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+                            SET SESSION TRANSACTION ISOLATION LEVEL SERIALIZABLE;
                             CALL update_editions();
                             SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
                           END;").await?;
