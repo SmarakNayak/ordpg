@@ -2932,6 +2932,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       DROP TABLE IF EXISTS editions_total_old;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_INDEX_NEW", now(), found_rows());
       END IF;
+      SELECT * FROM ordinals WHERE sequence_number > (select max(sequence_number) from ordinals) FOR UPDATE;
+      SELECT max(sequence_number) from ordinals;
       COMMIT;
       END;"#).await?;
     tx.query_drop(r"DROP EVENT IF EXISTS editions_event").await?;
