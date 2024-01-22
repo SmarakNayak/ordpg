@@ -2871,20 +2871,20 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_CREATE", now(), found_rows());
       INSERT into proc_log(proc_name, step_name, ts) values ("EDITIONS", "START_CREATE_TOTAL", now());
       CREATE TABLE editions_total as select sha256, count(*) as total from ordinals where sha256 is not null group by sha256;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_CREATE_TOTAL", now());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_CREATE_TOTAL", now(), found_rows());
       CREATE INDEX idx_id ON editions (id);
       CREATE INDEX idx_number ON editions (number);
       CREATE INDEX idx_sha256 ON editions (sha256);
       ALTER TABLE editions_total add primary key (sha256);
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_INDEX", now(), found_rows());
       ELSE
-      DROP TABLE IF EXISTS editions_new;
+      DROP TABLE IF EXISTS editions_new, editions_total_new;
       INSERT into proc_log(proc_name, step_name, ts) values ("EDITIONS", "START_CREATE_NEW", now());
       CREATE TABLE editions_new as select id, number, sequence_number, sha256, row_number() OVER(PARTITION BY sha256 ORDER BY sequence_number asc) as edition from ordinals;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_CREATE_NEW", now(), found_rows());
       INSERT into proc_log(proc_name, step_name, ts) values ("EDITIONS", "START_CREATE_TOTAL_NEW", now());
       CREATE TABLE editions_total_new as select sha256, count(*) as total from ordinals where sha256 is not null group by sha256;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_CREATE_TOTAL_NEW", now());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_CREATE_TOTAL_NEW", now(), found_rows());
       CREATE INDEX idx_id ON editions_new (id);
       CREATE INDEX idx_number ON editions_new (number);
       CREATE INDEX idx_sha256 ON editions_new (sha256);
