@@ -148,7 +148,8 @@ pub struct Transfer {
   block_timestamp: i64,
   satpoint: String,
   transaction: String,
-  offset: u32,
+  vout: u32,
+  offset: u64,
   address: String,
   is_genesis: bool
 }
@@ -160,7 +161,8 @@ pub struct TransferWithMetadata {
   block_timestamp: i64,
   satpoint: String,
   transaction: String,
-  offset: u32,
+  vout: u32,
+  offset: u64,
   address: String,
   is_genesis: bool,
   content_length: Option<i64>,
@@ -753,7 +755,8 @@ impl Vermilion {
               block_timestamp: block_time.timestamp().timestamp_millis(),
               satpoint: point.to_string(),
               transaction: point.outpoint.txid.to_string(),
-              offset: point.outpoint.vout,
+              vout: point.outpoint.vout,
+              offset: point.offset,
               address: address,
               is_genesis: point.outpoint.txid == id.txid && point.outpoint.vout == id.index
             };
@@ -1868,7 +1871,8 @@ impl Vermilion {
         block_timestamp bigint,
         satpoint text,
         transaction text,
-        offset int unsigned,
+        vout int unsigned,
+        offset bigint unsigned,
         address text,
         is_genesis boolean,
         PRIMARY KEY (`id`,`block_number`),
@@ -1882,15 +1886,16 @@ impl Vermilion {
     let mut conn = Self::get_conn(pool).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await?;
     let _exec = tx.exec_batch(
-      r"INSERT INTO transfers (id, block_number, block_timestamp, satpoint, transaction, offset,  address, is_genesis)
-        VALUES (:id, :block_number, :block_timestamp, :satpoint, :transaction, :offset, :address, :is_genesis)
-        ON DUPLICATE KEY UPDATE block_timestamp=VALUES(block_timestamp), satpoint=VALUES(satpoint), transaction=VALUES(transaction), offset=VALUES(offset), address=VALUES(address), is_genesis=VALUES(is_genesis)",
+      r"INSERT INTO transfers (id, block_number, block_timestamp, satpoint, transaction, vout, offset,  address, is_genesis)
+        VALUES (:id, :block_number, :block_timestamp, :satpoint, :transaction, :vout, :offset, :address, :is_genesis)
+        ON DUPLICATE KEY UPDATE block_timestamp=VALUES(block_timestamp), satpoint=VALUES(satpoint), transaction=VALUES(transaction), vout=VALUES(vout), offset=VALUES(offset), address=VALUES(address), is_genesis=VALUES(is_genesis)",
         transfer_vec.iter().map(|transfer| params! { 
           "id" => &transfer.id,
           "block_number" => &transfer.block_number,
           "block_timestamp" => &transfer.block_timestamp,
           "satpoint" => &transfer.satpoint,
           "transaction" => &transfer.transaction,
+          "vout" => &transfer.vout,
           "offset" => &transfer.offset,
           "address" => &transfer.address,
           "is_genesis" => &transfer.is_genesis
@@ -1923,6 +1928,7 @@ impl Vermilion {
           "block_timestamp".to_string(),
           "satpoint".to_string(),
           "transaction".to_string(),
+          "vout".to_string(),
           "offset".to_string(),
           "address".to_string(),
           "is_genesis".to_string()], 
@@ -1934,6 +1940,7 @@ impl Vermilion {
             "block_timestamp" => object.block_timestamp,
             "satpoint" => &object.satpoint,
             "transaction" => &object.transaction,
+            "vout" => object.vout,
             "offset" => object.offset,
             "address" => &object.address,
             "is_genesis" => object.is_genesis
@@ -1960,7 +1967,8 @@ impl Vermilion {
         block_timestamp bigint,
         satpoint text,
         transaction text,
-        offset int unsigned,
+        vout int unsigned,
+        offset bigint unsigned,
         address varchar(100),
         is_genesis boolean,
         INDEX index_id (id),
@@ -1973,15 +1981,16 @@ impl Vermilion {
     let mut conn = Self::get_conn(pool).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await?;
     let _exec = tx.exec_batch(
-      r"INSERT INTO addresses (id, block_number, block_timestamp, satpoint, transaction, offset, address, is_genesis)
-        VALUES (:id, :block_number, :block_timestamp, :satpoint, :transaction, :offset, :address, :is_genesis)
-        ON DUPLICATE KEY UPDATE block_number=VALUES(block_number), block_timestamp=VALUES(block_timestamp), satpoint=VALUES(satpoint), transaction=VALUES(transaction), offset=VALUES(offset), address=VALUES(address), is_genesis=VALUES(is_genesis)",
+      r"INSERT INTO addresses (id, block_number, block_timestamp, satpoint, transaction, vout, offset, address, is_genesis)
+        VALUES (:id, :block_number, :block_timestamp, :satpoint, :transaction, :vout, :offset, :address, :is_genesis)
+        ON DUPLICATE KEY UPDATE block_number=VALUES(block_number), block_timestamp=VALUES(block_timestamp), satpoint=VALUES(satpoint), transaction=VALUES(transaction), vout=VALUES(vout), offset=VALUES(offset), address=VALUES(address), is_genesis=VALUES(is_genesis)",
         transfer_vec.iter().map(|transfer| params! { 
           "id" => &transfer.id,
           "block_number" => &transfer.block_number,
           "block_timestamp" => &transfer.block_timestamp,
           "satpoint" => &transfer.satpoint,
           "transaction" => &transfer.transaction,
+          "vout" => &transfer.vout,
           "offset" => &transfer.offset,
           "address" => &transfer.address,
           "is_genesis" => &transfer.is_genesis
@@ -2014,6 +2023,7 @@ impl Vermilion {
           "block_timestamp".to_string(),
           "satpoint".to_string(),
           "transaction".to_string(),
+          "vout".to_string(),
           "offset".to_string(),
           "address".to_string(),
           "is_genesis".to_string()], 
@@ -2021,6 +2031,7 @@ impl Vermilion {
           "block_timestamp".to_string(),
           "satpoint".to_string(),
           "transaction".to_string(),
+          "vout".to_string(),
           "offset".to_string(),
           "address".to_string(),
           "is_genesis".to_string()], 
@@ -2032,6 +2043,7 @@ impl Vermilion {
             "block_timestamp" => object.block_timestamp,
             "satpoint" => &object.satpoint,
             "transaction" => &object.transaction,
+            "vout" => object.vout,
             "offset" => object.offset,
             "address" => &object.address,
             "is_genesis" => object.is_genesis
@@ -2630,6 +2642,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         block_timestamp: row.get("block_timestamp").unwrap(),
         satpoint: row.get("satpoint").unwrap(),
         transaction: row.get("transaction").unwrap(),
+        vout: row.get("vout").unwrap(),
         offset: row.get("offset").unwrap(),
         address: row.get("address").unwrap(),
         is_genesis: row.get("is_genesis").unwrap()
@@ -2651,6 +2664,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         block_timestamp: row.get("block_timestamp").unwrap(),
         satpoint: row.get("satpoint").unwrap(),
         transaction: row.get("transaction").unwrap(),
+        vout: row.get("vout").unwrap(),
         offset: row.get("offset").unwrap(),
         address: row.get("address").unwrap(),
         is_genesis: row.get("is_genesis").unwrap()
@@ -2672,6 +2686,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         block_timestamp: row.get("block_timestamp").unwrap(),
         satpoint: row.get("satpoint").unwrap(),
         transaction: row.get("transaction").unwrap(),
+        vout: row.get("vout").unwrap(),
         offset: row.get("offset").unwrap(),
         address: row.get("address").unwrap(),
         is_genesis: row.get("is_genesis").unwrap()
@@ -2693,6 +2708,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         block_timestamp: row.get("block_timestamp").unwrap(),
         satpoint: row.get("satpoint").unwrap(),
         transaction: row.get("transaction").unwrap(),
+        vout: row.get("vout").unwrap(),
         offset: row.get("offset").unwrap(),
         address: row.get("address").unwrap(),
         is_genesis: row.get("is_genesis").unwrap()
@@ -2713,7 +2729,8 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         block_number: row.get("block_number").unwrap(),
         block_timestamp: row.get("block_timestamp").unwrap(),
         satpoint: row.get("satpoint").unwrap(),
-        transaction: row.get("transaction").unwrap(),        
+        transaction: row.get("transaction").unwrap(),
+        vout: row.get("vout").unwrap(),
         offset: row.get("offset").unwrap(),
         address: row.get("address").unwrap(),
         is_genesis: row.get("is_genesis").unwrap(),
