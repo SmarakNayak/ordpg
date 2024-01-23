@@ -1150,6 +1150,7 @@ impl Vermilion {
     Self::create_edition_procedure(pool.clone()).await.context("Failed to create edition proc")?;
     Self::create_weights_procedure(pool.clone()).await.context("Failed to create weights proc")?;
     Self::create_edition_insert_trigger(pool.clone()).await.context("Failed to create edition trigger")?;
+    Self::create_metadata_insert_trigger(pool.clone()).await.context("Failed to create metadata trigger")?;
     Ok(())
   }
 
@@ -2870,6 +2871,29 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     result
   }
 
+  async fn create_metadata_insert_trigger(pool: mysql_async::Pool) -> anyhow::Result<()> {
+    let mut conn = Self::get_conn(pool).await?;
+    let mut tx = conn.start_transaction(TxOpts::default()).await?;
+    tx.query_drop(r"DROP TRIGGER IF EXISTS before_metadata_insert").await?;
+    tx.query_drop(
+      r#"CREATE TRIGGER before_metadata_insert
+      BEFORE INSERT ON ordinals
+      FOR EACH ROW
+      BEGIN
+        IF NOT GET_LOCK('editions_lock', 1) THEN
+          SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Editions table is being updated, please try again later.';
+        END IF;
+      END;"#).await?;
+    let result = tx.commit().await;
+    match result {
+      Ok(_) => Ok(()),
+      Err(error) => {
+        log::warn!("Error creating ordinals insert trigger: {}", error);
+        Err(anyhow::Error::new(error))
+      }
+    }
+  }
+
   async fn create_edition_insert_trigger(pool: mysql_async::Pool) -> anyhow::Result<()> {
     let mut conn = Self::get_conn(pool).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await?;
@@ -2900,8 +2924,14 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     tx.query_drop(
       r#"CREATE PROCEDURE update_editions()
       BEGIN
+      DECLARE EXIT HANDLER FOR SQLEXCEPTION
+      BEGIN
+          SELECT RELEASE_LOCK('editions_lock');
+      END;
       START TRANSACTION;
-      SELECT * FROM ordinals WHERE sequence_number > (select max(sequence_number) from ordinals) FOR UPDATE;
+      IF NOT GET_LOCK('editions_lock', 300) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Cannot acquire editions_lock, please try again later.';
+      END IF;
       SELECT max(sequence_number) from ordinals;
       IF "editions" NOT IN (SELECT table_name FROM information_schema.tables) THEN
       INSERT into proc_log(proc_name, step_name, ts) values ("EDITIONS", "START_CREATE", now());
@@ -2932,8 +2962,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       DROP TABLE IF EXISTS editions_total_old;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_INDEX_NEW", now(), found_rows());
       END IF;
-      SELECT * FROM ordinals WHERE sequence_number > (select max(sequence_number) from ordinals) FOR UPDATE;
-      SELECT max(sequence_number) from ordinals;
+      SELECT RELEASE_LOCK('editions_lock');
       COMMIT;
       END;"#).await?;
     tx.query_drop(r"DROP EVENT IF EXISTS editions_event").await?;
@@ -2942,7 +2971,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
                           ON SCHEDULE EVERY 168 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400) 
                           DO
                           BEGIN
-                            SET SESSION TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+                            SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
                             CALL update_editions();
                             SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
                           END;").await?;
