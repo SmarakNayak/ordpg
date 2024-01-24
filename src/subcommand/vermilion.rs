@@ -956,7 +956,7 @@ impl Vermilion {
   }
 
   fn is_bitmap_style(input: &str) -> bool {
-    let pattern = r"^[a-zA-Z0-9]+[.][a-zA-Z0-9]+$";
+    let pattern = r"^[^ \n]+[.][^ \n]+$";
     let re = regex::Regex::new(pattern).unwrap();
     re.is_match(input)
   }
@@ -2565,14 +2565,14 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   async fn get_random_inscription(pool: mysql_async::Pool, random_float: f64) -> (Metadata, (f64, f64)) {
     let mut conn = Self::get_conn(pool).await.unwrap();
     let random_inscription_band = conn.exec_map(
-      "SELECT first_number, band_start, band_end FROM weights where band_end>:random_float limit 1",
+      "SELECT first_number, class_band_start, class_band_end FROM weights where band_end>:random_float limit 1",
       params! {
         "random_float" => random_float
       },
       |mut row: mysql_async::Row| RandomInscriptionBand {
         sequence_number: row.get("first_number").unwrap(),
-        start: row.get("band_start").unwrap(),
-        end: row.get("band_end").unwrap()
+        start: row.get("class_band_start").unwrap(),
+        end: row.get("class_band_end").unwrap()
       }
     ).await
     .unwrap()
