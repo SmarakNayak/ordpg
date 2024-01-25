@@ -1,7 +1,8 @@
 #![allow(
+  clippy::large_enum_variant,
+  clippy::result_large_err,
   clippy::too_many_arguments,
-  clippy::type_complexity,
-  clippy::result_large_err
+  clippy::type_complexity
 )]
 #![deny(
   clippy::cast_lossless,
@@ -16,35 +17,37 @@ use {
     blocktime::Blocktime,
     config::Config,
     decimal::Decimal,
+    decimal_sat::DecimalSat,
     degree::Degree,
     deserialize_from_str::DeserializeFromStr,
-    envelope::ParsedEnvelope,
     epoch::Epoch,
     height::Height,
-    index::{Index, List, RuneEntry},
-    inscription_id::InscriptionId,
-    media::Media,
-    options::Options,
+    inscriptions::{media, teleburn, Charm, Media, ParsedEnvelope},
     outgoing::Outgoing,
     representation::Representation,
-    runes::{Pile, Rune, RuneId},
+    runes::{Etching, Pile, SpacedRune},
     subcommand::{Subcommand, SubcommandResult},
     tally::Tally,
   },
-  anyhow::{anyhow, bail, Context, Error},
+  anyhow::{anyhow, bail, ensure, Context, Error},
   bip39::Mnemonic,
   bitcoin::{
     address::{Address, NetworkUnchecked},
-    blockdata::constants::COIN_VALUE,
+    blockdata::{
+      constants::{
+        COIN_VALUE, DIFFCHANGE_INTERVAL, MAX_SCRIPT_ELEMENT_SIZE, SUBSIDY_HALVING_INTERVAL,
+      },
+      locktime::absolute::LockTime,
+    },
     consensus::{self, Decodable, Encodable},
     hash_types::BlockHash,
     hashes::Hash,
     opcodes,
     script::{self, Instruction},
     Amount, Block, Network, OutPoint, Script, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid,
+    Witness,
   },
   bitcoincore_rpc::{Client, RpcApi},
-  chain::Chain,
   chrono::{DateTime, TimeZone, Utc},
   ciborium::Value,
   clap::{ArgGroup, Parser},
@@ -55,16 +58,16 @@ use {
   serde::{Deserialize, Deserializer, Serialize, Serializer},
   std::{
     cmp,
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     env,
-    ffi::OsString,
     fmt::{self, Display, Formatter},
     fs::{self, File},
     io::{self, Cursor},
-    net::{TcpListener, ToSocketAddrs},
+    mem,
+    net::ToSocketAddrs,
     ops::{Add, AddAssign, Sub},
     path::{Path, PathBuf},
-    process::{self, Command},
+    process,
     str::FromStr,
     sync::{
       atomic::{self, AtomicBool},
@@ -73,19 +76,23 @@ use {
     thread,
     time::{Duration, Instant, SystemTime},
   },
-  sysinfo::{System, SystemExt},
-  tempfile::TempDir,
+  sysinfo::System,
+  templates::{InscriptionJson, OutputJson, RuneJson, StatusJson},
   tokio::{runtime::Runtime, task},
 };
 
-pub use crate::{
+pub use self::{
+  chain::Chain,
   fee_rate::FeeRate,
-  inscription::Inscription,
+  index::{Index, RuneEntry},
+  inscriptions::{Envelope, Inscription, InscriptionId},
   object::Object,
+  options::Options,
   rarity::Rarity,
+  runes::{Edict, Rune, RuneId, Runestone},
   sat::Sat,
   sat_point::SatPoint,
-  subcommand::wallet::transaction_builder::{Target, TransactionBuilder},
+  wallet::transaction_builder::{Target, TransactionBuilder},
 };
 
 #[cfg(test)]
@@ -105,46 +112,77 @@ macro_rules! tprintln {
     };
 }
 
-mod arguments;
+pub mod arguments;
 mod blocktime;
-mod chain;
+pub mod chain;
 mod config;
 mod decimal;
+mod decimal_sat;
 mod degree;
 mod deserialize_from_str;
-mod envelope;
 mod epoch;
 mod fee_rate;
 mod height;
-mod index;
-mod inscription;
-pub mod inscription_id;
-mod media;
+pub mod index;
+mod inscriptions;
 mod object;
 mod options;
 mod outgoing;
-mod page_config;
 pub mod rarity;
 mod representation;
 pub mod runes;
 pub mod sat;
 mod sat_point;
+mod server_config;
 pub mod subcommand;
 mod tally;
-mod teleburn;
 pub mod templates;
-mod wallet;
+pub mod wallet;
 
 type Result<T = (), E = Error> = std::result::Result<T, E>;
 
-const DIFFCHANGE_INTERVAL: u64 = bitcoin::blockdata::constants::DIFFCHANGE_INTERVAL as u64;
-const SUBSIDY_HALVING_INTERVAL: u64 =
-  bitcoin::blockdata::constants::SUBSIDY_HALVING_INTERVAL as u64;
-const CYCLE_EPOCHS: u64 = 6;
+const CYCLE_EPOCHS: u32 = 6;
 
 static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 static LISTENERS: Mutex<Vec<axum_server::Handle>> = Mutex::new(Vec::new());
 static INDEXER: Mutex<Option<thread::JoinHandle<()>>> = Mutex::new(Option::None);
+
+const TARGET_POSTAGE: Amount = Amount::from_sat(10_000);
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn fund_raw_transaction(
+  client: &Client,
+  fee_rate: FeeRate,
+  unfunded_transaction: &Transaction,
+) -> Result<Vec<u8>> {
+  let mut buffer = Vec::new();
+
+  {
+    unfunded_transaction.version.consensus_encode(&mut buffer)?;
+    unfunded_transaction.input.consensus_encode(&mut buffer)?;
+    unfunded_transaction.output.consensus_encode(&mut buffer)?;
+    unfunded_transaction
+      .lock_time
+      .consensus_encode(&mut buffer)?;
+  }
+
+  Ok(
+    client
+      .fund_raw_transaction(
+        &buffer,
+        Some(&bitcoincore_rpc::json::FundRawTransactionOptions {
+          // NB. This is `fundrawtransaction`'s `feeRate`, which is fee per kvB
+          // and *not* fee per vB. So, we multiply the fee rate given by the user
+          // by 1000.
+          fee_rate: Some(Amount::from_sat((fee_rate.n() * 1000.0).ceil() as u64)),
+          change_position: Some(unfunded_transaction.output.len().try_into()?),
+          ..Default::default()
+        }),
+        Some(false),
+      )?
+      .hex,
+  )
+}
 
 fn integration_test() -> bool {
   env::var_os("ORD_INTEGRATION_TEST")
@@ -152,7 +190,7 @@ fn integration_test() -> bool {
     .unwrap_or(false)
 }
 
-fn timestamp(seconds: u32) -> DateTime<Utc> {
+pub fn timestamp(seconds: u32) -> DateTime<Utc> {
   Utc.timestamp_opt(seconds.into(), 0).unwrap()
 }
 
@@ -160,6 +198,16 @@ fn unbound_outpoint() -> OutPoint {
   OutPoint {
     txid: Hash::all_zeros(),
     vout: 0,
+  }
+}
+
+pub fn parse_ord_server_args(args: &str) -> (Options, crate::subcommand::server::Server) {
+  match Arguments::try_parse_from(args.split_whitespace()) {
+    Ok(arguments) => match arguments.subcommand {
+      Subcommand::Server(server) => (arguments.options, server),
+      subcommand => panic!("unexpected subcommand: {subcommand:?}"),
+    },
+    Err(err) => panic!("error parsing arguments: {err}"),
   }
 }
 
@@ -190,6 +238,8 @@ pub fn main() {
       .unwrap()
       .iter()
       .for_each(|handle| handle.graceful_shutdown(Some(Duration::from_millis(100))));
+
+    gracefully_shutdown_indexer();
   })
   .expect("Error setting <CTRL-C> handler");
 
@@ -211,8 +261,11 @@ pub fn main() {
 
       process::exit(1);
     }
-    Ok(output) => output.print_json(),
+    Ok(output) => {
+      if let Some(output) = output {
+        output.print_json();
+      }
+      gracefully_shutdown_indexer();
+    }
   }
-
-  gracefully_shutdown_indexer();
 }

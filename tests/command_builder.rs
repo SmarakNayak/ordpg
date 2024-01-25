@@ -33,9 +33,11 @@ pub(crate) struct CommandBuilder {
   expected_exit_code: i32,
   expected_stderr: Expected,
   expected_stdout: Expected,
-  rpc_server_url: Option<String>,
+  ord_rpc_server_url: Option<Url>,
+  bitcoin_rpc_server_cookie_file: Option<PathBuf>,
+  bitcoin_rpc_server_url: Option<String>,
   stdin: Vec<u8>,
-  tempdir: TempDir,
+  tempdir: Arc<TempDir>,
 }
 
 impl CommandBuilder {
@@ -45,9 +47,11 @@ impl CommandBuilder {
       expected_exit_code: 0,
       expected_stderr: Expected::String(String::new()),
       expected_stdout: Expected::String(String::new()),
-      rpc_server_url: None,
+      ord_rpc_server_url: None,
+      bitcoin_rpc_server_cookie_file: None,
+      bitcoin_rpc_server_url: None,
       stdin: Vec::new(),
-      tempdir: TempDir::new().unwrap(),
+      tempdir: Arc::new(TempDir::new().unwrap()),
     }
   }
 
@@ -56,9 +60,20 @@ impl CommandBuilder {
     self
   }
 
-  pub(crate) fn rpc_server(self, rpc_server: &test_bitcoincore_rpc::Handle) -> Self {
+  pub(crate) fn bitcoin_rpc_server(
+    self,
+    bitcoin_rpc_server: &test_bitcoincore_rpc::Handle,
+  ) -> Self {
     Self {
-      rpc_server_url: Some(rpc_server.url()),
+      bitcoin_rpc_server_url: Some(bitcoin_rpc_server.url()),
+      bitcoin_rpc_server_cookie_file: Some(bitcoin_rpc_server.cookie_file()),
+      ..self
+    }
+  }
+
+  pub(crate) fn ord_rpc_server(self, ord_rpc_server: &TestServer) -> Self {
+    Self {
+      ord_rpc_server_url: Some(ord_rpc_server.url()),
       ..self
     }
   }
@@ -95,22 +110,37 @@ impl CommandBuilder {
     }
   }
 
-  pub(crate) fn temp_dir(self, tempdir: TempDir) -> Self {
+  pub(crate) fn temp_dir(self, tempdir: Arc<TempDir>) -> Self {
     Self { tempdir, ..self }
   }
 
   pub(crate) fn command(&self) -> Command {
     let mut command = Command::new(executable_path("ord"));
 
-    if let Some(rpc_server_url) = &self.rpc_server_url {
-      let cookiefile = self.tempdir.path().join("cookie");
-      fs::write(&cookiefile, "username:password").unwrap();
+    if let Some(rpc_server_url) = &self.bitcoin_rpc_server_url {
       command.args([
         "--rpc-url",
         rpc_server_url,
         "--cookie-file",
-        cookiefile.to_str().unwrap(),
+        self
+          .bitcoin_rpc_server_cookie_file
+          .as_ref()
+          .unwrap()
+          .to_str()
+          .unwrap(),
       ]);
+    }
+
+    let mut args = Vec::new();
+
+    for arg in self.args.iter() {
+      args.push(arg.clone());
+      if arg == "wallet" {
+        if let Some(ord_server_url) = &self.ord_rpc_server_url {
+          args.push("--server-url".to_string());
+          args.push(ord_server_url.to_string());
+        }
+      }
     }
 
     command
@@ -118,16 +148,18 @@ impl CommandBuilder {
       .stdin(Stdio::piped())
       .stdout(Stdio::piped())
       .stderr(Stdio::piped())
-      .current_dir(&self.tempdir)
+      .current_dir(&*self.tempdir)
       .arg("--data-dir")
       .arg(self.tempdir.path())
-      .args(&self.args);
+      .args(&args);
 
     command
   }
 
+  #[track_caller]
   fn run(self) -> (TempDir, String) {
-    let child = self.command().spawn().unwrap();
+    let mut command = self.command();
+    let child = command.spawn().unwrap();
 
     child
       .stdin
@@ -150,7 +182,7 @@ impl CommandBuilder {
     self.expected_stderr.assert_match(stderr);
     self.expected_stdout.assert_match(stdout);
 
-    (self.tempdir, stdout.into())
+    (Arc::try_unwrap(self.tempdir).unwrap(), stdout.into())
   }
 
   pub(crate) fn run_and_extract_file(self, path: impl AsRef<Path>) -> String {
@@ -158,10 +190,12 @@ impl CommandBuilder {
     fs::read_to_string(tempdir.path().join(path)).unwrap()
   }
 
+  #[track_caller]
   pub(crate) fn run_and_extract_stdout(self) -> String {
     self.run().1
   }
 
+  #[track_caller]
   pub(crate) fn run_and_deserialize_output<T: DeserializeOwned>(self) -> T {
     let stdout = self.stdout_regex(".*").run_and_extract_stdout();
     serde_json::from_str(&stdout)

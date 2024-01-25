@@ -1,10 +1,10 @@
-use {super::*, ord::subcommand::info::TransactionsOutput};
+use {super::*, ord::subcommand::index::info::TransactionsOutput};
 
 #[test]
 fn json_with_satoshi_index() {
   let rpc_server = test_bitcoincore_rpc::spawn();
-  CommandBuilder::new("--index-sats info")
-    .rpc_server(&rpc_server)
+  CommandBuilder::new("--index-sats index info")
+    .bitcoin_rpc_server(&rpc_server)
     .stdout_regex(
       r#"\{
   "blocks_indexed": 1,
@@ -18,6 +18,8 @@ fn json_with_satoshi_index() {
   "page_size": \d+,
   "sat_ranges": 1,
   "stored_bytes": \d+,
+  "tables": .*,
+  "total_bytes": \d+,
   "transactions": \[
     \{
       "starting_block_count": 0,
@@ -35,8 +37,8 @@ fn json_with_satoshi_index() {
 #[test]
 fn json_without_satoshi_index() {
   let rpc_server = test_bitcoincore_rpc::spawn();
-  CommandBuilder::new("info")
-    .rpc_server(&rpc_server)
+  CommandBuilder::new("index info")
+    .bitcoin_rpc_server(&rpc_server)
     .stdout_regex(
       r#"\{
   "blocks_indexed": 1,
@@ -50,6 +52,8 @@ fn json_without_satoshi_index() {
   "page_size": \d+,
   "sat_ranges": 0,
   "stored_bytes": \d+,
+  "tables": .*,
+  "total_bytes": \d+,
   "transactions": \[
     \{
       "starting_block_count": 0,
@@ -73,20 +77,20 @@ fn transactions() {
   let index_path = tempdir.path().join("index.redb");
 
   assert!(CommandBuilder::new(format!(
-    "--index {} info --transactions",
+    "--index {} index info --transactions",
     index_path.display()
   ))
-  .rpc_server(&rpc_server)
+  .bitcoin_rpc_server(&rpc_server)
   .run_and_deserialize_output::<Vec<TransactionsOutput>>()
   .is_empty());
 
   rpc_server.mine_blocks(10);
 
   let output = CommandBuilder::new(format!(
-    "--index {} info --transactions",
+    "--index {} index info --transactions",
     index_path.display()
   ))
-  .rpc_server(&rpc_server)
+  .bitcoin_rpc_server(&rpc_server)
   .run_and_deserialize_output::<Vec<TransactionsOutput>>();
 
   assert_eq!(output[0].start, 0);
@@ -96,10 +100,10 @@ fn transactions() {
   rpc_server.mine_blocks(10);
 
   let output = CommandBuilder::new(format!(
-    "--index {} info --transactions",
+    "--index {} index info --transactions",
     index_path.display()
   ))
-  .rpc_server(&rpc_server)
+  .bitcoin_rpc_server(&rpc_server)
   .run_and_deserialize_output::<Vec<TransactionsOutput>>();
 
   assert_eq!(output[1].start, 1);

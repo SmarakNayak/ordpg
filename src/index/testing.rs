@@ -1,4 +1,4 @@
-use super::*;
+use {super::*, std::ffi::OsString, tempfile::TempDir};
 
 pub(crate) struct ContextBuilder {
   args: Vec<OsString>,
@@ -36,7 +36,6 @@ impl ContextBuilder {
     index.update().unwrap();
 
     Ok(Context {
-      options,
       rpc_server,
       tempdir,
       index,
@@ -53,6 +52,11 @@ impl ContextBuilder {
     self
   }
 
+  pub(crate) fn chain(mut self, chain: Chain) -> Self {
+    self.chain = chain;
+    self
+  }
+
   pub(crate) fn tempdir(mut self, tempdir: TempDir) -> Self {
     self.tempdir = Some(tempdir);
     self
@@ -60,7 +64,6 @@ impl ContextBuilder {
 }
 
 pub(crate) struct Context {
-  pub(crate) options: Options,
   pub(crate) rpc_server: test_bitcoincore_rpc::Handle,
   #[allow(unused)]
   pub(crate) tempdir: TempDir,
@@ -77,8 +80,14 @@ impl Context {
   }
 
   pub(crate) fn mine_blocks(&self, n: u64) -> Vec<Block> {
+    self.mine_blocks_with_update(n, true)
+  }
+
+  pub(crate) fn mine_blocks_with_update(&self, n: u64, update: bool) -> Vec<Block> {
     let blocks = self.rpc_server.mine_blocks(n);
-    self.index.update().unwrap();
+    if update {
+      self.index.update().unwrap();
+    }
     blocks
   }
 
@@ -93,5 +102,41 @@ impl Context {
       Context::builder().build(),
       Context::builder().arg("--index-sats").build(),
     ]
+  }
+
+  #[track_caller]
+  pub(crate) fn assert_runes(
+    &self,
+    mut runes: impl AsMut<[(RuneId, RuneEntry)]>,
+    mut balances: impl AsMut<[(OutPoint, Vec<(RuneId, u128)>)]>,
+  ) {
+    let runes = runes.as_mut();
+    runes.sort_by_key(|(id, _)| *id);
+
+    let balances = balances.as_mut();
+    balances.sort_by_key(|(outpoint, _)| *outpoint);
+
+    for (_, balances) in balances.iter_mut() {
+      balances.sort_by_key(|(id, _)| *id);
+    }
+
+    assert_eq!(runes, self.index.runes().unwrap());
+
+    assert_eq!(balances, self.index.get_rune_balances().unwrap());
+
+    let mut outstanding: HashMap<RuneId, u128> = HashMap::new();
+
+    for (_, balances) in balances {
+      for (id, balance) in balances {
+        *outstanding.entry(*id).or_default() += *balance;
+      }
+    }
+
+    for (id, entry) in runes {
+      assert_eq!(
+        outstanding.get(id).copied().unwrap_or_default(),
+        entry.supply - entry.burned
+      );
+    }
   }
 }

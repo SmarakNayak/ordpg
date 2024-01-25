@@ -1,48 +1,4 @@
-use {
-  self::batch::{Batch, Batchfile, Mode},
-  super::*,
-  crate::{subcommand::wallet::transaction_builder::Target, wallet::Wallet},
-  bitcoin::{
-    blockdata::{opcodes, script},
-    key::PrivateKey,
-    key::{TapTweak, TweakedKeyPair, TweakedPublicKey, UntweakedKeyPair},
-    locktime::absolute::LockTime,
-    policy::MAX_STANDARD_TX_WEIGHT,
-    secp256k1::{self, constants::SCHNORR_SIGNATURE_SIZE, rand, Secp256k1, XOnlyPublicKey},
-    sighash::{Prevouts, SighashCache, TapSighashType},
-    taproot::Signature,
-    taproot::{ControlBlock, LeafVersion, TapLeafHash, TaprootBuilder},
-    ScriptBuf, Witness,
-  },
-  bitcoincore_rpc::bitcoincore_rpc_json::{ImportDescriptors, SignRawTransactionInput, Timestamp},
-  bitcoincore_rpc::Client,
-  std::collections::BTreeSet,
-};
-
-mod batch;
-
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
-pub struct InscriptionInfo {
-  pub id: InscriptionId,
-  pub location: SatPoint,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct Output {
-  pub commit: Txid,
-  pub inscriptions: Vec<InscriptionInfo>,
-  pub parent: Option<InscriptionId>,
-  pub reveal: Txid,
-  pub total_fees: u64,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ParentInfo {
-  destination: Address,
-  id: InscriptionId,
-  location: SatPoint,
-  tx_out: TxOut,
-}
+use super::*;
 
 #[derive(Debug, Parser)]
 #[clap(
@@ -53,9 +9,10 @@ pub(crate) struct ParentInfo {
 pub(crate) struct Inscribe {
   #[arg(
     long,
-    help = "Inscribe a multiple inscriptions defines in a yaml <BATCH_FILE>.",
+    help = "Inscribe multiple inscriptions defined in a yaml <BATCH_FILE>.",
     conflicts_with_all = &[
-      "file", "destination", "cbor_metadata", "json_metadata", "satpoint", "reinscribe", "metaprotocol", "parent"
+      "cbor_metadata", "delegate", "destination", "file", "json_metadata", "metaprotocol",
+      "parent", "postage", "reinscribe", "satpoint"
     ]
   )]
   pub(crate) batch: Option<PathBuf>,
@@ -70,6 +27,10 @@ pub(crate) struct Inscribe {
     help = "Use <COMMIT_FEE_RATE> sats/vbyte for commit transaction.\nDefaults to <FEE_RATE> if unset."
   )]
   pub(crate) commit_fee_rate: Option<FeeRate>,
+  #[arg(long, help = "Compress inscription content with brotli.")]
+  pub(crate) compress: bool,
+  #[arg(long, help = "Delegate inscription content to <DELEGATE>.")]
+  pub(crate) delegate: Option<InscriptionId>,
   #[arg(long, help = "Send inscription to <DESTINATION>.")]
   pub(crate) destination: Option<Address<NetworkUnchecked>>,
   #[arg(long, help = "Don't sign or broadcast transactions.")]
@@ -80,16 +41,17 @@ pub(crate) struct Inscribe {
   pub(crate) file: Option<PathBuf>,
   #[arg(
     long,
-    help = "Include JSON in file at <METADATA> convered to CBOR as inscription metadata",
+    help = "Include JSON in file at <METADATA> converted to CBOR as inscription metadata",
     conflicts_with = "cbor_metadata"
   )]
   pub(crate) json_metadata: Option<PathBuf>,
   #[clap(long, help = "Set inscription metaprotocol to <METAPROTOCOL>.")]
   pub(crate) metaprotocol: Option<String>,
-  #[arg(long, help = "Do not back up recovery key.")]
+  #[arg(long, alias = "nobackup", help = "Do not back up recovery key.")]
   pub(crate) no_backup: bool,
   #[arg(
     long,
+    alias = "nolimit",
     help = "Do not check that transactions are equal to or below the MAX_STANDARD_TX_WEIGHT of 400,000 weight units. Transactions over this limit are currently nonstandard and will not be relayed by bitcoind in its default configuration. Do not use this flag unless you understand the implications."
   )]
   pub(crate) no_limit: bool,
@@ -104,70 +66,96 @@ pub(crate) struct Inscribe {
   pub(crate) reinscribe: bool,
   #[arg(long, help = "Inscribe <SATPOINT>.")]
   pub(crate) satpoint: Option<SatPoint>,
+  #[arg(long, help = "Inscribe <SAT>.", conflicts_with = "satpoint")]
+  pub(crate) sat: Option<Sat>,
 }
 
 impl Inscribe {
-  pub(crate) fn run(self, options: Options) -> SubcommandResult {
+  pub(crate) fn run(self, wallet: Wallet) -> SubcommandResult {
     let metadata = Inscribe::parse_metadata(self.cbor_metadata, self.json_metadata)?;
 
-    let index = Index::open(&options)?;
-    index.update()?;
+    let utxos = wallet.get_unspent_outputs()?;
 
-    let utxos = index.get_unspent_outputs(Wallet::load(&options)?)?;
+    let locked_utxos = wallet.get_locked_outputs()?;
 
-    let client = options.bitcoin_rpc_client_for_wallet_command(false)?;
+    let runic_utxos = wallet.get_runic_outputs()?;
 
-    let chain = options.chain();
+    let chain = wallet.chain();
 
-    let postage = self.postage.unwrap_or(TransactionBuilder::TARGET_POSTAGE);
-
+    let postage;
     let destinations;
     let inscriptions;
     let mode;
     let parent_info;
+    let sat;
 
     match (self.file, self.batch) {
       (Some(file), None) => {
-        parent_info = Inscribe::get_parent_info(self.parent, &index, &utxos, &client, chain)?;
+        parent_info = wallet.get_parent_info(self.parent, &utxos)?;
+
+        postage = self.postage.unwrap_or(TARGET_POSTAGE);
+
+        if let Some(delegate) = self.delegate {
+          ensure! {
+            wallet.inscription_exists(delegate)?,
+            "delegate {delegate} does not exist"
+          }
+        }
+
         inscriptions = vec![Inscription::from_file(
           chain,
-          file,
-          self.parent,
-          None,
-          self.metaprotocol,
+          self.compress,
+          self.delegate,
           metadata,
+          self.metaprotocol,
+          self.parent,
+          file,
+          None,
         )?];
+
         mode = Mode::SeparateOutputs;
+
+        sat = self.sat;
+
         destinations = vec![match self.destination.clone() {
           Some(destination) => destination.require_network(chain.network())?,
-          None => get_change_address(&client, chain)?,
+          None => wallet.get_change_address()?,
         }];
       }
       (None, Some(batch)) => {
         let batchfile = Batchfile::load(&batch)?;
 
-        parent_info = Inscribe::get_parent_info(batchfile.parent, &index, &utxos, &client, chain)?;
+        parent_info = wallet.get_parent_info(batchfile.parent, &utxos)?;
 
-        inscriptions = batchfile.inscriptions(
-          chain,
+        postage = batchfile
+          .postage
+          .map(Amount::from_sat)
+          .unwrap_or(TARGET_POSTAGE);
+
+        (inscriptions, destinations) = batchfile.inscriptions(
+          &wallet,
           parent_info.as_ref().map(|info| info.tx_out.value),
           metadata,
           postage,
+          self.compress,
         )?;
 
         mode = batchfile.mode;
 
-        let destination_count = match batchfile.mode {
-          Mode::SharedOutput => 1,
-          Mode::SeparateOutputs => inscriptions.len(),
-        };
+        if batchfile.sat.is_some() && mode != Mode::SameSat {
+          return Err(anyhow!("`sat` can only be set in `same-sat` mode"));
+        }
 
-        destinations = (0..destination_count)
-          .map(|_| get_change_address(&client, chain))
-          .collect::<Result<Vec<Address>>>()?;
+        sat = batchfile.sat;
       }
       _ => unreachable!(),
     }
+
+    let satpoint = if let Some(sat) = sat {
+      Some(wallet.find_sat_in_outputs(sat, &utxos)?)
+    } else {
+      self.satpoint
+    };
 
     Batch {
       commit_fee_rate: self.commit_fee_rate.unwrap_or(self.fee_rate),
@@ -181,9 +169,9 @@ impl Inscribe {
       postage,
       reinscribe: self.reinscribe,
       reveal_fee_rate: self.fee_rate,
-      satpoint: self.satpoint,
+      satpoint,
     }
-    .inscribe(chain, &index, &client, &utxos)
+    .inscribe(&locked_utxos, runic_utxos, &utxos, &wallet)
   }
 
   fn parse_metadata(cbor: Option<PathBuf>, json: Option<PathBuf>) -> Result<Option<Vec<u8>>> {
@@ -204,47 +192,16 @@ impl Inscribe {
       Ok(None)
     }
   }
-
-  fn get_parent_info(
-    parent: Option<InscriptionId>,
-    index: &Index,
-    utxos: &BTreeMap<OutPoint, Amount>,
-    client: &Client,
-    chain: Chain,
-  ) -> Result<Option<ParentInfo>> {
-    if let Some(parent_id) = parent {
-      if let Some(satpoint) = index.get_inscription_satpoint_by_id(parent_id)? {
-        if !utxos.contains_key(&satpoint.outpoint) {
-          return Err(anyhow!(format!("parent {parent_id} not in wallet")));
-        }
-
-        Ok(Some(ParentInfo {
-          destination: get_change_address(client, chain)?,
-          id: parent_id,
-          location: satpoint,
-          tx_out: index
-            .get_transaction(satpoint.outpoint.txid)?
-            .expect("parent transaction not found in index")
-            .output
-            .into_iter()
-            .nth(satpoint.outpoint.vout.try_into().unwrap())
-            .expect("current transaction output"),
-        }))
-      } else {
-        Err(anyhow!(format!("parent {parent_id} does not exist")))
-      }
-    } else {
-      Ok(None)
-    }
-  }
 }
 
 #[cfg(test)]
 mod tests {
   use {
-    self::batch::BatchEntry,
     super::*,
+    crate::wallet::inscribe::{BatchEntry, ParentInfo},
+    bitcoin::policy::MAX_STANDARD_TX_WEIGHT,
     serde_yaml::{Mapping, Value},
+    tempfile::TempDir,
   };
 
   #[test]
@@ -264,13 +221,15 @@ mod tests {
       reveal_fee_rate: FeeRate::try_from(1.0).unwrap(),
       no_limit: false,
       reinscribe: false,
-      postage: TransactionBuilder::TARGET_POSTAGE,
+      postage: TARGET_POSTAGE,
       mode: Mode::SharedOutput,
       ..Default::default()
     }
     .create_batch_inscription_transactions(
       BTreeMap::new(),
       Chain::Mainnet,
+      BTreeSet::new(),
+      BTreeSet::new(),
       utxos.into_iter().collect(),
       change,
     )
@@ -287,7 +246,7 @@ mod tests {
   }
 
   #[test]
-  fn inscribe_tansactions_opt_in_to_rbf() {
+  fn inscribe_transactions_opt_in_to_rbf() {
     let utxos = vec![(outpoint(1), Amount::from_sat(20000))];
     let inscription = inscription("text/plain", "ord");
     let commit_address = change(0);
@@ -303,13 +262,15 @@ mod tests {
       reveal_fee_rate: FeeRate::try_from(1.0).unwrap(),
       no_limit: false,
       reinscribe: false,
-      postage: TransactionBuilder::TARGET_POSTAGE,
+      postage: TARGET_POSTAGE,
       mode: Mode::SharedOutput,
       ..Default::default()
     }
     .create_batch_inscription_transactions(
       BTreeMap::new(),
       Chain::Mainnet,
+      BTreeSet::new(),
+      BTreeSet::new(),
       utxos.into_iter().collect(),
       change,
     )
@@ -345,13 +306,15 @@ mod tests {
       reveal_fee_rate: FeeRate::try_from(1.0).unwrap(),
       no_limit: false,
       reinscribe: false,
-      postage: TransactionBuilder::TARGET_POSTAGE,
+      postage: TARGET_POSTAGE,
       mode: Mode::SharedOutput,
       ..Default::default()
     }
     .create_batch_inscription_transactions(
       inscriptions,
       Chain::Mainnet,
+      BTreeSet::new(),
+      BTreeSet::new(),
       utxos.into_iter().collect(),
       [commit_address, change(1)],
     )
@@ -394,13 +357,15 @@ mod tests {
       reveal_fee_rate: FeeRate::try_from(1.0).unwrap(),
       no_limit: false,
       reinscribe: false,
-      postage: TransactionBuilder::TARGET_POSTAGE,
+      postage: TARGET_POSTAGE,
       mode: Mode::SharedOutput,
       ..Default::default()
     }
     .create_batch_inscription_transactions(
       inscriptions,
       Chain::Mainnet,
+      BTreeSet::new(),
+      BTreeSet::new(),
       utxos.into_iter().collect(),
       [commit_address, change(1)],
     )
@@ -437,13 +402,15 @@ mod tests {
       reveal_fee_rate: FeeRate::try_from(fee_rate).unwrap(),
       no_limit: false,
       reinscribe: false,
-      postage: TransactionBuilder::TARGET_POSTAGE,
+      postage: TARGET_POSTAGE,
       mode: Mode::SharedOutput,
       ..Default::default()
     }
     .create_batch_inscription_transactions(
       inscriptions,
       Chain::Signet,
+      BTreeSet::new(),
+      BTreeSet::new(),
       utxos.into_iter().collect(),
       [commit_address, change(1)],
     )
@@ -501,6 +468,7 @@ mod tests {
 
     let child_inscription = InscriptionTemplate {
       parent: Some(parent_inscription),
+      ..Default::default()
     }
     .into();
 
@@ -517,13 +485,15 @@ mod tests {
       reveal_fee_rate: FeeRate::try_from(fee_rate).unwrap(),
       no_limit: false,
       reinscribe: false,
-      postage: TransactionBuilder::TARGET_POSTAGE,
+      postage: TARGET_POSTAGE,
       mode: Mode::SharedOutput,
       ..Default::default()
     }
     .create_batch_inscription_transactions(
       inscriptions,
       Chain::Signet,
+      BTreeSet::new(),
+      BTreeSet::new(),
       utxos.into_iter().collect(),
       [commit_address, change(2)],
     )
@@ -597,13 +567,15 @@ mod tests {
       reveal_fee_rate: FeeRate::try_from(fee_rate).unwrap(),
       no_limit: false,
       reinscribe: false,
-      postage: TransactionBuilder::TARGET_POSTAGE,
+      postage: TARGET_POSTAGE,
       mode: Mode::SharedOutput,
       ..Default::default()
     }
     .create_batch_inscription_transactions(
       inscriptions,
       Chain::Signet,
+      BTreeSet::new(),
+      BTreeSet::new(),
       utxos.into_iter().collect(),
       [commit_address, change(1)],
     )
@@ -653,13 +625,15 @@ mod tests {
       reveal_fee_rate: FeeRate::try_from(1.0).unwrap(),
       no_limit: false,
       reinscribe: false,
-      postage: TransactionBuilder::TARGET_POSTAGE,
+      postage: TARGET_POSTAGE,
       mode: Mode::SharedOutput,
       ..Default::default()
     }
     .create_batch_inscription_transactions(
       BTreeMap::new(),
       Chain::Mainnet,
+      BTreeSet::new(),
+      BTreeSet::new(),
       utxos.into_iter().collect(),
       [commit_address, change(1)],
     )
@@ -691,13 +665,15 @@ mod tests {
       reveal_fee_rate: FeeRate::try_from(1.0).unwrap(),
       no_limit: true,
       reinscribe: false,
-      postage: TransactionBuilder::TARGET_POSTAGE,
+      postage: TARGET_POSTAGE,
       mode: Mode::SharedOutput,
       ..Default::default()
     }
     .create_batch_inscription_transactions(
       BTreeMap::new(),
       Chain::Mainnet,
+      BTreeSet::new(),
+      BTreeSet::new(),
       utxos.into_iter().collect(),
       [commit_address, change(1)],
     )
@@ -782,7 +758,7 @@ inscriptions:
           }
         ],
         parent: Some(parent),
-        mode: Mode::SeparateOutputs,
+        ..Default::default()
       }
     );
   }
@@ -834,14 +810,17 @@ inscriptions:
     let inscriptions = vec![
       InscriptionTemplate {
         parent: Some(parent),
+        ..Default::default()
       }
       .into(),
       InscriptionTemplate {
         parent: Some(parent),
+        ..Default::default()
       }
       .into(),
       InscriptionTemplate {
         parent: Some(parent),
+        ..Default::default()
       }
       .into(),
     ];
@@ -866,6 +845,8 @@ inscriptions:
     .create_batch_inscription_transactions(
       wallet_inscriptions,
       Chain::Signet,
+      BTreeSet::new(),
+      BTreeSet::new(),
       utxos.into_iter().collect(),
       [commit_address, change(2)],
     )
@@ -930,14 +911,17 @@ inscriptions:
     let inscriptions = vec![
       InscriptionTemplate {
         parent: Some(parent),
+        ..Default::default()
       }
       .into(),
       InscriptionTemplate {
         parent: Some(parent),
+        ..Default::default()
       }
       .into(),
       InscriptionTemplate {
         parent: Some(parent),
+        ..Default::default()
       }
       .into(),
     ];
@@ -961,6 +945,8 @@ inscriptions:
     .create_batch_inscription_transactions(
       wallet_inscriptions,
       Chain::Signet,
+      BTreeSet::new(),
+      BTreeSet::new(),
       utxos.into_iter().collect(),
       [commit_address, change(2)],
     )
@@ -1003,14 +989,17 @@ inscriptions:
     let inscriptions = vec![
       InscriptionTemplate {
         parent: Some(parent),
+        ..Default::default()
       }
       .into(),
       InscriptionTemplate {
         parent: Some(parent),
+        ..Default::default()
       }
       .into(),
       InscriptionTemplate {
         parent: Some(parent),
+        ..Default::default()
       }
       .into(),
     ];
@@ -1034,6 +1023,8 @@ inscriptions:
     .create_batch_inscription_transactions(
       wallet_inscriptions,
       Chain::Signet,
+      BTreeSet::new(),
+      BTreeSet::new(),
       utxos.into_iter().collect(),
       [commit_address, change(2)],
     );
@@ -1070,6 +1061,8 @@ inscriptions:
     .create_batch_inscription_transactions(
       wallet_inscriptions,
       Chain::Signet,
+      BTreeSet::new(),
+      BTreeSet::new(),
       utxos.into_iter().collect(),
       [commit_address, change(2)],
     )
@@ -1121,6 +1114,8 @@ inscriptions:
     .create_batch_inscription_transactions(
       wallet_inscriptions,
       Chain::Signet,
+      BTreeSet::new(),
+      BTreeSet::new(),
       utxos.into_iter().collect(),
       [commit_address, change(2)],
     )
@@ -1130,7 +1125,7 @@ inscriptions:
     assert!(reveal_tx
       .output
       .iter()
-      .all(|output| output.value == TransactionBuilder::TARGET_POSTAGE.to_sat()));
+      .all(|output| output.value == TARGET_POSTAGE.to_sat()));
   }
 
   #[test]
@@ -1164,14 +1159,17 @@ inscriptions:
     let inscriptions = vec![
       InscriptionTemplate {
         parent: Some(parent),
+        ..Default::default()
       }
       .into(),
       InscriptionTemplate {
         parent: Some(parent),
+        ..Default::default()
       }
       .into(),
       InscriptionTemplate {
         parent: Some(parent),
+        ..Default::default()
       }
       .into(),
     ];
@@ -1196,6 +1194,8 @@ inscriptions:
     .create_batch_inscription_transactions(
       wallet_inscriptions,
       Chain::Signet,
+      BTreeSet::new(),
+      BTreeSet::new(),
       utxos.into_iter().collect(),
       [commit_address, change(2)],
     )
@@ -1253,6 +1253,10 @@ inscriptions:
     for (flag, value) in [
       ("--file", Some("foo")),
       (
+        "--delegate",
+        Some("4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33bi0"),
+      ),
+      (
         "--destination",
         Some("tb1qsgx55dp6gn53tsmyjjv4c2ye403hgxynxs0dnm"),
       ),
@@ -1298,6 +1302,27 @@ inscriptions:
         .unwrap_err()
         .to_string()
         .contains("error: the following required arguments were not provided:\n  <--file <FILE>|--batch <BATCH>>")
+    );
+  }
+
+  #[test]
+  fn satpoint_and_sat_flags_conflict() {
+    assert_regex_match!(
+      Arguments::try_parse_from([
+        "ord",
+        "--index-sats",
+        "wallet",
+        "inscribe",
+        "--sat",
+        "50000000000",
+        "--satpoint",
+        "038112028c55f3f77cc0b8b413df51f70675f66be443212da0642b7636f68a00:1:0",
+        "--file",
+        "baz",
+      ])
+      .unwrap_err()
+      .to_string(),
+      ".*--sat.*cannot be used with.*--satpoint.*"
     );
   }
 }

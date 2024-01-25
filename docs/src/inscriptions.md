@@ -76,8 +76,15 @@ Fields
 Inscriptions may include fields before an optional body. Each field consists of
 two data pushes, a tag and a value.
 
-Currently, the only defined field is `content-type`, with a tag of `1`, whose
-value is the MIME type of the body.
+Currently, there are six defined fields:
+
+- `content_type`, with a tag of `1`, whose value is the MIME type of the body.
+- `pointer`, with a tag of `2`, see [pointer docs](inscriptions/pointer.md).
+- `parent`, with a tag of `3`, see [provenance](inscriptions/provenance.md).
+- `metadata`, with a tag of `5`, see [metadata](inscriptions/metadata.md).
+- `metaprotocol`, with a tag of `7`, whose value is the metaprotocol identifier.
+- `content_encoding`, with a tag of `9`, whose value is the encoding of the body.
+- `delegate`, with a tag of `11`, see [delegate](inscriptions/delegate.md).
 
 The beginning of the body and end of fields is indicated with an empty data
 push.
@@ -117,6 +124,22 @@ go through the inputs consecutively and look for all inscription `envelopes`.
 | 3     | 0                 |            |
 | 4     | 1                 | i6         |
 
+Inscription Numbers
+-------------------
+
+Inscriptions are assigned inscription numbers starting at zero, first by the
+order reveal transactions appear in blocks, and the order that reveal envelopes
+appear in those transactions.
+
+Due to a historical bug in `ord` which cannot be fixed without changing a great
+many inscription numbers, inscriptions which are revealed and then immediately
+spent to fees are numbered as if they appear last in the block in which they
+are revealed.
+
+Inscriptions which are cursed are numbered starting at negative one, counting
+down. Cursed inscriptions on and after the jubilee at block 824544 are
+vindicated, and are assigned positive inscription numbers.
+
 Sandboxing
 ----------
 
@@ -126,3 +149,16 @@ off-chain content, thus keeping inscriptions immutable and self-contained.
 This is accomplished by loading HTML and SVG inscriptions inside `iframes` with
 the `sandbox` attribute, as well as serving inscription content with
 `Content-Security-Policy` headers.
+
+Reinscriptions
+--------------
+
+Previously inscribed sats can be reinscribed with the `--reinscribe` command if
+the inscription is present in the wallet. This will only append an inscription to
+a sat, not change the initial inscription.
+
+Reinscribe with satpoint:
+`ord wallet inscribe --fee-rate <FEE_RATE> --reinscribe --file <FILE> --satpoint <SATPOINT>`
+
+Reinscribe on a sat (requires sat index):
+`ord --index-sats wallet inscribe --fee-rate <FEE_RATE> --reinscribe --file <FILE> --sat <SAT>`

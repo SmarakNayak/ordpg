@@ -1,4 +1,4 @@
-use {super::*, crate::wallet::Wallet};
+use super::*;
 
 #[derive(Debug, Parser)]
 pub(crate) struct Sats {
@@ -24,16 +24,13 @@ pub struct OutputRare {
 }
 
 impl Sats {
-  pub(crate) fn run(&self, options: Options) -> SubcommandResult {
-    let index = Index::open(&options)?;
+  pub(crate) fn run(&self, wallet: Wallet) -> SubcommandResult {
+    ensure!(
+      wallet.has_sat_index()?,
+      "sats requires index created with `--index-sats` flag"
+    );
 
-    if !index.has_sat_index() {
-      bail!("sats requires index created with `--index-sats` flag");
-    }
-
-    index.update()?;
-
-    let utxos = index.get_unspent_output_ranges(Wallet::load(&options)?)?;
+    let utxos = wallet.get_output_sat_ranges()?;
 
     if let Some(path) = &self.tsv {
       let mut output = Vec::new();
@@ -47,7 +44,7 @@ impl Sats {
           output: outpoint,
         });
       }
-      Ok(Box::new(output))
+      Ok(Some(Box::new(output)))
     } else {
       let mut output = Vec::new();
       for (outpoint, sat, offset, rarity) in rare_sats(utxos) {
@@ -58,7 +55,7 @@ impl Sats {
           rarity,
         });
       }
-      Ok(Box::new(output))
+      Ok(Some(Box::new(output)))
     }
   }
 }

@@ -1,7 +1,7 @@
 Ordinal Explorer
 ================
 
-The `ord` binary includes a block explorer. We host a instance of the block
+The `ord` binary includes a block explorer. We host an instance of the block
 explorer on mainnet at [ordinals.com](https://ordinals.com), and on signet at
 [signet.ordinals.com](https://signet.ordinals.com).
 
@@ -14,14 +14,10 @@ To specify a port add the `--http-port` flag:
 
 `ord server --http-port 8080`
 
-To enable the JSON-API endpoints add the `--enable-json-api` or `-j` flag (see
-[here](#json-api) for more info):
+The JSON-API endpoints are enabled by default, to disable them add the
+`--disable-json-api` flag (see [here](#json-api) for more info):
 
-`ord --enable-json-api server`
-
-To test how your inscriptions will look you can run:
-
-`ord preview <FILE1> <FILE2> ...`
+`ord server --disable-json-api`
 
 Search
 ------
@@ -43,7 +39,7 @@ transaction:
 
 ### Outputs
 
-Transaction outputs can searched by outpoint, for example, the only output of
+Transaction outputs can be searched by outpoint, for example, the only output of
 the genesis block coinbase transaction:
 
 [4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b:0](https://ordinals.com/search/4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b:0)
@@ -76,9 +72,9 @@ been issued when they are mined:
 JSON-API
 --------
 
-You can run `ord` with the `--enable-json-api` flag to access endpoints that
+By default the `ord server` gives access to endpoints that
 return JSON instead of HTML if you set the HTTP `Accept: application/json`
-header. The structure of theses objects closely follows
+header. The structure of these objects closely follows
 what is shown in the HTML. These endpoints are:
 
 - `/inscription/<INSCRIPTION_ID>`

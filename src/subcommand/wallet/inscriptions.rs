@@ -1,4 +1,4 @@
-use {super::*, crate::wallet::Wallet};
+use super::*;
 
 #[derive(Serialize, Deserialize)]
 pub struct Output {
@@ -8,14 +8,12 @@ pub struct Output {
   pub postage: u64,
 }
 
-pub(crate) fn run(options: Options) -> SubcommandResult {
-  let index = Index::open(&options)?;
-  index.update()?;
+pub(crate) fn run(wallet: Wallet) -> SubcommandResult {
+  let unspent_outputs = wallet.get_unspent_outputs()?;
 
-  let unspent_outputs = index.get_unspent_outputs(Wallet::load(&options)?)?;
-  let inscriptions = index.get_inscriptions(&unspent_outputs)?;
+  let inscriptions = wallet.get_inscriptions()?;
 
-  let explorer = match options.chain() {
+  let explorer = match wallet.chain() {
     Chain::Mainnet => "https://ordinals.com/inscription/",
     Chain::Regtest => "http://localhost/inscription/",
     Chain::Signet => "https://signet.ordinals.com/inscription/",
@@ -35,5 +33,5 @@ pub(crate) fn run(options: Options) -> SubcommandResult {
     }
   }
 
-  Ok(Box::new(output))
+  Ok(Some(Box::new(output)))
 }
