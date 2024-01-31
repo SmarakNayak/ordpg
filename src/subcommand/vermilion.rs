@@ -49,50 +49,61 @@ use ciborium::value::Value as CborValue;
 pub(crate) struct Vermilion {
   #[arg(
     long,
-    default_value = "0.0.0.0",
-    help = "Listen on <ADDRESS> for incoming requests."
+    help = "Listen on <ADDRESS> for incoming requests. [default: 0.0.0.0]"
   )]
-  address: String,
+  pub(crate) address: Option<String>,
   #[arg(
     long,
     help = "Request ACME TLS certificate for <ACME_DOMAIN>. This ord instance must be reachable at <ACME_DOMAIN>:443 to respond to Let's Encrypt ACME challenges."
   )]
-  acme_domain: Vec<String>,
+  pub(crate) acme_domain: Vec<String>,
   #[arg(
     long,
-    help = "Listen on <HTTP_PORT> for incoming HTTP requests. [default: 80]."
+    help = "Use <CSP_ORIGIN> in Content-Security-Policy header. Set this to the public-facing URL of your ord instance."
   )]
-  http_port: Option<u16>,
+  pub(crate) csp_origin: Option<String>,
+  #[arg(
+    long,
+    help = "Listen on <HTTP_PORT> for incoming HTTP requests. [default: 80]"
+  )]
+  pub(crate) http_port: Option<u16>,
   #[arg(
     long,
     group = "port",
-    help = "Listen on <HTTPS_PORT> for incoming HTTPS requests. [default: 443]."
+    help = "Listen on <HTTPS_PORT> for incoming HTTPS requests. [default: 443]"
   )]
-  https_port: Option<u16>,
+  pub(crate) https_port: Option<u16>,
   #[arg(long, help = "Store ACME TLS certificates in <ACME_CACHE>.")]
-  acme_cache: Option<PathBuf>,
+  pub(crate) acme_cache: Option<PathBuf>,
   #[arg(long, help = "Provide ACME contact <ACME_CONTACT>.")]
-  acme_contact: Vec<String>,
+  pub(crate) acme_contact: Vec<String>,
   #[arg(long, help = "Serve HTTP traffic on <HTTP_PORT>.")]
-  http: bool,
+  pub(crate) http: bool,
   #[arg(long, help = "Serve HTTPS traffic on <HTTPS_PORT>.")]
-  https: bool,
+  pub(crate) https: bool,
   #[arg(long, help = "Redirect HTTP traffic to HTTPS.")]
-  redirect_http_to_https: bool,
-  #[arg(long, short = 'j', help = "Enable JSON API.")]
-  pub(crate) enable_json_api: bool,
+  pub(crate) redirect_http_to_https: bool,
+  #[arg(long, help = "Disable JSON API.")]
+  pub(crate) disable_json_api: bool,
+  #[arg(
+    long,
+    help = "Decompress encoded content. Currently only supports brotli. Be careful using this on production instances. A decompressed inscription may be arbitrarily large, making decompression a DoS vector."
+  )]
+  pub(crate) decompress: bool,
+  #[arg(long, alias = "nosync", help = "Do not update the index.")]
+  pub(crate) no_sync: bool,
   #[arg(
     long,
     help = "Listen on <HTTP_PORT> for incoming REST requests. [default: 81]."
   )]
-  api_http_port: Option<u16>,
+  pub(crate) api_http_port: Option<u16>,
   #[arg(
     long,
     help = "Number of threads to use when uploading content and metadata. [default: 1]."
   )]
-  n_threads: Option<u16>,
+  pub(crate) n_threads: Option<u16>,
   #[arg(long, help = "Only run api server, do not run indexer. [default: false].")]
-  pub run_api_server_only: bool
+  pub(crate) run_api_server_only: bool
 }
 
 #[derive(Clone, Serialize)]
@@ -104,8 +115,8 @@ pub struct Metadata {
   genesis_height: i64,
   genesis_transaction: String,
   pointer: Option<u64>,
-  number: i64,
-  sequence_number: Option<u64>,
+  number: i32,
+  sequence_number: u32,
   parent: Option<String>,
   metaprotocol: Option<String>,
   embedded_metadata: Option<String>,
@@ -125,10 +136,10 @@ pub struct SatMetadata {
   decimal: String,
   degree: String,
   name: String,
-  block: u64,
-  cycle: u64,
-  epoch: u64,
-  period: u64,
+  block: u32,
+  cycle: u32,
+  epoch: u32,
+  period: u32,
   offset: u64,
   rarity: String,
   percentile: String,
@@ -278,7 +289,7 @@ impl Vermilion {
           tokio::time::sleep(Duration::from_secs(10)).await;
         }          
       });
-      return Ok(Box::new(Empty {}) as Box<dyn Output>);
+      return Ok(None);
     }
 
     //2. Run Ordinals Server
@@ -310,7 +321,7 @@ impl Vermilion {
     if address_thread_result.is_err() {
       println!("Error joining address indexer thread: {:?}", address_thread_result.unwrap_err());
     }
-    Ok(Box::new(Empty {}) as Box<dyn Output>)
+    Ok(None)
   }
 
   pub(crate) fn run_inscription_indexer(self, options: Options, index: Arc<Index>) {
@@ -394,10 +405,10 @@ impl Vermilion {
           let t2 = Instant::now();
           let mut inscription_ids: Vec<InscriptionId> = Vec::new();
           for j in needed_numbers.clone() {
-            let inscription_id = cloned_index.get_inscription_id_by_sequence_number(j).unwrap();
-            match inscription_id {
-              Some(inscription_id) => {
-                inscription_ids.push(inscription_id);
+            let inscription_entry = cloned_index.get_inscription_entry_by_sequence_number(j.try_into().unwrap()).unwrap();
+            match inscription_entry {
+              Some(inscription_entry) => {
+                inscription_ids.push(inscription_entry.id);
               },
               None => {
                 log::info!("No inscription found for sequence number: {}. Marking as not found. Breaking from loop, sleeping a minute", j);
@@ -638,7 +649,7 @@ impl Vermilion {
             return;
           }
         };
-        let mut height = std::cmp::max(first_height, db_height);
+        let mut height = std::cmp::max(first_height, db_height.try_into().unwrap());
         log::info!("Address indexing block start height: {:?}", height);
         loop {
           let t0 = Instant::now();
@@ -724,8 +735,8 @@ impl Vermilion {
           }
 
           let t3 = Instant::now();          
-          let mut id_point_address = Vec::new();
-          for (id, satpoint) in transfers {
+          let mut seq_point_address = Vec::new();
+          for (equence_number, satpoint) in transfers {
             let address = if satpoint.outpoint == unbound_outpoint() {
               "unbound".to_string()
             } else {
@@ -743,12 +754,14 @@ impl Vermilion {
                 .unwrap_or_else(|e| e.to_string());
               address
             };
-            id_point_address.push((id, satpoint, address));
+            seq_point_address.push((equence_number, satpoint, address));
           }
           let t4 = Instant::now();
           let block_time = index.block_time(Height(height)).unwrap();
           let mut transfer_vec = Vec::new();
-          for (id, point, address) in id_point_address {
+          for (sequence_number, point, address) in seq_point_address {
+            let entry = index.get_inscription_entry_by_sequence_number(sequence_number).unwrap();
+            let id = entry.unwrap().id;
             let transfer = Transfer {
               id: id.to_string(),
               block_number: height.try_into().unwrap(),
@@ -870,7 +883,10 @@ impl Vermilion {
       http: self.http,
       https: self.https,
       redirect_http_to_https: self.redirect_http_to_https,
-      enable_json_api: self.enable_json_api,
+      disable_json_api: self.disable_json_api,
+      csp_origin: self.csp_origin,
+      decompress: self.decompress,
+      no_sync: self.no_sync,
     };
     let server_thread = thread::spawn(move || {
       let server_result = server.run(options, index, handle);
@@ -1099,7 +1115,7 @@ impl Vermilion {
       genesis_transaction: inscription_id.txid.to_string(),
       pointer: inscription.pointer(),
       number: entry.inscription_number,
-      sequence_number: Some(entry.sequence_number),
+      sequence_number: entry.sequence_number,
       parent: parent,
       metaprotocol: metaprotocol,
       embedded_metadata: embedded_metadata,

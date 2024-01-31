@@ -450,6 +450,7 @@ impl<'index> Updater<'_> {
       unbound_inscriptions,
       value_cache,
       value_receiver,
+      height_to_transfers: &mut height_to_transfers,
     };
 
     if self.index.index_sats {

@@ -65,6 +65,7 @@ pub(super) struct InscriptionUpdater<'a, 'db, 'tx> {
   pub(super) unbound_inscriptions: u64,
   pub(super) value_cache: &'a mut HashMap<OutPoint, u64>,
   pub(super) value_receiver: &'a mut Receiver<u64>,
+  pub(super) height_to_transfers: &'a mut MultimapTable<'db, 'tx, u32, &'static [u8; 48]>,
 }
 
 impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
@@ -542,6 +543,14 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
     self
       .sequence_number_to_satpoint
       .insert(sequence_number, &satpoint)?;
+    let transfer: [u8; 48] = {
+      let mut transfer: [u8; 48] = [0; 48];
+      let (one, two) = transfer.split_at_mut(4);
+      one.copy_from_slice(&sequence_number.to_ne_bytes());
+      two.copy_from_slice(&satpoint);
+      transfer
+    };
+    self.height_to_transfers.insert(&self.height, &transfer)?;
 
     Ok(())
   }

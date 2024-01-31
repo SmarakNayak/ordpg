@@ -59,7 +59,7 @@ macro_rules! define_multimap_table {
 define_multimap_table! { SATPOINT_TO_SEQUENCE_NUMBER, &SatPointValue, u32 }
 define_multimap_table! { SAT_TO_SEQUENCE_NUMBER, u64, u32 }
 define_multimap_table! { SEQUENCE_NUMBER_TO_CHILDREN, u32, u32 }
-define_multimap_table! { HEIGHT_TO_TRANSFERS, u64, &[u8; 80] }
+define_multimap_table! { HEIGHT_TO_TRANSFERS, u32, &[u8; 48] }
 define_table! { HEIGHT_TO_BLOCK_HEADER, u32, &HeaderValue }
 define_table! { HEIGHT_TO_LAST_SEQUENCE_NUMBER, u32, u32 }
 define_table! { HOME_INSCRIPTIONS, u32, InscriptionIdValue }
@@ -1656,7 +1656,7 @@ impl Index {
     )
   }
 
-  pub(crate) fn get_transfers_by_block_height(&self, height: u64) -> Result<Vec<(InscriptionId, SatPoint)>>  {
+  pub(crate) fn get_transfers_by_block_height(&self, height: u32) -> Result<Vec<(u32, SatPoint)>>  {
     let mut return_vec = Vec::new();
     let rtx = self
       .database
@@ -1666,20 +1666,37 @@ impl Index {
     for transfer in transfers {
       let result = transfer.unwrap();
       let transfer = result.value();
-      let (inscription_id, satpoint) = transfer.split_at(36);
-      let inscription_id = InscriptionId::load(inscription_id.try_into().unwrap());
-      let satpoint = SatPoint::load(satpoint.try_into().unwrap());
-      return_vec.push((inscription_id, satpoint));
+      let (sequence_number, satpoint) = transfer.split_at(4);
+      let sequence_number = u32::from_ne_bytes(sequence_number.try_into().unwrap());
+      let satpoint: SatPoint = SatPoint::load(satpoint.try_into().unwrap());
+      return_vec.push((sequence_number, satpoint));
     }
     Ok(return_vec)
   }
 
-  pub(crate) fn get_blocks_indexed(&self) -> Result<u64> {
+  pub(crate) fn get_inscription_entry_by_sequence_number(
+    &self,
+    sequence_number: u32,
+  ) -> Result<Option<InscriptionEntry>> {
+    let rtx = self.database.begin_read()?;
+
+    let Some(entry) = rtx
+      .open_table(SEQUENCE_NUMBER_TO_INSCRIPTION_ENTRY)?
+      .get(&sequence_number)?
+      .map(|guard| guard.value())
+    else {
+      return Ok(None);
+    };
+
+    Ok(Some(InscriptionEntry::load(entry)))
+  }
+
+  pub(crate) fn get_blocks_indexed(&self) -> Result<u32> {
     let rtx = self
       .database
       .begin_read()?;
     let blocks_indexed = rtx
-      .open_table(HEIGHT_TO_BLOCK_HASH)?
+      .open_table(HEIGHT_TO_BLOCK_HEADER)?
       .range(0..)?
       .next_back()
       .and_then(|result| result.ok())
