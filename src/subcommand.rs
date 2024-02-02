@@ -15,6 +15,7 @@ pub mod teleburn;
 pub mod traits;
 pub mod wallet;
 mod vermilion;
+mod migrate;
 
 #[derive(Debug, Parser)]
 pub(crate) enum Subcommand {
@@ -48,6 +49,8 @@ pub(crate) enum Subcommand {
   Wallet(wallet::WalletCommand),
   #[command(about = "Run the vermilion server")]
   Vermilion(vermilion::Vermilion),
+  #[command(about = "Run the migration")]
+  Migrate(migrate::Migrator),
 }
 
 impl Subcommand {
@@ -74,6 +77,9 @@ impl Subcommand {
       Self::Wallet(wallet) => wallet.run(options),
       Self::Vermilion(vermilion) => {        
         vermilion.run(options)
+      },
+      Self::Migrate(migrator) => {
+        migrator.run(options)
       }
     }
   }
