@@ -73,7 +73,7 @@ impl Migrator {
               inscription_entry
             },
             None => {
-              log::info!("No inscription found for sequence number: {}. Marking as not found. Breaking from loop, sleeping a minute", number);
+              log::info!("No inscription found for sequence number: {}. Breaking from loop, sleeping a minute", number);
               break;
             }
           };
@@ -87,20 +87,31 @@ impl Migrator {
         
         //2. Get Transactions
         let t1 = Instant::now();
-        let txs = fetcher.get_transactions(inscription_entries.clone().into_iter().map(|x| x.id.txid).collect()).await;
-        let err_txs = match txs {
-          Ok(txs) => Some(txs),
-          Err(error) => {
-            println!("Error getting transactions starting from {}: {:?}", number, error);
-            tokio::time::sleep(Duration::from_secs(60)).await;
-            continue;
-          }
-        };
+        let mut txs = Vec::new();
+        for entry in inscription_entries.clone() {
+          let tx = match index.get_transaction(entry.id.txid) {
+            Ok(tx) => {
+              match tx {
+                Some(tx) => {
+                  tx
+                },
+                None => {
+                  log::info!("No transaction found for txid: {:?}. Breaking from loop, sleeping a minute", entry.id.txid);
+                  break;
+                }
+              }
+            }
+            Err(e) => {
+              log::info!("Error getting transaction for txid: {:?}, error: {:?}", entry.id.txid, e);
+              break;
+            }
+          };
+          txs.push(tx);
+        }
         //3. Get Inscriptions
         let t2 = Instant::now();
-        let clean_txs = err_txs.unwrap();
         let ids: Vec<InscriptionId> = inscription_entries.clone().into_iter().map(|x| x.id).collect();
-        let id_txs: Vec<_> = ids.into_iter().zip(clean_txs.into_iter()).collect();
+        let id_txs: Vec<_> = ids.into_iter().zip(txs.into_iter()).collect();
         let mut inscriptions: Vec<Inscription> = Vec::new();
         for (inscription_id, tx) in id_txs {
           let inscription = ParsedEnvelope::from_transaction(&tx)
@@ -115,13 +126,25 @@ impl Migrator {
         let t3 = Instant::now();
         let entry_inscription_pairs: Vec<(InscriptionEntry, Inscription)> = inscription_entries.into_iter().zip(inscriptions.into_iter()).collect();
         let mut metadata_vec = Vec::new();
+        let pattern = r"^[^ \n]+[.][^ \n]+$";
+        let re = regex::Regex::new(pattern).unwrap();
+        let t32 = Instant::now();
         for (entry, inscription) in entry_inscription_pairs {
-          let is_bitmap_style = Self::extract_bitmap_style(inscription)?;
+          let mut i =0;
+          let s0 = Instant::now();
+          let is_bitmap_style = Self::extract_bitmap_style(inscription, re.clone())?;
+          let s1 = Instant::now();
           let metadata = Metadata {
             id: entry.id.to_string(),
             is_bitmap_style: is_bitmap_style
           };
+          let s2 = Instant::now();
           metadata_vec.push(metadata);
+          let s3 = Instant::now();
+          i+=1;
+          if i % 1000 == 0{
+            log::info!("Time to extract bitmap style: {:?}, Time to create metadata: {:?}, Time to push metadata: {:?}", s1.duration_since(s0), s2.duration_since(s1), s3.duration_since(s2));
+          }
         }
 
         //4. Save to db
@@ -148,7 +171,7 @@ impl Migrator {
     result
   }
 
-  fn extract_bitmap_style(inscription: Inscription) -> Result<bool, Box<dyn Error>> {
+  fn extract_bitmap_style(inscription: Inscription, re: Regex) -> Result<bool, Box<dyn Error>> {
     let text = match inscription.body() {
       Some(body) => {
         let text = String::from_utf8(body.to_vec());
@@ -162,16 +185,10 @@ impl Migrator {
       }
     };
     let is_bitmap_style = match text.clone() {
-      Some(text) => Self::is_bitmap_style(&text),
+      Some(text) => re.is_match(&text),
       None => false
     };
     Ok(is_bitmap_style)
-  }
-
-  fn is_bitmap_style(input: &str) -> bool {
-    let pattern = r"^[^ \n]+[.][^ \n]+$";
-    let re = regex::Regex::new(pattern).unwrap();
-    re.is_match(input)
   }
 
   async fn _get_conn(pool: mysql_async::Pool) -> Result<mysql_async::Conn, mysql_async::Error> {
