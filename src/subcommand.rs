@@ -79,7 +79,8 @@ impl Subcommand {
         vermilion.run(options)
       },
       Self::Migrate(migrator) => {
-        migrator.run(options)
+        let index = Arc::new(Index::open(&options)?);
+        migrator.run(options, index)
       }
     }
   }

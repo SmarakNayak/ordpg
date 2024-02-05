@@ -1,3 +1,5 @@
+use self::migrate::Migrator;
+
 use super::*;
 use axum_server::Handle;
 use mysql_async::Params;
@@ -103,7 +105,9 @@ pub(crate) struct Vermilion {
   )]
   pub(crate) n_threads: Option<u16>,
   #[arg(long, help = "Only run api server, do not run indexer. [default: false].")]
-  pub(crate) run_api_server_only: bool
+  pub(crate) run_api_server_only: bool,
+  #[arg(long, help = "Run migration script. [default: false].")]
+  pub(crate) run_migration_script: bool
 }
 
 #[derive(Clone, Serialize)]
@@ -300,6 +304,10 @@ impl Vermilion {
     let ordinals_server_clone = self.clone();
     let ordinals_server_thread = ordinals_server_clone.run_ordinals_server(options.clone(), index.clone(), handle);
 
+    //2a. Run Migration script
+    let migration_clone = self.clone();
+    let migration_script_thread = migration_clone.run_migration_script(options.clone(), index.clone());
+
     //3. Run Address Indexer
     println!("Address Indexer Starting");
     let address_indexer_clone = self.clone();
@@ -315,11 +323,15 @@ impl Vermilion {
     // vermilion_server_thread.join().unwrap();
     let server_thread_result = ordinals_server_thread.join();
     let address_thread_result = address_indexer_thread.join();
+    let migration_thread_result = migration_script_thread.join();
     if server_thread_result.is_err() {
       println!("Error joining ordinals server thread: {:?}", server_thread_result.unwrap_err());
     }
     if address_thread_result.is_err() {
       println!("Error joining address indexer thread: {:?}", address_thread_result.unwrap_err());
+    }
+    if migration_thread_result.is_err() {
+      println!("Error joining migration script thread: {:?}", migration_thread_result.unwrap_err());
     }
     Ok(None)
   }
@@ -902,6 +914,27 @@ impl Vermilion {
     return server_thread;
   }
 
+  pub(crate) fn run_migration_script(self, options: Options, index: Arc<Index>) -> JoinHandle<()> {
+      let migration_thread = thread::spawn(move || {
+        if self.run_migration_script {
+          println!("Migration Script Starting");
+          let migrator = Migrator {
+            script_number: 1
+          };
+          let migration_result = migrator.run(options, index);
+          match migration_result {
+            Ok(_) => {
+              println!("Migration script stopped");
+            },
+            Err(err) => {
+              println!("Migration script failed: {:?}", err);
+            }
+          }
+        }
+      });
+      return migration_thread;
+  }
+  
   //Inscription Indexer Helper functions
   pub(crate) async fn upload_ordinal_content(client: &s3::Client, bucket_name: &str, inscription_id: InscriptionId, inscription: Inscription, head_check: bool) {
     let id = inscription_id.to_string();	

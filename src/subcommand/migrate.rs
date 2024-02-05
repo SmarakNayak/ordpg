@@ -26,9 +26,9 @@ pub struct UpdateMetadata {
 }
 
 impl Migrator {
-  pub(crate) fn run(&self, options: Options) -> SubcommandResult {
+  pub(crate) fn run(&self, options: Options, index: Arc<Index>) -> SubcommandResult {
     if self.script_number == 1 {
-      match Self::migrate_new_fields(options) {
+      match Self::migrate_new_fields(options, index) {
         Ok(_) => {
           println!("Migration complete");
         },
@@ -42,13 +42,12 @@ impl Migrator {
     }
   }
 
-  fn migrate_new_fields(options: Options) -> Result<(), Box<dyn Error>> {
+  pub fn migrate_new_fields(options: Options, index: Arc<Index>) -> Result<(), Box<dyn Error>> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap();
     let result: Result<(), Box<dyn Error>> = rt.block_on(async {
-      let index = Arc::new(Index::open(&options)?);
       let config = options.load_config()?;
       let url = config.db_connection_string.unwrap();
       let pool = Pool::new(url.as_str());
@@ -130,7 +129,6 @@ impl Migrator {
         let mut metadata_vec = Vec::new();
         let pattern = r"^[^ \n]+[.][^ \n]+$";
         let re = regex::Regex::new(pattern).unwrap();
-        let t32 = Instant::now();
         for (entry, inscription) in entry_inscription_pairs {
           let mut i =0;
           let s0 = Instant::now();
