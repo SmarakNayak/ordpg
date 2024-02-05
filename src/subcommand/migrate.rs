@@ -1,12 +1,11 @@
 use super::*;
-use crate::index::fetcher;
 use crate::index::entry::InscriptionEntry;
 
 use std::error::Error;
 use mysql_async::Pool;
-use mysql_async::Params;
 use mysql_async::params;
 use mysql_async::prelude::Queryable;
+use mysql_async::TxOpts;
 
 #[derive(Debug, Parser, Clone)]
 pub(crate) struct Migrator {
@@ -18,15 +17,18 @@ pub(crate) struct Migrator {
 }
 
 #[derive(Clone, Serialize)]
-pub struct Metadata {
+pub struct UpdateMetadata {
   id: String,
   is_bitmap_style: bool,
+  charms: u16,
+  delegate: String,
+  content_encoding: String,
 }
 
 impl Migrator {
   pub(crate) fn run(&self, options: Options) -> SubcommandResult {
     if self.script_number == 1 {
-      match Self::migrate_is_bitmap_style(options) {
+      match Self::migrate_new_fields(options) {
         Ok(_) => {
           println!("Migration complete");
         },
@@ -40,7 +42,7 @@ impl Migrator {
     }
   }
 
-  fn migrate_is_bitmap_style(options: Options) -> Result<(), Box<dyn Error>> {
+  fn migrate_new_fields(options: Options) -> Result<(), Box<dyn Error>> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -52,13 +54,13 @@ impl Migrator {
       let pool = Pool::new(url.as_str());
       let mut number = 0;
       let batch_size = 10000;
-      let fetcher =  match fetcher::Fetcher::new(&options) {
-        Ok(fetcher) => fetcher,
+      match Self::add_table_cols(pool.clone()).await {
+        Ok(_) => {},
         Err(e) => {
-          println!("Error creating fetcher: {:?}, exiting", e);
-          return Err(e.into())
+          log::warn!("Error adding table columns: {:?}", e);
         }
-      };
+      }
+      
       loop {
         if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
           break;
@@ -132,11 +134,27 @@ impl Migrator {
         for (entry, inscription) in entry_inscription_pairs {
           let mut i =0;
           let s0 = Instant::now();
-          let is_bitmap_style = Self::extract_bitmap_style(inscription, re.clone())?;
+          let is_bitmap_style = Self::extract_bitmap_style(&inscription, re.clone())?;
+          let delegate = match inscription.delegate() {
+            Some(delegate) => delegate.to_string(),
+            None => "".to_string()
+          };
+          let content_encoding = match inscription.content_encoding() {
+            Some(content_encoding) => {
+              match content_encoding.to_str() {
+                Ok(content_encoding) => content_encoding.to_string(),
+                Err(_) => "".to_string()
+              }
+            },
+            None => "".to_string()
+          };
           let s1 = Instant::now();
-          let metadata = Metadata {
+          let metadata = UpdateMetadata {
             id: entry.id.to_string(),
-            is_bitmap_style: is_bitmap_style
+            is_bitmap_style: is_bitmap_style,
+            charms: entry.charms,
+            delegate: delegate,
+            content_encoding: content_encoding,
           };
           let s2 = Instant::now();
           metadata_vec.push(metadata);
@@ -149,7 +167,7 @@ impl Migrator {
 
         //4. Save to db
         let t4 = Instant::now();
-        let _exec = Self::bulk_update_bitmap_style(pool.clone(), metadata_vec).await;
+        let _exec = Self::bulk_update_metadata(pool.clone(), metadata_vec).await;
         let t5 = Instant::now();
         match _exec {
           Ok(_) => {
@@ -171,7 +189,7 @@ impl Migrator {
     result
   }
 
-  fn extract_bitmap_style(inscription: Inscription, re: Regex) -> Result<bool, Box<dyn Error>> {
+  fn extract_bitmap_style(inscription: &Inscription, re: Regex) -> Result<bool, Box<dyn Error>> {
     let text = match inscription.body() {
       Some(body) => {
         let text = String::from_utf8(body.to_vec());
@@ -191,88 +209,81 @@ impl Migrator {
     Ok(is_bitmap_style)
   }
 
-  async fn _get_conn(pool: mysql_async::Pool) -> Result<mysql_async::Conn, mysql_async::Error> {
+  async fn get_conn(pool: mysql_async::Pool) -> Result<mysql_async::Conn, mysql_async::Error> {
     let conn = pool.get_conn().await;
     conn
   }
 
-  async fn bulk_insert_update<F, P, T>(
-    pool: mysql_async::Pool,
-    table: String,
-    cols: Vec<String>,
-    update_cols: Vec<String>,
-    objects: Vec<T>,
-    fun: F,
-  ) -> mysql_async::Result<()>
-  where
-    F: Fn(&T) -> P,
-    P: Into<Params>,
-  {
-    if objects.len() == 0 {
-      return Ok(());
-    }
-    
-    let mut stmt = format!("INSERT INTO {} ({}) VALUES ", table, cols.join(","));
-    let row = format!(
-        "({}),",
-        cols.iter()
-            .map(|_| "?".to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-    );
-    stmt.reserve(objects.len() * (cols.len() * 2 + 2));
-    for _ in 0..objects.len() {
-        stmt.push_str(&row);
-    }
-  
-    // remove the trailing comma
-    stmt.pop();
-  
-    // ON DUPLICATE KEY UPDATE
-    let formatted_string = update_cols
-      .iter()
-      .map(|field| {
-        format!("{}=VALUES({})", field, field)
+  async fn bulk_update_metadata(pool: mysql_async::Pool, metadata_vec: Vec<UpdateMetadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut conn = Self::get_conn(pool).await?;
+    let mut tx = conn.start_transaction(TxOpts::default()).await?;
+    let _exec = tx.exec_batch(
+      r"UPDATE ordinals set is_bitmap_style = :is_bitmap_style, charms = :charms, delegate = :delegate, content_encoding = :content_encoding where id = :id",
+        metadata_vec.iter().map(|metadata| params! {
+          "is_bitmap_style" => &metadata.is_bitmap_style,
+          "id" => &metadata.id,
+          "charms" => &metadata.charms,
+          "delegate" => &metadata.delegate,
+          "content_encoding" => &metadata.content_encoding,
       })
-      .collect::<Vec<_>>()
-      .join(",");
-    let duplicate_key_stmt = format!(" ON DUPLICATE KEY UPDATE {}", formatted_string);
-    stmt.push_str(&duplicate_key_stmt);
-  
-    let mut params = Vec::new();
-  
-    let bytes: Vec<Vec<u8>> = cols.iter().map(|s| s.clone().into_bytes()).collect();
-    for o in objects.iter() {
-        let named_params: mysql_async::Params = fun(o).into();
-        let positional_params = named_params.into_positional(bytes.as_slice())?;
-        if let mysql_async::Params::Positional(new_params) = positional_params {
-            for param in new_params {
-                params.push(param);
-            }
-        }
-    }
-    let mut conn = pool.get_conn().await?;
-    let result = conn.exec_drop(stmt, params).await;
-    result
-  }
-
-  pub(crate) async fn bulk_update_bitmap_style(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut _exec = Self::bulk_insert_update(pool.clone(),
-      "ordinals".to_string(),
-      vec![
-        "id".to_string(),
-        "is_bitmap_style".to_string()
-      ],
-      vec![
-        "is_bitmap_style".to_string()
-      ],
-      metadata_vec.clone(),
-      |metadata| params! { 
-        "id" => &metadata.id,
-        "is_bitmap_style" => &metadata.is_bitmap_style
-      }
     ).await;
-    Ok(_exec?)
+    match _exec {
+      Ok(_) => {},
+      Err(error) => {
+        log::warn!("Error bulk updating metadata: {}", error);
+        return Err(Box::new(error));
+      }
+    };
+    let result = tx.commit().await;
+    match result {
+      Ok(_) => Ok(()),
+      Err(error) => {
+        log::warn!("Error bulk committing ordinal metadata: {}", error);
+        Err(Box::new(error))
+      }
+    }
   }
 
+  async fn add_table_cols(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut conn = Self::get_conn(pool).await?;
+    let mut tx = conn.start_transaction(TxOpts::default()).await?;
+    let _exec = tx.query_drop(
+      r"ALTER TABLE ordinals ADD COLUMN charms SMALLINT"
+    ).await;
+    match _exec {
+      Ok(_) => {},
+      Err(error) => {
+        log::warn!("Error adding charms column: {}", error);
+        return Err(Box::new(error));
+      }
+    };
+    let _exec = tx.query_drop(
+      r"ALTER TABLE ordinals ADD COLUMN delegate TEXT"
+    ).await;
+    match _exec {
+      Ok(_) => {},
+      Err(error) => {
+        log::warn!("Error adding delegate column: {}", error);
+        return Err(Box::new(error));
+      }
+    };
+    let _exec = tx.query_drop(
+      r"ALTER TABLE ordinals ADD COLUMN content_encoding TEXT"
+    ).await;
+    match _exec {
+      Ok(_) => {},
+      Err(error) => {
+        log::warn!("Error adding content_encoding column: {}", error);
+        return Err(Box::new(error));
+      }
+    };
+    let result = tx.commit().await;
+    match result {
+      Ok(_) => Ok(()),
+      Err(error) => {
+        log::warn!("Error committing ordinal metadata: {}", error);
+        Err(Box::new(error))
+      }
+    }
+  }
 }
