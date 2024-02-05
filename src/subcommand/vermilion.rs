@@ -430,7 +430,7 @@ impl Vermilion {
           //2. Get inscriptions
           let t3 = Instant::now();
           let cloned_ids = inscription_ids.clone();
-          let txs = fetcher.get_transactions(cloned_ids.into_iter().map(|x| x.txid).collect()).await;
+          let txs = cloned_index.get_transactions(cloned_ids.into_iter().map(|x| x.txid).collect());
           let err_txs = match txs {
               Ok(txs) => Some(txs),
               Err(error) => {

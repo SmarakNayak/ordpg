@@ -1360,6 +1360,25 @@ impl Index {
     self.client.get_raw_transaction(&txid, None).into_option()
   }
 
+  pub(crate) fn get_transactions(&self, txids: Vec<Txid>) -> Result<Vec<Transaction>> {
+    let mut result = Vec::new();
+    if self.index_transactions {
+      let rtx = self.database.begin_read()?;
+      let table = rtx.open_table(TRANSACTION_ID_TO_TRANSACTION)?;
+      for txid in txids {
+        if txid == self.genesis_block_coinbase_txid {
+          result.push(self.genesis_block_coinbase_transaction.clone());
+        } else {
+          let tx = table.get(&txid.store())?.ok_or_else(|| anyhow!("Transaction not found"))?;
+          result.push(consensus::encode::deserialize(tx.value())?);
+        }
+      }
+      return Ok(result);
+    } else {
+      Err(anyhow!("Transactions are not indexed"))
+    }
+  }
+
   pub(crate) fn find(&self, sat: Sat) -> Result<Option<SatPoint>> {
     let sat = sat.0;
     let rtx = self.begin_read()?;
