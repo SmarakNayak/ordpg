@@ -115,6 +115,7 @@ pub struct Metadata {
   id: String,
   content_length: Option<i64>,
   content_type: Option<String>,
+  content_encoding: Option<String>,
   genesis_fee: i64,
   genesis_height: i64,
   genesis_transaction: String,
@@ -122,9 +123,11 @@ pub struct Metadata {
   number: i32,
   sequence_number: u32,
   parent: Option<String>,
+  delegate: Option<String>,
   metaprotocol: Option<String>,
   embedded_metadata: Option<String>,
   sat: Option<i64>,
+  charms: u16,
   timestamp: i64,
   sha256: Option<String>,
   text: Option<String>,
@@ -182,6 +185,7 @@ pub struct TransferWithMetadata {
   is_genesis: bool,
   content_length: Option<i64>,
   content_type: Option<String>,
+  content_encoding: Option<String>,
   genesis_fee: i64,
   genesis_height: i64,
   genesis_transaction: String,
@@ -189,7 +193,9 @@ pub struct TransferWithMetadata {
   number: i64,
   sequence_number: Option<u64>,
   sat: Option<i64>,
+  charms: u16,
   parent: Option<String>,
+  delegate: Option<String>,
   metaprotocol: Option<String>,
   embedded_metadata: Option<String>,
   timestamp: i64,
@@ -1078,6 +1084,15 @@ impl Vermilion {
         Some(0)
       }
     };
+    let content_encoding = match inscription.content_encoding() {
+      Some(content_encoding) => {
+        match content_encoding.to_str() {
+          Ok(content_encoding) => Some(content_encoding.to_string()),
+          Err(_) => None
+        }
+      },
+      None => None
+    };
     let sat = match entry.sat {
       Some(sat) => Some(sat.n() as i64),
       None => {
@@ -1142,6 +1157,7 @@ impl Vermilion {
     let metadata = Metadata {
       id: inscription_id.to_string(),
       content_length: content_length,
+      content_encoding: content_encoding,
       content_type: inscription.content_type().map(str::to_string),
       genesis_fee: entry.fee.try_into().unwrap(),
       genesis_height: entry.height.try_into().unwrap(),
@@ -1150,9 +1166,11 @@ impl Vermilion {
       number: entry.inscription_number,
       sequence_number: entry.sequence_number,
       parent: parent,
+      delegate: inscription.delegate().map(|x| x.to_string()),
       metaprotocol: metaprotocol,
       embedded_metadata: embedded_metadata,
       sat: sat,
+      charms: entry.charms,
       timestamp: entry.timestamp.try_into().unwrap(),
       sha256: sha256.clone(),
       text: text,
@@ -1210,6 +1228,7 @@ impl Vermilion {
           id varchar(80) not null primary key,
           content_length bigint,
           content_type text,
+          content_encoding text,
           genesis_fee bigint,
           genesis_height bigint,
           genesis_transaction text,
@@ -1217,9 +1236,11 @@ impl Vermilion {
           number bigint,
           sequence_number bigint unsigned,
           parent varchar(80),
+          delegate varchar(80),
           metaprotocol mediumtext,
           embedded_metadata mediumtext,
           sat bigint,
+          charms smallint,
           timestamp bigint,
           sha256 varchar(64),
           text mediumtext,
@@ -1522,6 +1543,7 @@ impl Vermilion {
         "id" => &metadata.id,
         "content_length" => &metadata.content_length,
         "content_type" => &metadata.content_type,
+        "content_encoding" => &metadata.content_encoding,
         "genesis_fee" => &metadata.genesis_fee,
         "genesis_height" => &metadata.genesis_height,
         "genesis_transaction" => &metadata.genesis_transaction,
@@ -1529,9 +1551,11 @@ impl Vermilion {
         "number" => &metadata.number,
         "sequence_number" => &metadata.sequence_number,
         "parent" => &metadata.parent,
+        "delegate" => &metadata.delegate,
         "metaprotocol" => &metadata.metaprotocol,
         "embedded_metadata" => &metadata.embedded_metadata,
         "sat" => &metadata.sat,
+        "charms" => &metadata.charms,
         "timestamp" => &metadata.timestamp,
         "sha256" => &metadata.sha256,
         "text" => &metadata.text,
@@ -1552,6 +1576,7 @@ impl Vermilion {
               "id".to_string(),
               "content_length".to_string(),
               "content_type".to_string(),
+              "content_encoding".to_string(),
               "genesis_fee".to_string(),
               "genesis_height".to_string(),
               "genesis_transaction".to_string(),
@@ -1559,9 +1584,11 @@ impl Vermilion {
               "number".to_string(),
               "sequence_number".to_string(),
               "parent".to_string(),
+              "delegate".to_string(),
               "metaprotocol".to_string(),
               "embedded_metadata".to_string(),
               "sat".to_string(),
+              "charms".to_string(),
               "timestamp".to_string(),
               "sha256".to_string(),
               "text".to_string(),
@@ -1573,6 +1600,7 @@ impl Vermilion {
             vec![
               "content_length".to_string(),
               "content_type".to_string(),
+              "content_encoding".to_string(),
               "genesis_fee".to_string(),
               "genesis_height".to_string(),
               "genesis_transaction".to_string(),
@@ -1580,9 +1608,11 @@ impl Vermilion {
               "number".to_string(),
               "sequence_number".to_string(),
               "parent".to_string(),
+              "delegate".to_string(),
               "metaprotocol".to_string(),
               "embedded_metadata".to_string(),
               "sat".to_string(),
+              "charms".to_string(),
               "timestamp".to_string(),
               "sha256".to_string(),
               "text".to_string(),
@@ -1596,6 +1626,7 @@ impl Vermilion {
               "id" => &metadata.id,
               "content_length" => &metadata.content_length,
               "content_type" => &metadata.content_type,
+              "content_encoding" => &metadata.content_encoding,
               "genesis_fee" => &metadata.genesis_fee,
               "genesis_height" => &metadata.genesis_height,
               "genesis_transaction" => &metadata.genesis_transaction,
@@ -1603,9 +1634,11 @@ impl Vermilion {
               "number" => &metadata.number,
               "sequence_number" => &metadata.sequence_number,
               "parent" => &metadata.parent,
+              "delegate" => &metadata.delegate,
               "metaprotocol" => &metadata.metaprotocol,
               "embedded_metadata" => &metadata.embedded_metadata,
               "sat" => &metadata.sat,
+              "charms" => &metadata.charms,
               "timestamp" => &metadata.timestamp,
               "sha256" => &metadata.sha256,
               "text" => &metadata.text,
@@ -2459,6 +2492,34 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     result
   }
 
+  fn map_row_to_metadata(mut row: mysql_async::Row) -> Metadata {
+    Metadata {
+      id: row.get("id").unwrap(),
+      content_length: row.take("content_length").unwrap(),
+      content_type: row.take("content_type").unwrap(), 
+      content_encoding: row.take("content_encoding").unwrap(),
+      genesis_fee: row.get("genesis_fee").unwrap(),
+      genesis_height: row.get("genesis_height").unwrap(),
+      genesis_transaction: row.get("genesis_transaction").unwrap(),
+      pointer: row.take("pointer").unwrap(),
+      number: row.get("number").unwrap(),
+      sequence_number: row.take("sequence_number").unwrap(),
+      parent: row.take("parent").unwrap(),
+      delegate: row.take("delegate").unwrap(),
+      metaprotocol: row.take("metaprotocol").unwrap(),
+      embedded_metadata: row.take("embedded_metadata").unwrap(),
+      sat: row.take("sat").unwrap(),
+      charms: row.get("charms").unwrap(),
+      timestamp: row.get("timestamp").unwrap(),
+      sha256: row.take("sha256").unwrap(),
+      text: row.take("text").unwrap(),
+      is_json: row.get("is_json").unwrap(),
+      is_maybe_json: row.take("is_maybe_json").unwrap(),
+      is_bitmap_style: row.take("is_bitmap_style").unwrap(),
+      is_recursive: row.take("is_recursive").unwrap()
+    }
+  }
+
   async fn get_ordinal_metadata(pool: mysql_async::Pool, inscription_id: String) -> Metadata {
     let mut conn = Self::get_conn(pool).await.unwrap();
     let result = conn.exec_map(
@@ -2466,28 +2527,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       params! {
         "id" => inscription_id
       },
-      |mut row: mysql_async::Row| Metadata {
-        id: row.get("id").unwrap(),
-        content_length: row.take("content_length").unwrap(),
-        content_type: row.take("content_type").unwrap(), 
-        genesis_fee: row.get("genesis_fee").unwrap(),
-        genesis_height: row.get("genesis_height").unwrap(),
-        genesis_transaction: row.get("genesis_transaction").unwrap(),
-        pointer: row.take("pointer").unwrap(),
-        number: row.get("number").unwrap(),
-        sequence_number: row.take("sequence_number").unwrap(),
-        parent: row.take("parent").unwrap(),
-        metaprotocol: row.take("metaprotocol").unwrap(),
-        embedded_metadata: row.take("embedded_metadata").unwrap(),
-        sat: row.take("sat").unwrap(),
-        timestamp: row.get("timestamp").unwrap(),
-        sha256: row.take("sha256").unwrap(),
-        text: row.take("text").unwrap(),
-        is_json: row.get("is_json").unwrap(),
-        is_maybe_json: row.take("is_maybe_json").unwrap(),
-        is_bitmap_style: row.take("is_bitmap_style").unwrap(),
-        is_recursive: row.take("is_recursive").unwrap()
-      }
+      Self::map_row_to_metadata
     );
     let result = result.await.unwrap().pop().unwrap();
     result
@@ -2500,28 +2540,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       params! {
         "number" => number
       },
-      |mut row: mysql_async::Row| Metadata {
-        id: row.get("id").unwrap(),
-        content_length: row.take("content_length").unwrap(),
-        content_type: row.take("content_type").unwrap(), 
-        genesis_fee: row.get("genesis_fee").unwrap(),
-        genesis_height: row.get("genesis_height").unwrap(),
-        genesis_transaction: row.get("genesis_transaction").unwrap(),
-        pointer: row.take("pointer").unwrap(),
-        number: row.get("number").unwrap(),
-        sequence_number: row.get("sequence_number").unwrap(),
-        parent: row.take("parent").unwrap(),
-        metaprotocol: row.take("metaprotocol").unwrap(),
-        embedded_metadata: row.take("embedded_metadata").unwrap(),
-        sat: row.take("sat").unwrap(),
-        timestamp: row.get("timestamp").unwrap(),
-        sha256: row.take("sha256").unwrap(),
-        text: row.take("text").unwrap(),
-        is_json: row.get("is_json").unwrap(),
-        is_maybe_json: row.take("is_maybe_json").unwrap(),
-        is_bitmap_style: row.take("is_bitmap_style").unwrap(),
-        is_recursive: row.get("is_recursive").unwrap()
-      }
+      Self::map_row_to_metadata
     );
     let result = result.await.unwrap().pop().unwrap();
     result    
@@ -2585,28 +2604,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       params! {
         "block" => block
       },
-      |mut row: mysql_async::Row| Metadata {
-        id: row.get("id").unwrap(),
-        content_length: row.take("content_length").unwrap(),
-        content_type: row.take("content_type").unwrap(), 
-        genesis_fee: row.get("genesis_fee").unwrap(),
-        genesis_height: row.get("genesis_height").unwrap(),
-        genesis_transaction: row.get("genesis_transaction").unwrap(),
-        pointer: row.take("pointer").unwrap(),
-        number: row.get("number").unwrap(),
-        sequence_number: row.get("sequence_number").unwrap(),
-        parent: row.take("parent").unwrap(),
-        metaprotocol: row.take("metaprotocol").unwrap(),
-        embedded_metadata: row.take("embedded_metadata").unwrap(),
-        sat: row.take("sat").unwrap(),
-        timestamp: row.get("timestamp").unwrap(),
-        sha256: row.take("sha256").unwrap(),
-        text: row.take("text").unwrap(),
-        is_json: row.get("is_json").unwrap(),
-        is_maybe_json: row.take("is_maybe_json").unwrap(),
-        is_bitmap_style: row.take("is_bitmap_style").unwrap(),
-        is_recursive: row.get("is_recursive").unwrap()
-      }
+      Self::map_row_to_metadata
     ).await.unwrap();
     inscriptions
   }
@@ -2632,28 +2630,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       params! {
         "sequence_number" => random_inscription_band.sequence_number
       },
-      |mut row: mysql_async::Row| Metadata {
-        id: row.get("id").unwrap(),
-        content_length: row.take("content_length").unwrap(),
-        content_type: row.take("content_type").unwrap(), 
-        genesis_fee: row.get("genesis_fee").unwrap(),
-        genesis_height: row.get("genesis_height").unwrap(),
-        genesis_transaction: row.get("genesis_transaction").unwrap(),
-        pointer: row.take("pointer").unwrap(),
-        number: row.get("number").unwrap(),
-        sequence_number: row.get("sequence_number").unwrap(),
-        parent: row.take("parent").unwrap(),
-        metaprotocol: row.take("metaprotocol").unwrap(),
-        embedded_metadata: row.take("embedded_metadata").unwrap(),
-        sat: row.take("sat").unwrap(),
-        timestamp: row.get("timestamp").unwrap(),
-        sha256: row.take("sha256").unwrap(),
-        text: row.take("text").unwrap(),
-        is_json: row.get("is_json").unwrap(),
-        is_maybe_json: row.take("is_maybe_json").unwrap(),
-        is_bitmap_style: row.take("is_bitmap_style").unwrap(),
-        is_recursive: row.get("is_recursive").unwrap()
-      }
+      Self::map_row_to_metadata
     ).await
     .unwrap()
     .pop()
@@ -2804,6 +2781,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         is_genesis: row.get("is_genesis").unwrap(),
         content_length: row.take("content_length").unwrap(),
         content_type: row.take("content_type").unwrap(),
+        content_encoding: row.take("content_encoding").unwrap(),
         genesis_fee: row.get("genesis_fee").unwrap(),
         genesis_height: row.get("genesis_height").unwrap(),
         genesis_transaction: row.get("genesis_transaction").unwrap(),
@@ -2811,9 +2789,11 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         number: row.get("number").unwrap(),
         sequence_number: row.take("sequence_number").unwrap(),
         parent: row.take("parent").unwrap(),
+        delegate: row.take("delegate").unwrap(),
         metaprotocol: row.take("metaprotocol").unwrap(),
         embedded_metadata: row.take("embedded_metadata").unwrap(),
         sat: row.take("sat").unwrap(),
+        charms: row.get("charms").unwrap(),
         timestamp: row.get("timestamp").unwrap(),
         sha256: row.take("sha256").unwrap(),
         text: row.take("text").unwrap(),
@@ -2833,28 +2813,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       params! {
         "sat" => sat
       },
-      |mut row: mysql_async::Row| Metadata {
-        id: row.get("id").unwrap(),
-        content_length: row.take("content_length").unwrap(),
-        content_type: row.take("content_type").unwrap(), 
-        genesis_fee: row.get("genesis_fee").unwrap(),
-        genesis_height: row.get("genesis_height").unwrap(),
-        genesis_transaction: row.get("genesis_transaction").unwrap(),
-        pointer: row.take("pointer").unwrap(),
-        number: row.get("number").unwrap(),
-        sequence_number: row.get("sequence_number").unwrap(),
-        parent: row.take("parent").unwrap(),
-        metaprotocol: row.take("metaprotocol").unwrap(),
-        embedded_metadata: row.take("embedded_metadata").unwrap(),
-        sat: row.take("sat").unwrap(),
-        timestamp: row.get("timestamp").unwrap(),
-        sha256: row.take("sha256").unwrap(),
-        text: row.take("text").unwrap(),
-        is_json: row.get("is_json").unwrap(),
-        is_maybe_json: row.take("is_maybe_json").unwrap(),
-        is_bitmap_style: row.take("is_bitmap_style").unwrap(),
-        is_recursive: row.get("is_recursive").unwrap()
-      }
+      Self::map_row_to_metadata
     );
     let result = result.await.unwrap();
     result
@@ -2867,28 +2826,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       params! {
         "block" => block
       },
-      |mut row: mysql_async::Row| Metadata {
-        id: row.get("id").unwrap(),
-        content_length: row.take("content_length").unwrap(),
-        content_type: row.take("content_type").unwrap(), 
-        genesis_fee: row.get("genesis_fee").unwrap(),
-        genesis_height: row.get("genesis_height").unwrap(),
-        genesis_transaction: row.get("genesis_transaction").unwrap(),
-        pointer: row.take("pointer").unwrap(),
-        number: row.get("number").unwrap(),
-        sequence_number: row.get("sequence_number").unwrap(),
-        parent: row.take("parent").unwrap(),
-        metaprotocol: row.take("metaprotocol").unwrap(),
-        embedded_metadata: row.take("embedded_metadata").unwrap(),
-        sat: row.take("sat").unwrap(),
-        timestamp: row.get("timestamp").unwrap(),
-        sha256: row.take("sha256").unwrap(),
-        text: row.take("text").unwrap(),
-        is_json: row.get("is_json").unwrap(),
-        is_maybe_json: row.take("is_maybe_json").unwrap(),
-        is_bitmap_style: row.take("is_bitmap_style").unwrap(),
-        is_recursive: row.get("is_recursive").unwrap()
-      }
+      Self::map_row_to_metadata
     );
     let result = result.await.unwrap();
     result

@@ -21,8 +21,8 @@ pub struct UpdateMetadata {
   id: String,
   is_bitmap_style: bool,
   charms: u16,
-  delegate: String,
-  content_encoding: String,
+  delegate: Option<String>,
+  content_encoding: Option<String>,
 }
 
 impl Migrator {
@@ -140,18 +140,18 @@ impl Migrator {
           let content_encoding = match inscription.content_encoding() {
             Some(content_encoding) => {
               match content_encoding.to_str() {
-                Ok(content_encoding) => content_encoding.to_string(),
-                Err(_) => "".to_string()
+                Ok(content_encoding) => Some(content_encoding.to_string()),
+                Err(_) => None
               }
             },
-            None => "".to_string()
+            None => None
           };
           let s1 = Instant::now();
           let metadata = UpdateMetadata {
             id: entry.id.to_string(),
             is_bitmap_style: is_bitmap_style,
             charms: entry.charms,
-            delegate: delegate,
+            delegate: inscription.delegate().map(|x| x.to_string()),
             content_encoding: content_encoding,
           };
           let s2 = Instant::now();
@@ -256,7 +256,7 @@ impl Migrator {
       }
     };
     let _exec = tx.query_drop(
-      r"ALTER TABLE ordinals ADD COLUMN delegate TEXT"
+      r"ALTER TABLE ordinals ADD COLUMN delegate varchar(80)"
     ).await;
     match _exec {
       Ok(_) => {},
