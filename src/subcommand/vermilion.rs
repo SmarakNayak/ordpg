@@ -248,6 +248,17 @@ pub struct SequenceNumberStatus {
   status: String
 }
 
+#[derive(Clone, Deserialize)]
+pub struct SatributeCriteria {
+  satribute: String,
+  sat: Option<u64>,
+  sat_range_start: Option<u64>,
+  sat_range_end: Option<u64>,
+  block: Option<u32>,
+  block_range_start: Option<u32>,
+  block_range_end: Option<u32>,
+}
+
 #[derive(Clone,PartialEq, PartialOrd, Ord, Eq)]
 pub struct IndexerTimings {
   inscription_start: u64,
@@ -366,6 +377,15 @@ impl Vermilion {
         println!("Error initializing db tables: {:?}", init_result.unwrap_err());
         return;
       }
+      let sat0 = Instant::now();
+      let satribute_result = Self::insert_satribute_criteria(pool.clone()).await;
+      let sat1 = Instant::now();
+      println!("Satribute insert time: {:?}", sat1.duration_since(sat0));
+      if satribute_result.is_err() {
+        println!("Error inserting satribute criteria: {:?}", satribute_result.unwrap_err());
+        return;
+      }
+
       let start_number = match start_number_override {
         Some(start_number_override) => start_number_override,
         None => {
@@ -1213,6 +1233,7 @@ impl Vermilion {
     Self::create_content_table(pool.clone()).await.context("Failed to create content table")?;
     Self::create_edition_table(pool.clone()).await.context("Failed to create editions table")?;
     Self::create_editions_total_table(pool.clone()).await.context("Failed to create editions total table")?;
+    Self::create_satribute_criteria_table(pool.clone()).await.context("Failed to create satribute criteria table")?;
     Self::create_procedure_log(pool.clone()).await.context("Failed to create proc log")?;
     Self::create_edition_procedure(pool.clone()).await.context("Failed to create edition proc")?;
     Self::create_weights_procedure(pool.clone()).await.context("Failed to create weights proc")?;
@@ -1316,6 +1337,26 @@ impl Vermilion {
         content mediumblob,
         content_type text,
         INDEX index_sha256 (sha256)
+      )").await?;
+    Ok(())
+  }
+
+  pub(crate) async fn create_satribute_criteria_table(pool: mysql_async::Pool) -> anyhow::Result<()> {
+    let mut conn = Self::get_conn(pool).await?;
+    conn.query_drop(
+      r"CREATE TABLE IF NOT EXISTS satribute_criteria_new (
+        satribute varchar(20) not null,
+        sat bigint,
+        sat_range_start bigint,
+        sat_range_end bigint,
+        block int,
+        block_range_start int,
+        block_range_end int,
+        INDEX index_satribute (satribute),
+        INDEX index_sat (sat),
+        INDEX index_sat_range (sat_range_start, sat_range_end),
+        INDEX index_block (block),
+        INDEX index_block_range (block_range_start, block_range_end)
       )").await?;
     Ok(())
   }
@@ -2381,6 +2422,52 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   //DB functions
+  async fn insert_satribute_criteria(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut satribute_criteria = Vec::new();
+    let mut rdr = csv::Reader::from_path("satributes.csv")?;
+    for result in rdr.deserialize() {
+      let record: SatributeCriteria = result?;
+      satribute_criteria.push(record);
+    }
+    for chunk in satribute_criteria.chunks(5000) {
+      let insert_result = Self::bulk_insert(pool.clone(), 
+        "satribute_criteria_new".to_string(), 
+        vec![
+          "satribute".to_string(), 
+          "sat".to_string(), 
+          "sat_range_start".to_string(),
+          "sat_range_end".to_string(),
+          "block".to_string(),
+          "block_range_start".to_string(),
+          "block_range_end".to_string()
+        ],
+        chunk.to_vec(), 
+        |object| {
+        params! {
+            "satribute" => &object.satribute,
+            "sat" => object.sat,
+            "sat_range_start" => object.sat_range_start,
+            "sat_range_end" => &object.sat_range_end,
+            "block" => object.block,
+            "block_range_start" => object.block_range_start,
+            "block_range_end" => &object.block_range_end,
+        }
+      }).await;
+      match insert_result {
+        Ok(_) => {
+          let mut conn = Self::get_conn(pool.clone()).await?;
+          conn.query_drop("RENAME TABLE satribute_criteria to satribute_criteria_old, satribute_criteria_new to satribute_criteria").await?;
+          conn.query_drop("DROP TABLE if exists satribute_criteria_old").await?;
+        },
+        Err(error) => {
+          log::warn!("Error bulk inserting satribute criteria: {}", error);
+          return Err(Box::new(error));
+        }
+      };
+    }
+    Ok(())
+  }
+
   async fn get_ordinal_content_s3(client: &s3::Client, bucket_name: &str, inscription_id: String) -> GetObjectOutput {
     let key = format!("content/{}", inscription_id);
     let content = client
