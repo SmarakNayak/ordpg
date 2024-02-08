@@ -8,6 +8,10 @@ pub enum Rarity {
   Epic,
   Legendary,
   Mythic,
+  BlackUncommon,
+  BlackRare,
+  BlackEpic,
+  BlackLegendary,
 }
 
 impl From<Rarity> for u8 {
@@ -27,6 +31,10 @@ impl TryFrom<u8> for Rarity {
       3 => Ok(Self::Epic),
       4 => Ok(Self::Legendary),
       5 => Ok(Self::Mythic),
+      6 => Ok(Self::BlackUncommon),
+      7 => Ok(Self::BlackRare),
+      8 => Ok(Self::BlackEpic),
+      9 => Ok(Self::BlackLegendary),
       n => Err(n),
     }
   }
@@ -44,6 +52,10 @@ impl Display for Rarity {
         Self::Epic => "epic",
         Self::Legendary => "legendary",
         Self::Mythic => "mythic",
+        Self::BlackUncommon => "black_uncommon",
+        Self::BlackRare => "black_rare",
+        Self::BlackEpic => "black_epic",
+        Self::BlackLegendary => "black_legendary",
       }
     )
   }
@@ -68,6 +80,18 @@ impl From<Sat> for Rarity {
       Self::Rare
     } else if third == 0 {
       Self::Uncommon
+    } else if third == sat.epoch().subsidy() - 1 {
+      if minute == SUBSIDY_HALVING_INTERVAL - 1 {
+        if second == DIFFCHANGE_INTERVAL - 1 {
+          Self::BlackLegendary
+        } else {
+          Self::BlackEpic
+        }
+      } else if second == DIFFCHANGE_INTERVAL - 1 {
+        Self::BlackRare
+      } else {
+        Self::BlackUncommon
+      }
     } else {
       Self::Common
     }
@@ -85,6 +109,10 @@ impl FromStr for Rarity {
       "epic" => Ok(Self::Epic),
       "legendary" => Ok(Self::Legendary),
       "mythic" => Ok(Self::Mythic),
+      "black_uncommon" => Ok(Self::BlackUncommon),
+      "black_rare" => Ok(Self::BlackRare),
+      "black_epic" => Ok(Self::BlackEpic),
+      "black_legendary" => Ok(Self::BlackLegendary),
       _ => Err(anyhow!("invalid rarity: {s}")),
     }
   }

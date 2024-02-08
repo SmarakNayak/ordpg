@@ -455,6 +455,10 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
             Rarity::Rare => Charm::Rare.set(&mut charms),
             Rarity::Epic => Charm::Epic.set(&mut charms),
             Rarity::Legendary => Charm::Legendary.set(&mut charms),
+            Rarity::BlackUncommon => {}
+            Rarity::BlackRare => {}
+            Rarity::BlackEpic => {}
+            Rarity::BlackLegendary => {}
           }
         }
 
