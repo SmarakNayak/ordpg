@@ -89,6 +89,7 @@ pub use self::{
   object::Object,
   options::Options,
   rarity::Rarity,
+  block_rarity::BlockRarity,
   runes::{Edict, Rune, RuneId, Runestone},
   sat::Sat,
   sat_point::SatPoint,
@@ -129,6 +130,7 @@ mod object;
 mod options;
 mod outgoing;
 pub mod rarity;
+pub mod block_rarity;
 mod representation;
 pub mod runes;
 pub mod sat;

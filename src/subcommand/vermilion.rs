@@ -153,6 +153,12 @@ pub struct SatMetadata {
   timestamp: i64
 }
 
+#[derive(Serialize)]
+pub struct Satribute {
+  sat: u64,
+  satribute: String,
+}
+
 pub struct ContentBlob {
   sha256: String,
   content: Vec<u8>,
@@ -377,14 +383,6 @@ impl Vermilion {
         println!("Error initializing db tables: {:?}", init_result.unwrap_err());
         return;
       }
-      let sat0 = Instant::now();
-      let satribute_result = Self::insert_satribute_criteria(pool.clone()).await;
-      let sat1 = Instant::now();
-      println!("Satribute insert time: {:?}", sat1.duration_since(sat0));
-      if satribute_result.is_err() {
-        println!("Error inserting satribute criteria: {:?}", satribute_result.unwrap_err());
-        return;
-      }
 
       let start_number = match start_number_override {
         Some(start_number_override) => start_number_override,
@@ -556,9 +554,20 @@ impl Vermilion {
           let t51 = Instant::now();
           let insert_result = Self::bulk_insert_metadata2(cloned_pool.clone(), metadata_vec.clone()).await;
           let t51a = Instant::now();
-          let sat_insert_result = Self::bulk_insert_sat_metadata(cloned_pool.clone(), sat_metadata_vec).await;
+          let sat_insert_result = Self::bulk_insert_sat_metadata(cloned_pool.clone(), sat_metadata_vec.clone()).await;
           let t51b = Instant::now();
-          //let edition_insert_result = Self::bulk_insert_editions(cloned_pool.clone(), metadata_vec).await;
+          let mut satributes_vec = Vec::new();
+          for sat_metadata in sat_metadata_vec.iter() {
+            let sat = Sat(sat_metadata.sat);
+            for block_rarity in sat.block_rarities().iter() {
+              let satribute = Satribute {
+                sat: sat_metadata.sat,
+                satribute: block_rarity.to_string()
+              };
+              satributes_vec.push(satribute);
+            }
+          }
+          let satribute_insert_result = Self::bulk_insert_satributes(cloned_pool.clone(), satributes_vec).await;
           let t51c = Instant::now();
           //4.2 Upload content to db
           let mut content_vec: Vec<ContentBlob> = Vec::new();
@@ -581,7 +590,7 @@ impl Vermilion {
 
           //4.3 Update status
           let t52 = Instant::now();
-          if insert_result.is_err() || sat_insert_result.is_err() || content_result.is_err() { //|| edition_insert_result.is_err()
+          if insert_result.is_err() || sat_insert_result.is_err() || content_result.is_err() || satribute_insert_result.is_err() {
             log::info!("Error bulk inserting into db for sequence numbers: {}-{}. Will retry after 60s", first_number, last_number);
             if insert_result.is_err() {
               log::info!("Metadata Error: {:?}", insert_result.unwrap_err());
@@ -589,9 +598,9 @@ impl Vermilion {
             if sat_insert_result.is_err() {
               log::info!("Sat Error: {:?}", sat_insert_result.unwrap_err());
             }
-            // if edition_insert_result.is_err() {
-            //   log::info!("Edition Error: {:?}", edition_insert_result.unwrap_err());
-            // }
+            if satribute_insert_result.is_err() {
+              log::info!("Satribute Error: {:?}", satribute_insert_result.unwrap_err());
+            }
             if content_result.is_err() {
               log::info!("Content Error: {:?}", content_result.unwrap_err());
             }
@@ -882,6 +891,7 @@ impl Vermilion {
           .route("/inscriptions_on_sat/:sat", get(Self::inscriptions_on_sat))
           .route("/inscriptions_in_sat_block/:block", get(Self::inscriptions_in_sat_block))
           .route("/sat_metadata/:sat", get(Self::sat_metadata))
+          .route("/satributes/:sat", get(Self::satributes))
           .layer(map_response(Self::set_header))
           .layer(
             TraceLayer::new_for_http()
@@ -1233,7 +1243,7 @@ impl Vermilion {
     Self::create_content_table(pool.clone()).await.context("Failed to create content table")?;
     Self::create_edition_table(pool.clone()).await.context("Failed to create editions table")?;
     Self::create_editions_total_table(pool.clone()).await.context("Failed to create editions total table")?;
-    Self::create_satribute_criteria_table(pool.clone()).await.context("Failed to create satribute criteria table")?;
+    Self::create_satributes_table(pool.clone()).await.context("Failed to create satributes table")?;
     Self::create_procedure_log(pool.clone()).await.context("Failed to create proc log")?;
     Self::create_edition_procedure(pool.clone()).await.context("Failed to create edition proc")?;
     Self::create_weights_procedure(pool.clone()).await.context("Failed to create weights proc")?;
@@ -1357,6 +1367,19 @@ impl Vermilion {
         INDEX index_sat_range (sat_range_start, sat_range_end),
         INDEX index_block (block),
         INDEX index_block_range (block_range_start, block_range_end)
+      )").await?;
+    Ok(())
+  }
+
+  pub(crate) async fn create_satributes_table(pool: mysql_async::Pool) -> anyhow::Result<()> {
+    let mut conn = Self::get_conn(pool).await?;
+    conn.query_drop(
+      r"CREATE TABLE IF NOT EXISTS satributes (
+        sat bigint not null,
+        satribute varchar(30) not null,
+        INDEX index_sat (sat),
+        INDEX index_satribute (satribute),
+        CONSTRAINT satribute_key PRIMARY KEY (sat, satribute)
       )").await?;
     Ok(())
   }
@@ -1820,6 +1843,31 @@ impl Vermilion {
     Ok(())
   }
 
+  pub(crate) async fn bulk_insert_satributes(pool: mysql_async::Pool, satribute_vec: Vec<Satribute>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut conn = Self::get_conn(pool).await?;
+    let mut tx = conn.start_transaction(TxOpts::default()).await?;
+    let insert_query = r"INSERT INTO satributes (sat, satribute) VALUES (:sat, :satribute) ON DUPLICATE KEY UPDATE sat=sat";
+
+    let _insert_exec = tx.exec_batch(
+      insert_query,
+      satribute_vec.iter().map(|satribute| params! {
+          "sat" => &satribute.sat,
+          "satribute" => &satribute.satribute
+      })
+    ).await;
+    match _insert_exec {
+      Ok(_) => {
+        tx.commit().await?;
+      },
+      Err(error) => {
+        tx.rollback().await?;
+        log::warn!("Error bulk inserting satributes: {}", error);
+        return Err(Box::new(error));
+      }
+    };
+    Ok(())
+  }
+
   pub(crate) async fn get_last_number(pool: mysql_async::Pool) -> Result<u64, Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await?;
     let row = conn.query_iter("select min(previous) from (select sequence_number, Lag(sequence_number,1) over (order BY sequence_number) as previous from ordinals) a where sequence_number != previous+1")
@@ -1993,7 +2041,7 @@ impl Vermilion {
     log::info!("--Insertion time avg per thread: {:?}", insertion_total/n_threads);
     log::info!("--Metadata Insertion time avg per thread: {:?}", metadata_insertion_total/n_threads);
     log::info!("--Sat Insertion time avg per thread: {:?}", sat_insertion_total/n_threads);
-    log::info!("--Edition Insertion time avg per thread: {:?}", edition_insertion_total/n_threads);
+    log::info!("--Satribute Insertion time avg per thread: {:?}", edition_insertion_total/n_threads);
     log::info!("--Content Insertion time avg per thread: {:?}", content_insertion_total/n_threads);
     log::info!("--Locking time avg per thread: {:?}", locking_total/n_threads);
 
@@ -2412,6 +2460,14 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(sat_metadata),
+    )
+  }
+
+  async fn satributes(Path(sat): Path<u64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let satributes = Self::get_satributes(server_config.pool, sat).await;
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(satributes),
     )
   }
 
@@ -2942,6 +2998,22 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       }
     );
     let result = result.await.unwrap().pop().unwrap();
+    result
+  }
+
+  async fn get_satributes(pool: mysql_async::Pool, sat: u64) -> Vec<Satribute> {
+    let mut conn = Self::get_conn(pool).await.unwrap();
+    let result = conn.exec_map(
+      "SELECT * FROM satributes WHERE sat=:sat", 
+      params! {
+        "sat" => sat
+      },
+      |row: mysql_async::Row| Satribute {
+        sat: row.get("sat").unwrap(),
+        satribute: row.get("satribute").unwrap(),
+      }
+    );
+    let result = result.await.unwrap();
     result
   }
 
