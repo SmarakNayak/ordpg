@@ -388,7 +388,10 @@ impl Vermilion {
         Some(start_number_override) => start_number_override,
         None => {
           match Self::get_last_number(pool.clone()).await {
-            Ok(last_number) => last_number + 1,
+            Ok(last_number) => match last_number {
+              Some(last_number) => last_number + 1,
+              None => 0                
+            },
             Err(err) => {
               println!("Error getting last number from db: {:?}, stopping, try restarting process", err);
               return;
@@ -1868,7 +1871,7 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn get_last_number(pool: mysql_async::Pool) -> Result<u64, Box<dyn std::error::Error>> {
+  pub(crate) async fn get_last_number(pool: mysql_async::Pool) -> Result<Option<u64>, Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await?;
     let row = conn.query_iter("select min(previous) from (select sequence_number, Lag(sequence_number,1) over (order BY sequence_number) as previous from ordinals) a where sequence_number != previous+1")
       .await?
@@ -1879,7 +1882,7 @@ impl Vermilion {
     let number = match row {
       Some(row) => {
         let number: u64 = row;
-        number
+        Some(number)
       },
       None => {
         let row = conn.query_iter("select max(sequence_number) from ordinals")
@@ -1891,10 +1894,10 @@ impl Vermilion {
         match max {
           Some(max) => {
             let number: u64 = max;
-            number
+            Some(number)
           },
           None => {
-            0
+            None
           }
         }
       }
