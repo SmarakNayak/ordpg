@@ -127,7 +127,7 @@ pub struct Metadata {
   metaprotocol: Option<String>,
   embedded_metadata: Option<String>,
   sat: Option<i64>,
-  charms: u16,
+  charms: Option<u16>,
   timestamp: i64,
   sha256: Option<String>,
   text: Option<String>,
@@ -199,7 +199,7 @@ pub struct TransferWithMetadata {
   number: i64,
   sequence_number: Option<u64>,
   sat: Option<i64>,
-  charms: u16,
+  charms: Option<u16>,
   parent: Option<String>,
   delegate: Option<String>,
   metaprotocol: Option<String>,
@@ -1204,7 +1204,7 @@ impl Vermilion {
       metaprotocol: metaprotocol,
       embedded_metadata: embedded_metadata,
       sat: sat,
-      charms: entry.charms,
+      charms: Some(entry.charms),
       timestamp: entry.timestamp.try_into().unwrap(),
       sha256: sha256.clone(),
       text: text,
@@ -1289,7 +1289,8 @@ impl Vermilion {
           INDEX index_block (genesis_height),
           INDEX index_sha256 (sha256),
           INDEX index_sat (sat),
-          INDEX index_parent (parent)
+          INDEX index_parent (parent),
+          INDEX index_delegate (delegate)
       )").await?;
     Ok(())
   }
@@ -2665,7 +2666,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       metaprotocol: row.take("metaprotocol").unwrap(),
       embedded_metadata: row.take("embedded_metadata").unwrap(),
       sat: row.take("sat").unwrap(),
-      charms: row.get("charms").unwrap(),
+      charms: row.take("charms").unwrap(),
       timestamp: row.get("timestamp").unwrap(),
       sha256: row.take("sha256").unwrap(),
       text: row.take("text").unwrap(),
@@ -2961,7 +2962,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         metaprotocol: row.take("metaprotocol").unwrap(),
         embedded_metadata: row.take("embedded_metadata").unwrap(),
         sat: row.take("sat").unwrap(),
-        charms: row.get("charms").unwrap(),
+        charms: row.take("charms").unwrap(),
         timestamp: row.get("timestamp").unwrap(),
         sha256: row.take("sha256").unwrap(),
         text: row.take("text").unwrap(),
