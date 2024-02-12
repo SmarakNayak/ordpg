@@ -297,7 +297,7 @@ pub struct ApiServerConfig {
   bucket_name: String
 }
 
-const INDEX_BATCH_SIZE: usize = 500;
+const INDEX_BATCH_SIZE: usize = 10000;
 
 impl Vermilion {
   pub(crate) fn run(self, options: Options) -> SubcommandResult {
@@ -1260,37 +1260,37 @@ impl Vermilion {
     let mut conn = Self::get_conn(pool).await?;
     conn.query_drop(
       r"CREATE TABLE IF NOT EXISTS ordinals (
-          id varchar(80) not null primary key,
-          content_length bigint,
-          content_type text,
-          content_encoding text,
-          genesis_fee bigint,
-          genesis_height bigint,
-          genesis_transaction text,
-          pointer bigint unsigned,
-          number bigint,
-          sequence_number bigint unsigned,
-          parent varchar(80),
-          delegate varchar(80),
-          metaprotocol mediumtext,
-          embedded_metadata mediumtext,
-          sat bigint,
-          charms smallint,
-          timestamp bigint,
-          sha256 varchar(64),
-          text mediumtext,
-          is_json boolean,
-          is_maybe_json boolean,
-          is_bitmap_style boolean,
-          is_recursive boolean,
-          INDEX index_id (id),
-          INDEX index_number (number),
-          INDEX index_sequence_number (sequence_number),
-          INDEX index_block (genesis_height),
-          INDEX index_sha256 (sha256),
-          INDEX index_sat (sat),
-          INDEX index_parent (parent),
-          INDEX index_delegate (delegate)
+        sequence_number bigint unsigned not null primary key,
+        id varchar(80) not null,
+        content_length bigint,
+        content_type text,
+        content_encoding text,
+        genesis_fee bigint,
+        genesis_height bigint,
+        genesis_transaction text,
+        pointer bigint unsigned,
+        number bigint,          
+        parent varchar(80),
+        delegate varchar(80),
+        metaprotocol mediumtext,
+        embedded_metadata mediumtext,
+        sat bigint,
+        charms smallint,
+        timestamp bigint,
+        sha256 varchar(64),
+        text mediumtext,
+        is_json boolean,
+        is_maybe_json boolean,
+        is_bitmap_style boolean,
+        is_recursive boolean,        
+        INDEX index_sequence_number (sequence_number),
+        INDEX index_id (id),
+        INDEX index_number (number),
+        INDEX index_block (genesis_height),
+        INDEX index_sha256 (sha256),
+        INDEX index_sat (sat),
+        INDEX index_parent (parent),
+        INDEX index_delegate (delegate)
       )").await?;
     Ok(())
   }
@@ -3098,7 +3098,7 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       BEGIN
       DECLARE EXIT HANDLER FOR SQLEXCEPTION
       BEGIN
-          SELECT RELEASE_LOCK('editions_lock');
+        SELECT RELEASE_LOCK('editions_lock');
       END;
       START TRANSACTION;
       IF NOT GET_LOCK('editions_lock', 300) THEN
