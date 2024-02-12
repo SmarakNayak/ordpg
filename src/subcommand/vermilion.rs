@@ -886,6 +886,7 @@ impl Vermilion {
           .route("/inscriptions_in_block/:block", get(Self::inscriptions_in_block))
           .route("/random_inscription", get(Self::random_inscription))
           .route("/random_inscriptions", get(Self::random_inscriptions))
+          .route("/recent_inscriptions", get(Self::recent_inscriptions))
           .route("/inscription_last_transfer/:inscription_id", get(Self::inscription_last_transfer))
           .route("/inscription_last_transfer_number/:number", get(Self::inscription_last_transfer_number))
           .route("/inscription_transfers/:inscription_id", get(Self::inscription_transfers))
@@ -2402,6 +2403,15 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     )
   }
 
+  async fn recent_inscriptions(n: Query<QueryNumber>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let n = n.0.n;
+    let inscriptions = Self::get_recent_inscriptions(server_config.pool, n).await;
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(inscriptions),
+    )
+  }
+
   async fn inscription_last_transfer(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     let transfer = Self::get_last_ordinal_transfer(server_config.pool, inscription_id.to_string()).await;
     (
@@ -2813,6 +2823,18 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       bands.push(random_inscription_details.1);
     }
     (random_metadatas, bands)
+  }
+
+  async fn get_recent_inscriptions(pool: mysql_async::Pool, n: u32) -> Vec<Metadata> {
+    let mut conn = Self::get_conn(pool).await.unwrap();
+    let inscriptions = conn.exec_map(
+      "SELECT * FROM ordinals order by sequence_number desc limit :n", 
+      params! {
+        "n" => n
+      },
+      Self::map_row_to_metadata
+    ).await.unwrap();
+    inscriptions
   }
 
   async fn get_conn(pool: mysql_async::Pool) -> Result<mysql_async::Conn, mysql_async::Error> {
