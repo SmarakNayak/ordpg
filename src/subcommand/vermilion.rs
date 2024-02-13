@@ -49,6 +49,8 @@ use serde_json::{Value as JsonValue, value::Number as JsonNumber};
 use ciborium::value::Value as CborValue;
 use bytes::Bytes;
 use futures::StreamExt;
+use csv::Writer;
+use csv::WriterBuilder;
 
 #[derive(Debug, Parser, Clone)]
 pub(crate) struct Vermilion {
@@ -114,7 +116,8 @@ pub(crate) struct Vermilion {
 }
 
 #[derive(Clone, Serialize)]
-pub struct Metadata {
+pub struct Metadata {  
+  sequence_number: u32,
   id: String,
   content_length: Option<i64>,
   content_type: Option<String>,
@@ -124,7 +127,6 @@ pub struct Metadata {
   genesis_transaction: String,
   pointer: Option<u64>,
   number: i32,
-  sequence_number: u32,
   parent: Option<String>,
   delegate: Option<String>,
   metaprotocol: Option<String>,
@@ -135,9 +137,9 @@ pub struct Metadata {
   sha256: Option<String>,
   text: Option<String>,
   is_json: bool,
-  is_maybe_json: Option<bool>,
-  is_bitmap_style: Option<bool>,
-  is_recursive: Option<bool>
+  is_maybe_json: bool,
+  is_bitmap_style: bool,
+  is_recursive: bool
 }
 
 #[derive(Clone, Serialize)]
@@ -211,9 +213,9 @@ pub struct TransferWithMetadata {
   sha256: Option<String>,
   text: Option<String>,
   is_json: bool,
-  is_maybe_json: Option<bool>,
-  is_bitmap_style: Option<bool>,
-  is_recursive: Option<bool>
+  is_maybe_json: bool,
+  is_bitmap_style: bool,
+  is_recursive: bool
 }
 
 #[derive(Clone, Serialize)]
@@ -1212,9 +1214,9 @@ impl Vermilion {
       sha256: sha256.clone(),
       text: text,
       is_json: is_json,
-      is_maybe_json: Some(is_maybe_json),
-      is_bitmap_style: Some(is_bitmap_style),
-      is_recursive: Some(is_recursive)
+      is_maybe_json: is_maybe_json,
+      is_bitmap_style: is_bitmap_style,
+      is_recursive: is_recursive
     };
     let t2 = Instant::now();
     let sat_metadata = match entry.sat {
@@ -1758,48 +1760,26 @@ impl Vermilion {
   pub(crate) async fn mass_insert_metadata(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool).await?;
   
-    let mut byte_vec = Vec::new();
+    let mut wtr = WriterBuilder::new()
+      .has_headers(false)
+      .from_writer(vec![]);
     for metadata in metadata_vec.iter() {
-      let row = format!(
-        "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\r\n",        
-        &metadata.sequence_number,
-        &metadata.id,
-        &metadata.content_length.map_or_else(|| "".to_string(), |v| v.to_string()),
-        &metadata.content_type.clone().unwrap_or_else(|| "".to_string()),
-        &metadata.content_encoding.clone().unwrap_or_else(|| "".to_string()),
-        &metadata.genesis_fee,
-        &metadata.genesis_height,
-        &metadata.genesis_transaction,
-        &metadata.pointer.map_or_else(|| "".to_string(), |v| v.to_string()),
-        &metadata.number,
-        &metadata.parent.clone().unwrap_or_else(|| "".to_string()),
-        &metadata.delegate.clone().unwrap_or_else(|| "".to_string()),
-        &metadata.metaprotocol.clone().unwrap_or_else(|| "".to_string()),
-        &metadata.embedded_metadata.clone().unwrap_or_else(|| "".to_string()),
-        &metadata.sat.map_or_else(|| "".to_string(), |v| v.to_string()),
-        &metadata.charms.map_or_else(|| "".to_string(), |v| v.to_string()),
-        &metadata.timestamp,
-        &metadata.sha256.clone().unwrap_or_else(|| "".to_string()),
-        &metadata.text.clone().unwrap_or_else(|| "".to_string()),
-        &metadata.is_json,
-        &metadata.is_maybe_json.map_or_else(|| "".to_string(), |v| v.to_string()),
-        &metadata.is_bitmap_style.map_or_else(|| "".to_string(), |v| v.to_string()),
-        &metadata.is_recursive.map_or_else(|| "".to_string(), |v| v.to_string()),
-      );
-      let bytes = Bytes::from(row);
-      byte_vec.push(bytes);
+      wtr.serialize(metadata).unwrap();
     }
+    let inner = wtr.into_inner().unwrap();
+    //println!("{:?}", String::from_utf8(inner.clone()));
+    let bytes = Bytes::from(inner.clone());
     // We are going to call `LOAD DATA LOCAL` so let's setup a one-time handler.
     conn.set_infile_handler(async move {
       // We need to return a stream of `io::Result<Bytes>`
-      Ok(futures::stream::iter(byte_vec).map(Ok).boxed())
+      Ok(futures::stream::iter([bytes]).map(Ok).boxed())
     });
   
     let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
       REPLACE INTO TABLE `ordinals`
       FIELDS TERMINATED BY ',' ENCLOSED BY '\"'
-      LINES TERMINATED BY '\r\n'
-      (sequence_number, id, @vcontent_length, @vcontent_type, @vcontent_encoding, genesis_fee, genesis_height, genesis_transaction, @vpointer, number, @vparent, @vdelegate, @vmetaprotocol, @vembedded_metadata, @vsat, @vcharms, timestamp, @vsha256, text, is_json, @vis_maybe_json, @vis_bitmap_style, @vis_recursive)
+      LINES TERMINATED BY '\n'
+      (sequence_number, id, @vcontent_length, @vcontent_type, @vcontent_encoding, genesis_fee, genesis_height, genesis_transaction, @vpointer, number, @vparent, @vdelegate, @vmetaprotocol, @vembedded_metadata, @vsat, @vcharms, timestamp, @vsha256, text, @vis_json, @vis_maybe_json, @vis_bitmap_style, @vis_recursive)
       SET
       content_length = nullif(@vcontent_length, ''),
       content_type = nullif(@vcontent_type, ''),
@@ -1812,9 +1792,10 @@ impl Vermilion {
       sat = nullif(@vsat, ''),
       charms = nullif(@vcharms, ''),
       sha256 = nullif(@vsha256, ''),
-      is_maybe_json = nullif(@vis_maybe_json, ''),
-      is_bitmap_style = nullif(@vis_bitmap_style, ''),
-      is_recursive = nullif(@vis_recursive, '')
+      is_json = (@vis_json = 'true'),
+      is_maybe_json = (@vis_maybe_json = 'true'),
+      is_bitmap_style = (@vis_bitmap_style = 'true'),
+      is_recursive = (@vis_recursive = 'true')
       "#).await?;
     
     Ok(())
@@ -2238,7 +2219,10 @@ impl Vermilion {
     let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
       REPLACE INTO TABLE `transfers`
       FIELDS TERMINATED BY ',' ENCLOSED BY '\"'
-      LINES TERMINATED BY '\r\n'"#).await?;
+      LINES TERMINATED BY '\r\n'
+      (id, block_number, block_timestamp, satpoint, transaction, vout, offset, address, @vis_genesis)
+      SET is_genesis = (@vis_genesis = 'true')
+      "#).await?;
     
     Ok(())
   }
@@ -2761,9 +2745,9 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       sha256: row.take("sha256").unwrap(),
       text: row.take("text").unwrap(),
       is_json: row.get("is_json").unwrap(),
-      is_maybe_json: row.take("is_maybe_json").unwrap(),
-      is_bitmap_style: row.take("is_bitmap_style").unwrap(),
-      is_recursive: row.take("is_recursive").unwrap()
+      is_maybe_json: row.get("is_maybe_json").unwrap(),
+      is_bitmap_style: row.get("is_bitmap_style").unwrap(),
+      is_recursive: row.get("is_recursive").unwrap()
     }
   }
 
@@ -3057,9 +3041,9 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         sha256: row.take("sha256").unwrap(),
         text: row.take("text").unwrap(),
         is_json: row.get("is_json").unwrap(),
-        is_maybe_json: row.take("is_maybe_json").unwrap(),
-        is_bitmap_style: row.take("is_bitmap_style").unwrap(),
-        is_recursive: row.take("is_recursive").unwrap()
+        is_maybe_json: row.get("is_maybe_json").unwrap(),
+        is_bitmap_style: row.get("is_bitmap_style").unwrap(),
+        is_recursive: row.get("is_recursive").unwrap()
       }
     ).await.unwrap();
     transfers
