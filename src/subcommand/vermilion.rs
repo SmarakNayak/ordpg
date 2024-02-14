@@ -1507,7 +1507,7 @@ impl Vermilion {
 
   pub(crate) async fn mass_insert_metadata_and_editions(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool.clone()).await?;
-    conn.query_drop("SET SQL_LOG_BIN = 0").await?;
+    //conn.query_drop("SET SQL_LOG_BIN = 0").await?;
     conn.query_drop("START TRANSACTION").await?;
     Self::mass_insert_metadata(&mut conn, metadata_vec.clone()).await?;
     Self::mass_insert_editions(&mut conn, metadata_vec).await?;
@@ -1906,7 +1906,7 @@ impl Vermilion {
 
   pub(crate) async fn mass_insert_content(pool: mysql_async::Pool, content_vec: Vec<ContentBlob>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool).await?;
-    conn.query_drop("SET SQL_LOG_BIN = 0").await?;
+    //conn.query_drop("SET SQL_LOG_BIN = 0").await?;
     let mut byte_vec = Vec::new();
     for content in content_vec.iter() {
       let row = format!("{},{},{}\r\n", content.sha256, hex::encode(&content.content), content.content_type);
