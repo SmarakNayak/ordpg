@@ -1913,6 +1913,13 @@ impl Vermilion {
       let bytes = Bytes::from(row);
       byte_vec.push(bytes);
     }
+    let mut i = 0;
+    for bytes in byte_vec.iter() {
+      if i >= 2594 && i <= 2597 {
+        println!("{}-{:?}", i, String::from_utf8(bytes.to_vec()).unwrap());
+      }
+      i+=1;
+    }
     // We are going to call `LOAD DATA LOCAL` so let's setup a one-time handler.
     conn.set_infile_handler(async move {
       // We need to return a stream of `io::Result<Bytes>`
