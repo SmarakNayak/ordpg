@@ -792,7 +792,7 @@ impl Vermilion {
 
           let t3 = Instant::now();          
           let mut seq_point_address = Vec::new();
-          for (equence_number, satpoint) in transfers {
+          for (sequence_number, satpoint) in transfers {
             let address = if satpoint.outpoint == unbound_outpoint() {
               "unbound".to_string()
             } else {
@@ -810,7 +810,7 @@ impl Vermilion {
                 .unwrap_or_else(|e| e.to_string());
               address
             };
-            seq_point_address.push((equence_number, satpoint, address));
+            seq_point_address.push((sequence_number, satpoint, address));
           }
           let t4 = Instant::now();
           let block_time = index.block_time(Height(height)).unwrap();
