@@ -1339,7 +1339,7 @@ impl Vermilion {
         epoch bigint unsigned,
         period bigint unsigned,
         offset bigint unsigned,
-        rarity varchar(10),
+        rarity varchar(20),
         percentile text,
         timestamp bigint,
         INDEX index_sat (sat),
@@ -2320,30 +2320,30 @@ impl Vermilion {
   }
 
   pub(crate) async fn mass_insert_transfers(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut conn = Self::get_conn(pool).await?;
-  
-    let mut wtr = WriterBuilder::new()
-      .has_headers(false)
-      .from_writer(vec![]);
-    for transfer in transfer_vec.iter() {
-      wtr.serialize(transfer).unwrap();
-    }
-    let inner = wtr.into_inner().unwrap();
-    let bytes = Bytes::from(inner);
-    // We are going to call `LOAD DATA LOCAL` so let's setup a one-time handler.
-    conn.set_infile_handler(async move {
-      // We need to return a stream of `io::Result<Bytes>`
-      Ok(futures::stream::iter([bytes]).map(Ok).boxed())
-    });
-  
-    let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
-      REPLACE INTO TABLE `transfers`
-      FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '\"'
-      LINES TERMINATED BY '\r\n'
-      (id, block_number, block_timestamp, satpoint, transaction, vout, offset, address, @vis_genesis)
-      SET is_genesis = (@vis_genesis = 'true')
-      "#).await?;
+    for chunk in transfer_vec.chunks(5000) {
+      let mut conn = Self::get_conn(pool.clone()).await?;  
+      let mut wtr = WriterBuilder::new()
+        .has_headers(false)
+        .from_writer(vec![]);
+      for transfer in chunk.iter() {
+        wtr.serialize(transfer).unwrap();
+      }
+      let inner = wtr.into_inner().unwrap();
+      let bytes = Bytes::from(inner);
+      // We are going to call `LOAD DATA LOCAL` so let's setup a one-time handler.
+      conn.set_infile_handler(async move {
+        // We need to return a stream of `io::Result<Bytes>`
+        Ok(futures::stream::iter([bytes]).map(Ok).boxed())
+      });
     
+      let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
+        REPLACE INTO TABLE `transfers`
+        FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '\"'
+        LINES TERMINATED BY '\r\n'
+        (id, block_number, block_timestamp, satpoint, transaction, vout, offset, address, @vis_genesis)
+        SET is_genesis = (@vis_genesis = 'true')
+        "#).await?;
+    }
     Ok(())
   }
 
@@ -2450,30 +2450,30 @@ impl Vermilion {
   }
 
   pub(crate) async fn mass_insert_addresses(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut conn = Self::get_conn(pool).await?;
-  
-    let mut wtr = WriterBuilder::new()
-      .has_headers(false)
-      .from_writer(vec![]);
-    for transfer in transfer_vec.iter() {
-      wtr.serialize(transfer).unwrap();
-    }
-    let inner = wtr.into_inner().unwrap();
-    let bytes = Bytes::from(inner);
-    // We are going to call `LOAD DATA LOCAL` so let's setup a one-time handler.
-    conn.set_infile_handler(async move {
-      // We need to return a stream of `io::Result<Bytes>`
-      Ok(futures::stream::iter([bytes]).map(Ok).boxed())
-    });
-  
-    let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
-      REPLACE INTO TABLE `addresses`
-      FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '\"'
-      LINES TERMINATED BY '\r\n'
-      (id, block_number, block_timestamp, satpoint, transaction, vout, offset, address, @vis_genesis)
-      SET is_genesis = (@vis_genesis = 'true')
-      "#).await?;
+    for chunk in transfer_vec.chunks(5000) {
+      let mut conn = Self::get_conn(pool.clone()).await?;
+      let mut wtr = WriterBuilder::new()
+        .has_headers(false)
+        .from_writer(vec![]);
+      for transfer in chunk.iter() {
+        wtr.serialize(transfer).unwrap();
+      }
+      let inner = wtr.into_inner().unwrap();
+      let bytes = Bytes::from(inner);
+      // We are going to call `LOAD DATA LOCAL` so let's setup a one-time handler.
+      conn.set_infile_handler(async move {
+        // We need to return a stream of `io::Result<Bytes>`
+        Ok(futures::stream::iter([bytes]).map(Ok).boxed())
+      });
     
+      let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
+        REPLACE INTO TABLE `addresses`
+        FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '\"'
+        LINES TERMINATED BY '\r\n'
+        (id, block_number, block_timestamp, satpoint, transaction, vout, offset, address, @vis_genesis)
+        SET is_genesis = (@vis_genesis = 'true')
+        "#).await?;
+    }    
     Ok(())
   }
 
