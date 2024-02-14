@@ -561,7 +561,7 @@ impl Vermilion {
 
           //4.1 Insert metadata
           let t51 = Instant::now();
-          let insert_result = Self::mass_insert_metadata(cloned_pool.clone(), metadata_vec.clone()).await;
+          let insert_result = Self::mass_insert_metadata_and_editions(cloned_pool.clone(), metadata_vec.clone()).await;
           let t51a = Instant::now();
           let sat_insert_result = Self::mass_insert_sat_metadata(cloned_pool.clone(), sat_metadata_vec.clone()).await;
           let t51b = Instant::now();
@@ -834,7 +834,7 @@ impl Vermilion {
           let t5 = Instant::now();
           let insert_transfer_result = Self::mass_insert_transfers(pool.clone(), transfer_vec.clone()).await;
           let t6 = Instant::now();
-          let insert_address_result = Self::bulk_insert_addresses2(pool.clone(), transfer_vec).await;
+          let insert_address_result = Self::mass_insert_addresses(pool.clone(), transfer_vec).await;
           if insert_transfer_result.is_err() || insert_address_result.is_err() {
             log::info!("Error bulk inserting addresses into db for block height: {:?}, waiting a minute", height);
             if insert_transfer_result.is_err() {
@@ -1505,6 +1505,15 @@ impl Vermilion {
     result
   }
 
+  pub(crate) async fn mass_insert_metadata_and_editions(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut conn = Self::get_conn(pool.clone()).await?;
+    conn.query_drop("START TRANSACTION").await?;
+    Self::mass_insert_metadata(&mut conn, metadata_vec.clone()).await?;
+    Self::mass_insert_editions(&mut conn, metadata_vec).await?;
+    conn.query_drop("COMMIT").await?;
+    Ok(())
+  }
+
   pub(crate) async fn bulk_insert_metadata(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool.clone()).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
@@ -1758,9 +1767,7 @@ impl Vermilion {
     }
   }
 
-  pub(crate) async fn mass_insert_metadata(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut conn = Self::get_conn(pool).await?;
-  
+  pub(crate) async fn mass_insert_metadata(conn: &mut mysql_async::Conn, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut wtr = WriterBuilder::new()
       .has_headers(false)
       .from_writer(vec![]);
@@ -1946,6 +1953,39 @@ impl Vermilion {
         return Err(Box::new(error));
       }
     };
+    Ok(())
+  }
+
+  pub(crate) async fn mass_insert_editions(conn: &mut mysql_async::Conn, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut wtr = WriterBuilder::new()
+      .has_headers(false)
+      .from_writer(vec![]);
+    for metadata in metadata_vec.iter() {
+      wtr.write_field(metadata.id.clone())?;
+      wtr.write_field(metadata.number.to_string())?;
+      wtr.write_field(metadata.sequence_number.to_string())?;
+      wtr.write_field(metadata.sha256.clone().unwrap_or_else(|| "".to_string()))?;
+      wtr.write_record(None::<&[u8]>)?;
+    }
+    let inner = wtr.into_inner().unwrap();
+    //println!("{:?}", String::from_utf8(inner.clone()));
+    let bytes = Bytes::from(inner);
+    // We are going to call `LOAD DATA LOCAL` so let's setup a one-time handler.
+    conn.set_infile_handler(async move {
+      // We need to return a stream of `io::Result<Bytes>`
+      Ok(futures::stream::iter([bytes]).map(Ok).boxed())
+    });
+  
+    let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
+      REPLACE INTO TABLE `editions`
+      FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '\"'
+      LINES TERMINATED BY '\n'
+      (id, number, sequence_number, @vsha256)
+      SET
+      sha256 = nullif(@vsha256, ''),
+      edition = 0
+      "#).await?;
+    
     Ok(())
   }
 
@@ -2281,16 +2321,18 @@ impl Vermilion {
   pub(crate) async fn mass_insert_transfers(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool).await?;
   
-    let mut byte_vec = Vec::new();
+    let mut wtr = WriterBuilder::new()
+      .has_headers(false)
+      .from_writer(vec![]);
     for transfer in transfer_vec.iter() {
-      let row = format!("{},{},{},{},{},{},{},{},{}\r\n", transfer.id, transfer.block_number, transfer.block_timestamp, transfer.satpoint, transfer.transaction, transfer.vout, transfer.offset, transfer.address, transfer.is_genesis);
-      let bytes = Bytes::from(row);
-      byte_vec.push(bytes);
+      wtr.serialize(transfer).unwrap();
     }
+    let inner = wtr.into_inner().unwrap();
+    let bytes = Bytes::from(inner);
     // We are going to call `LOAD DATA LOCAL` so let's setup a one-time handler.
     conn.set_infile_handler(async move {
       // We need to return a stream of `io::Result<Bytes>`
-      Ok(futures::stream::iter(byte_vec).map(Ok).boxed())
+      Ok(futures::stream::iter([bytes]).map(Ok).boxed())
     });
   
     let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
@@ -2403,6 +2445,34 @@ impl Vermilion {
         }
       };
     }
+    Ok(())
+  }
+
+  pub(crate) async fn mass_insert_addresses(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut conn = Self::get_conn(pool).await?;
+  
+    let mut wtr = WriterBuilder::new()
+      .has_headers(false)
+      .from_writer(vec![]);
+    for transfer in transfer_vec.iter() {
+      wtr.serialize(transfer).unwrap();
+    }
+    let inner = wtr.into_inner().unwrap();
+    let bytes = Bytes::from(inner);
+    // We are going to call `LOAD DATA LOCAL` so let's setup a one-time handler.
+    conn.set_infile_handler(async move {
+      // We need to return a stream of `io::Result<Bytes>`
+      Ok(futures::stream::iter([bytes]).map(Ok).boxed())
+    });
+  
+    let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
+      REPLACE INTO TABLE `addresses`
+      FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '\"'
+      LINES TERMINATED BY '\r\n'
+      (id, block_number, block_timestamp, satpoint, transaction, vout, offset, address, @vis_genesis)
+      SET is_genesis = (@vis_genesis = 'true')
+      "#).await?;
+    
     Ok(())
   }
 
