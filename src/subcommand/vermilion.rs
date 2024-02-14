@@ -164,6 +164,7 @@ pub struct Satribute {
   satribute: String,
 }
 
+#[derive(Serialize)]
 pub struct ContentBlob {
   sha256: String,
   content: Vec<u8>,
@@ -302,7 +303,7 @@ pub struct ApiServerConfig {
   bucket_name: String
 }
 
-const INDEX_BATCH_SIZE: usize = 2500;
+const INDEX_BATCH_SIZE: usize = 10000;
 
 impl Vermilion {
   pub(crate) fn run(self, options: Options) -> SubcommandResult {
@@ -562,7 +563,7 @@ impl Vermilion {
           let t51 = Instant::now();
           let insert_result = Self::mass_insert_metadata(cloned_pool.clone(), metadata_vec.clone()).await;
           let t51a = Instant::now();
-          let sat_insert_result = Self::bulk_insert_sat_metadata(cloned_pool.clone(), sat_metadata_vec.clone()).await;
+          let sat_insert_result = Self::mass_insert_sat_metadata(cloned_pool.clone(), sat_metadata_vec.clone()).await;
           let t51b = Instant::now();
           let mut satributes_vec = Vec::new();
           for sat_metadata in sat_metadata_vec.iter() {
@@ -575,7 +576,7 @@ impl Vermilion {
               satributes_vec.push(satribute);
             }
           }
-          let satribute_insert_result = Self::bulk_insert_satributes(cloned_pool.clone(), satributes_vec).await;
+          let satribute_insert_result = Self::mass_insert_satributes(cloned_pool.clone(), satributes_vec).await;
           let t51c = Instant::now();
           //4.2 Upload content to db
           let mut content_vec: Vec<ContentBlob> = Vec::new();
@@ -594,7 +595,7 @@ impl Vermilion {
               content_vec.push(content_blob);
             }
           }
-          let content_result = Self::bulk_insert_content(cloned_pool.clone(), content_vec).await;
+          let content_result = Self::mass_insert_content(cloned_pool.clone(), content_vec).await;
 
           //4.3 Update status
           let t52 = Instant::now();
@@ -1768,7 +1769,7 @@ impl Vermilion {
     }
     let inner = wtr.into_inner().unwrap();
     //println!("{:?}", String::from_utf8(inner.clone()));
-    let bytes = Bytes::from(inner.clone());
+    let bytes = Bytes::from(inner);
     // We are going to call `LOAD DATA LOCAL` so let's setup a one-time handler.
     conn.set_infile_handler(async move {
       // We need to return a stream of `io::Result<Bytes>`
@@ -1777,7 +1778,7 @@ impl Vermilion {
   
     let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
       REPLACE INTO TABLE `ordinals`
-      FIELDS TERMINATED BY ',' ENCLOSED BY '\"'
+      FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '\"'
       LINES TERMINATED BY '\n'
       (sequence_number, id, @vcontent_length, @vcontent_type, @vcontent_encoding, genesis_fee, genesis_height, genesis_transaction, @vpointer, number, @vparent, @vdelegate, @vmetaprotocol, @vembedded_metadata, @vsat, @vcharms, timestamp, @vsha256, text, @vis_json, @vis_maybe_json, @vis_bitmap_style, @vis_recursive)
       SET
@@ -1841,6 +1842,31 @@ impl Vermilion {
     }
   }
 
+  pub(crate) async fn mass_insert_sat_metadata(pool: mysql_async::Pool, metadata_vec: Vec<SatMetadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut conn = Self::get_conn(pool).await?;
+  
+    let mut wtr = WriterBuilder::new()
+      .has_headers(false)
+      .from_writer(vec![]);
+    for metadata in metadata_vec.iter() {
+      wtr.serialize(metadata).unwrap();
+    }
+    let bytes = Bytes::from(wtr.into_inner().unwrap());
+    // We are going to call `LOAD DATA LOCAL` so let's setup a one-time handler.
+    conn.set_infile_handler(async move {
+      // We need to return a stream of `io::Result<Bytes>`
+      Ok(futures::stream::iter([bytes]).map(Ok).boxed())
+    });
+  
+    let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
+      REPLACE INTO TABLE `sat`
+      FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '\"'
+      LINES TERMINATED BY '\n'
+      (sat, sat_decimal, degree, name, block, cycle, epoch, period, offset, rarity, percentile, timestamp)
+      "#).await?;
+    Ok(())
+  }
+
   pub(crate) async fn bulk_insert_content(pool: mysql_async::Pool, content_vec: Vec<ContentBlob>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool).await?;
     let mut tx = conn.start_transaction(TxOpts::default()).await?;
@@ -1868,6 +1894,32 @@ impl Vermilion {
         Err(Box::new(error))
       }
     }
+  }
+
+  pub(crate) async fn mass_insert_content(pool: mysql_async::Pool, content_vec: Vec<ContentBlob>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut conn = Self::get_conn(pool).await?;
+  
+    let mut byte_vec = Vec::new();
+    for content in content_vec.iter() {
+      let row = format!("{},{},{}\r\n", content.sha256, hex::encode(&content.content), content.content_type);
+      let bytes = Bytes::from(row);
+      byte_vec.push(bytes);
+    }
+    // We are going to call `LOAD DATA LOCAL` so let's setup a one-time handler.
+    conn.set_infile_handler(async move {
+      // We need to return a stream of `io::Result<Bytes>`
+      Ok(futures::stream::iter(byte_vec).map(Ok).boxed())
+    });
+  
+    let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
+      REPLACE INTO TABLE `content`
+      FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '\"'
+      LINES TERMINATED BY '\r\n'
+      (sha256, @vcontent, content_type)
+      SET
+      content = UNHEX(@vcontent)
+      "#).await?;
+    Ok(())
   }
 
   pub(crate) async fn bulk_insert_editions(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -1919,6 +1971,31 @@ impl Vermilion {
         return Err(Box::new(error));
       }
     };
+    Ok(())
+  }
+
+  pub(crate) async fn mass_insert_satributes(pool: mysql_async::Pool, satribute_vec: Vec<Satribute>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut conn = Self::get_conn(pool).await?;
+  
+    let mut wtr = WriterBuilder::new()
+      .has_headers(false)
+      .from_writer(vec![]);
+    for satribute in satribute_vec.iter() {
+      wtr.serialize(satribute).unwrap();
+    }
+    let bytes = Bytes::from(wtr.into_inner().unwrap());
+    // We are going to call `LOAD DATA LOCAL` so let's setup a one-time handler.
+    conn.set_infile_handler(async move {
+      // We need to return a stream of `io::Result<Bytes>`
+      Ok(futures::stream::iter([bytes]).map(Ok).boxed())
+    });
+  
+    let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
+      REPLACE INTO TABLE `satributes`
+      FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '\"'
+      LINES TERMINATED BY '\n'
+      (sat, satribute)
+      "#).await?;
     Ok(())
   }
 
@@ -2218,7 +2295,7 @@ impl Vermilion {
   
     let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
       REPLACE INTO TABLE `transfers`
-      FIELDS TERMINATED BY ',' ENCLOSED BY '\"'
+      FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '\"'
       LINES TERMINATED BY '\r\n'
       (id, block_number, block_timestamp, satpoint, transaction, vout, offset, address, @vis_genesis)
       SET is_genesis = (@vis_genesis = 'true')
