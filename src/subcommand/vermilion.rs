@@ -1907,29 +1907,27 @@ impl Vermilion {
   pub(crate) async fn mass_insert_content(pool: mysql_async::Pool, content_vec: Vec<ContentBlob>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool).await?;
     //conn.query_drop("SET SQL_LOG_BIN = 0").await?;
-    let mut byte_vec = Vec::new();
+    let mut wtr = WriterBuilder::new()
+      .has_headers(false)
+      .from_writer(vec![]);
+
     for content in content_vec.iter() {
-      let row = format!("{},{},{}\r\n", content.sha256, hex::encode(&content.content), content.content_type);
-      let bytes = Bytes::from(row);
-      byte_vec.push(bytes);
+      wtr.write_field(content.sha256.clone())?;
+      wtr.write_field(hex::encode(&content.content))?;
+      wtr.write_field(content.content_type.clone())?;
+      wtr.write_record(None::<&[u8]>)?;
     }
-    let mut i = 0;
-    for bytes in byte_vec.iter() {
-      if i >= 2594 && i <= 2597 {
-        println!("{}-{:?}", i, String::from_utf8(bytes.to_vec()).unwrap());
-      }
-      i+=1;
-    }
+    let bytes = Bytes::from(wtr.into_inner().unwrap());
     // We are going to call `LOAD DATA LOCAL` so let's setup a one-time handler.
     conn.set_infile_handler(async move {
       // We need to return a stream of `io::Result<Bytes>`
-      Ok(futures::stream::iter(byte_vec).map(Ok).boxed())
+      Ok(futures::stream::iter([bytes]).map(Ok).boxed())
     });
   
     let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
       REPLACE INTO TABLE `content`
       FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '\"'
-      LINES TERMINATED BY '\r\n'
+      LINES TERMINATED BY '\n'
       (sha256, @vcontent, content_type)
       SET
       content = UNHEX(@vcontent)
