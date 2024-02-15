@@ -1507,7 +1507,7 @@ impl Vermilion {
 
   pub(crate) async fn mass_insert_metadata_and_editions(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool.clone()).await?;
-    //conn.query_drop("SET SQL_LOG_BIN = 0").await?;
+    conn.query_drop("SET SQL_LOG_BIN = 0").await?;
     conn.query_drop("START TRANSACTION").await?;
     Self::mass_insert_metadata(&mut conn, metadata_vec.clone()).await?;
     Self::mass_insert_editions(&mut conn, metadata_vec).await?;
@@ -1852,7 +1852,8 @@ impl Vermilion {
 
   pub(crate) async fn mass_insert_sat_metadata(pool: mysql_async::Pool, metadata_vec: Vec<SatMetadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool).await?;
-  
+    conn.query_drop("SET SQL_LOG_BIN = 0").await?;
+
     let mut wtr = WriterBuilder::new()
       .has_headers(false)
       .from_writer(vec![]);
@@ -1906,7 +1907,7 @@ impl Vermilion {
 
   pub(crate) async fn mass_insert_content(pool: mysql_async::Pool, content_vec: Vec<ContentBlob>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool).await?;
-    //conn.query_drop("SET SQL_LOG_BIN = 0").await?;
+    conn.query_drop("SET SQL_LOG_BIN = 0").await?;
     let mut wtr = WriterBuilder::new()
       .has_headers(false)
       .from_writer(vec![]);
@@ -2022,7 +2023,7 @@ impl Vermilion {
 
   pub(crate) async fn mass_insert_satributes(pool: mysql_async::Pool, satribute_vec: Vec<Satribute>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = Self::get_conn(pool).await?;
-  
+    conn.query_drop("SET SQL_LOG_BIN = 0").await?;
     let mut wtr = WriterBuilder::new()
       .has_headers(false)
       .from_writer(vec![]);
@@ -2327,6 +2328,7 @@ impl Vermilion {
   pub(crate) async fn mass_insert_transfers(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for chunk in transfer_vec.chunks(5000) {
       let mut conn = Self::get_conn(pool.clone()).await?;  
+      conn.query_drop("SET SQL_LOG_BIN = 0").await?;
       let mut wtr = WriterBuilder::new()
         .has_headers(false)
         .from_writer(vec![]);
@@ -2457,6 +2459,7 @@ impl Vermilion {
   pub(crate) async fn mass_insert_addresses(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for chunk in transfer_vec.chunks(5000) {
       let mut conn = Self::get_conn(pool.clone()).await?;
+      conn.query_drop("SET SQL_LOG_BIN = 0").await?;
       let mut wtr = WriterBuilder::new()
         .has_headers(false)
         .from_writer(vec![]);
