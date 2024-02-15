@@ -3364,16 +3364,16 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       SELECT RELEASE_LOCK('editions_lock');
       COMMIT;
       END;"#).await?;
-    tx.query_drop(r"DROP EVENT IF EXISTS editions_event").await?;
-    // select for update to block inserts onto ordinals table while editions are being updated
-    tx.query_drop(r"CREATE EVENT editions_event 
-                          ON SCHEDULE EVERY 168 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400) 
-                          DO
-                          BEGIN
-                            SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
-                            CALL update_editions();
-                            SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
-                          END;").await?;
+    // tx.query_drop(r"DROP EVENT IF EXISTS editions_event").await?;
+    // // select for update to block inserts onto ordinals table while editions are being updated
+    // tx.query_drop(r"CREATE EVENT editions_event 
+    //                       ON SCHEDULE EVERY 168 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400) 
+    //                       DO
+    //                       BEGIN
+    //                         SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+    //                         CALL update_editions();
+    //                         SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+    //                       END;").await?;
     let result = tx.commit().await;
     match result {
       Ok(_) => Ok(()),
