@@ -29,7 +29,9 @@ use axum::{
   Router,
   extract::{Path, State, Query},
   body::{Body, BoxBody},
-  middleware::map_response
+  middleware::map_response,
+  http::StatusCode,
+  response::IntoResponse,
 };
 use axum_session::{Session, SessionNullPool, SessionConfig, SessionStore, SessionLayer};
 
@@ -2505,20 +2507,27 @@ impl Vermilion {
     Ok(block_number)
   }
   //Server api functions
-  async fn root() -> &'static str {    
-"One of the fastest ways to dox yourself as a cryptopleb is to ask \"what's the reason for the Bitcoin pump today.\"
-
-Its path to $1m+ is preordained. On any given day it needs no reasons."
+  async fn root() -> &'static str {
+"If Bitcoin is to change the culture of money, it needs to be cool. Ordinals was the missing piece. The path to $1m is preordained"
   }
 
   async fn home(State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let content_blob = Self::get_ordinal_content(server_config.pool,  "6fb976ab49dcec017f1e201e84395983204ae1a7c2abf7ced0a85d692e442799i0".to_string()).await;
+    let content_blob = match Self::get_ordinal_content(server_config.pool,  "6fb976ab49dcec017f1e201e84395983204ae1a7c2abf7ced0a85d692e442799i0".to_string()).await {
+      Ok(content_blob) => content_blob,
+      Err(error) => {
+        log::warn!("Error getting /home: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving 6fb976ab49dcec017f1e201e84395983204ae1a7c2abf7ced0a85d692e442799i0"),
+        ).into_response();
+      }
+    };
     let bytes = content_blob.content;
     let content_type = content_blob.content_type;
     (
         ([(axum::http::header::CONTENT_TYPE, content_type)]),
         bytes,
-    )
+    ).into_response()
   }
 
   async fn set_header<B>(response: Response<B>) -> Response<B> {
@@ -2527,36 +2536,63 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
   }
 
   async fn inscription(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let content_blob = Self::get_ordinal_content(server_config.pool, inscription_id.to_string()).await;
+    let content_blob = match Self::get_ordinal_content(server_config.pool, inscription_id.to_string()).await {
+      Ok(content_blob) => content_blob,
+      Err(error) => {
+        log::warn!("Error getting /inscription: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving {}", inscription_id.to_string()),
+        ).into_response();
+      }
+    };
     let bytes = content_blob.content;
     let content_type = content_blob.content_type;
     (
       ([(axum::http::header::CONTENT_TYPE, content_type),
         (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string())]),
       bytes,
-    )
+    ).into_response()
   }
 
   async fn inscription_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let content_blob = Self::get_ordinal_content_by_number(server_config.pool,  number).await;
+    let content_blob = match Self::get_ordinal_content_by_number(server_config.pool,  number).await {
+      Ok(content_blob) => content_blob,
+      Err(error) => {
+        log::warn!("Error getting /inscription_number: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving {}", number.to_string()),
+        ).into_response();
+      }
+    };
     let bytes = content_blob.content;
     let content_type = content_blob.content_type;
     (
       ([(axum::http::header::CONTENT_TYPE, content_type),
         (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string())]),
       bytes,
-    )
+    ).into_response()
   }
 
   async fn inscription_sha256(Path(sha256): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let content_blob = Self::get_ordinal_content_by_sha256(server_config.pool, sha256, None).await;
+    let content_blob = match Self::get_ordinal_content_by_sha256(server_config.pool, sha256, None).await {
+      Ok(content_blob) => content_blob,
+      Err(error) => {
+        log::warn!("Error getting /inscription_sha256: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving inscription by sha256"),
+        ).into_response();
+      }
+    };
     let bytes = content_blob.content;
     let content_type = content_blob.content_type;
     (
       ([(axum::http::header::CONTENT_TYPE, content_type),
         (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string())]),
       bytes,
-    )
+    ).into_response()
   }
 
   async fn inscription_metadata(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
@@ -2780,56 +2816,62 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
     content
   }
 
-  async fn get_ordinal_content(pool: mysql_async::Pool, inscription_id: String) -> ContentBlob {
+  async fn get_ordinal_content(pool: mysql_async::Pool, inscription_id: String) -> anyhow::Result<ContentBlob> {
     let cloned_pool = pool.clone();
-    let mut conn = Self::get_conn(pool).await.unwrap();    
+    let mut conn = Self::get_conn(pool).await?;    
     let row: Option<Row> = conn.exec_first(
       "SELECT sha256, content_type FROM ordinals WHERE id=:id LIMIT 1", 
       params! {
         "id" => inscription_id
       }
     )
-    .await
-    .unwrap();
-    if row.is_none() {
-      return ContentBlob {
-        sha256: "".to_string(),
-        content: "This content doesn't exist or hasn't been indexed yet.".as_bytes().to_vec(),
-        content_type: "text/plain".to_string(),
-      };
-    }
-    let (sha256, content_type) = mysql_async::from_row::<(String, String)>(row.unwrap());
+    .await?;
+
+    let (sha256, content_type) = match row {
+      Some(row) => mysql_async::from_row::<(String, String)>(row),
+      None => {
+        let content = ContentBlob {
+          sha256: "".to_string(),
+          content: "This content doesn't exist or hasn't been indexed yet.".as_bytes().to_vec(),
+          content_type: "text/plain".to_string(),
+        };
+        return Ok(content);
+      }        
+    };
 
     let content = Self::get_ordinal_content_by_sha256(cloned_pool, sha256, Some(content_type)).await;
     content
   }
 
-  async fn get_ordinal_content_by_number(pool: mysql_async::Pool, number: i64) -> ContentBlob {
+  async fn get_ordinal_content_by_number(pool: mysql_async::Pool, number: i64) -> anyhow::Result<ContentBlob> {
     let cloned_pool = pool.clone();
-    let mut conn = Self::get_conn(pool).await.unwrap();    
+    let mut conn = Self::get_conn(pool).await?;    
     let row: Option<Row> = conn.exec_first(
       "SELECT sha256, content_type FROM ordinals WHERE number=:number LIMIT 1", 
       params! {
         "number" => number
       }
     )
-    .await
-    .unwrap();
-    if row.is_none() {
-      return ContentBlob {
-        sha256: "".to_string(),
-        content: "This content doesn't exist or hasn't been indexed yet.".as_bytes().to_vec(),
-        content_type: "text/plain".to_string(),
-      };
-    }
-    let (sha256, content_type) = mysql_async::from_row::<(String, String)>(row.unwrap());
+    .await?;
+
+    let (sha256, content_type) = match row {
+      Some(row) => mysql_async::from_row::<(String, String)>(row),
+      None => {
+        let content = ContentBlob {
+          sha256: "".to_string(),
+          content: "This content doesn't exist or hasn't been indexed yet.".as_bytes().to_vec(),
+          content_type: "text/plain".to_string(),
+        };
+        return Ok(content);
+      }        
+    };
 
     let content = Self::get_ordinal_content_by_sha256(cloned_pool, sha256, Some(content_type)).await;
     content
   }
 
-  async fn get_ordinal_content_by_sha256(pool: mysql_async::Pool, sha256: String, content_type_override: Option<String>) -> ContentBlob {
-    let mut conn = Self::get_conn(pool).await.unwrap();
+  async fn get_ordinal_content_by_sha256(pool: mysql_async::Pool, sha256: String, content_type_override: Option<String>) -> anyhow::Result<ContentBlob> {
+    let mut conn = Self::get_conn(pool).await?;
     let moderation_flag: Option<String> = conn.exec_first(
       r"SELECT coalesce(human_override_moderation_flag, automated_moderation_flag)
               FROM content_moderation
@@ -2838,24 +2880,26 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
       params! {
         "sha256" => sha256.clone()
       }
-    ).await.unwrap();
+    ).await?;
 
     if let Some(flag) = moderation_flag {
         if flag == "SAFE_MANUAL" || flag == "SAFE_AUTOMATED" {
             //Proceed as normal
         } else {
-          return ContentBlob {
+          let content = ContentBlob {
               sha256: sha256.clone(),
-              content: std::fs::read("blocked.png").unwrap(),
+              content: std::fs::read("blocked.png")?,
               content_type: "image/png".to_string(),
           };
+          return Ok(content);
         }
     } else {
-      return ContentBlob {
+      let content = ContentBlob {
         sha256: sha256.clone(),
         content: "This content hasn't been indexed yet.".as_bytes().to_vec(),
         content_type: "text/plain".to_string(),
       };
+      return Ok(content);
     }
     //Proceed if content exists and is safe
     let result = conn.exec_map(
@@ -2872,11 +2916,11 @@ Its path to $1m+ is preordained. On any given day it needs no reasons."
         content_type: row.take("content_type").unwrap(),
       }
     );
-    let mut result = result.await.unwrap().pop().unwrap();
+    let mut result = result.await?.pop().ok_or(anyhow::anyhow!("Content sha256 not found"))?;
     if let Some(content_type) = content_type_override {
         result.content_type = content_type;
     }
-    result
+    Ok(result)
   }
 
   fn map_row_to_metadata(mut row: mysql_async::Row) -> Metadata {
