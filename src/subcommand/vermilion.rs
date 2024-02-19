@@ -2550,7 +2550,7 @@ impl Vermilion {
     let content_type = content_blob.content_type;
     (
       ([(axum::http::header::CONTENT_TYPE, content_type),
-        (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string())]),
+        (axum::http::header::CACHE_CONTROL, "public, max-age=31536000".to_string())]),
       bytes,
     ).into_response()
   }
@@ -2570,19 +2570,19 @@ impl Vermilion {
     let content_type = content_blob.content_type;
     (
       ([(axum::http::header::CONTENT_TYPE, content_type),
-        (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string())]),
+        (axum::http::header::CACHE_CONTROL, "public, max-age=31536000".to_string())]),
       bytes,
     ).into_response()
   }
 
   async fn inscription_sha256(Path(sha256): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let content_blob = match Self::get_ordinal_content_by_sha256(server_config.pool, sha256, None).await {
+    let content_blob = match Self::get_ordinal_content_by_sha256(server_config.pool, sha256.clone(), None).await {
       Ok(content_blob) => content_blob,
       Err(error) => {
         log::warn!("Error getting /inscription_sha256: {}", error);
         return (
           StatusCode::INTERNAL_SERVER_ERROR,
-          format!("Error retrieving inscription by sha256"),
+          format!("Error retrieving inscription by sha256: {}", sha256),
         ).into_response();
       }
     };
@@ -2590,70 +2590,135 @@ impl Vermilion {
     let content_type = content_blob.content_type;
     (
       ([(axum::http::header::CONTENT_TYPE, content_type),
-        (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string())]),
+        (axum::http::header::CACHE_CONTROL, "public, max-age=31536000".to_string())]),
       bytes,
     ).into_response()
   }
 
   async fn inscription_metadata(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let metadata = Self::get_ordinal_metadata(server_config.pool, inscription_id.to_string()).await;
+    let metadata = match Self::get_ordinal_metadata(server_config.pool, inscription_id.to_string()).await {
+      Ok(metadata) => metadata,
+      Err(error) => {
+        log::warn!("Error getting /inscription_metadata: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving metadata for {}", inscription_id.to_string()),
+        ).into_response();
+      }
+    
+    };
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json"),
-        (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable")]),
+        (axum::http::header::CACHE_CONTROL, "public, max-age=31536000")]),
       Json(metadata),
-    )
+    ).into_response()
   }
 
   async fn inscription_metadata_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let metadata = Self::get_ordinal_metadata_by_number(server_config.pool, number).await;
+    let metadata = match Self::get_ordinal_metadata_by_number(server_config.pool, number).await {
+      Ok(metadata) => metadata,
+      Err(error) => {
+        log::warn!("Error getting /inscription_metadata_number: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving metadata for {}", number.to_string()),
+        ).into_response();
+      }
+    };
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json"),
-        (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable")]),
+        (axum::http::header::CACHE_CONTROL, "public, max-age=31536000")]),
       Json(metadata),
-    )
+    ).into_response()
   }
 
   async fn inscription_editions(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let editions = Self::get_matching_inscriptions(server_config.pool, inscription_id.to_string()).await;
+    let editions = match Self::get_matching_inscriptions(server_config.pool, inscription_id.to_string()).await {
+      Ok(editions) => editions,
+      Err(error) => {
+        log::warn!("Error getting /inscription_editions: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving editions for {}", inscription_id.to_string()),
+        ).into_response();
+      }
+    };
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(editions),
-    )
+    ).into_response()
   }
 
   async fn inscription_editions_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let editions = Self::get_matching_inscriptions_by_number(server_config.pool, number).await;
+    let editions = match Self::get_matching_inscriptions_by_number(server_config.pool, number).await {
+      Ok(editions) => editions,
+      Err(error) => {
+        log::warn!("Error getting /inscription_editions_number: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving editions for {}", number),
+        ).into_response();
+      }
+    
+    };
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(editions),
-    )
+    ).into_response()
   }
 
   async fn inscription_editions_sha256(Path(sha256): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let editions = Self::get_matching_inscriptions_by_sha256(server_config.pool, sha256).await;
+    let editions = match Self::get_matching_inscriptions_by_sha256(server_config.pool, sha256.clone()).await {
+      Ok(editions) => editions,
+      Err(error) => {
+        log::warn!("Error getting /inscription_editions_sha256: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving editions for {}", sha256),
+        ).into_response();
+      }
+    };
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(editions),
-    )
+    ).into_response()
   }
 
   async fn inscriptions_in_block(Path(block): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let inscriptions = Self::get_inscriptions_within_block(server_config.pool, block).await;
+    let inscriptions = match Self::get_inscriptions_within_block(server_config.pool, block).await {
+      Ok(inscriptions) => inscriptions,
+      Err(error) => {
+        log::warn!("Error getting /inscriptions_in_block: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving inscriptions for block {}", block.to_string()),
+        ).into_response();
+      }
+    };
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json"),
-      (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable")]),
+      (axum::http::header::CACHE_CONTROL, "public, max-age=31536000")]),
       Json(inscriptions),
-    )
+    ).into_response()
   }
 
   async fn random_inscription(State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     let mut rng = rand::rngs::StdRng::from_entropy();
     let random_float = rng.gen::<f64>();
-    let (inscription_number, _band) = Self::get_random_inscription(server_config.pool, random_float).await;
+    let (inscription_number, _band) = match Self::get_random_inscription(server_config.pool, random_float).await {
+      Ok((inscription_number, band)) => (inscription_number, band),
+      Err(error) => {
+        log::warn!("Error getting /random_inscription: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving random inscription"),
+        ).into_response();
+      }
+    };
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(inscription_number),
-    )
+    ).into_response()
   }
 
   async fn random_inscriptions(n: Query<QueryNumber>, State(server_config): State<ApiServerConfig>, session: Session<SessionNullPool>) -> impl axum::response::IntoResponse {
@@ -2662,93 +2727,192 @@ impl Vermilion {
         println!("Band: {:?}", band);
     }
     let n = n.0.n;
-    let (inscription_numbers, new_bands) = Self::get_random_inscriptions(server_config.pool, n, bands).await;
+    let (inscription_numbers, new_bands) = match Self::get_random_inscriptions(server_config.pool, n, bands).await {
+      Ok((inscription_numbers, new_bands)) => (inscription_numbers, new_bands),
+      Err(error) => {
+        log::warn!("Error getting /random_inscriptions: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving random inscriptions"),
+        ).into_response();
+      }
+    };
     session.set("bands_seen", new_bands);
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(inscription_numbers),
-    )
+    ).into_response()
   }
 
   async fn recent_inscriptions(n: Query<QueryNumber>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     let n = n.0.n;
-    let inscriptions = Self::get_recent_inscriptions(server_config.pool, n).await;
+    let inscriptions = match Self::get_recent_inscriptions(server_config.pool, n).await {
+      Ok(inscriptions) => inscriptions,
+      Err(error) => {
+        log::warn!("Error getting /recent_inscriptions: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving recent inscriptions"),
+        ).into_response();
+      }
+    };
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(inscriptions),
-    )
+    ).into_response()
   }
 
   async fn inscription_last_transfer(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let transfer = Self::get_last_ordinal_transfer(server_config.pool, inscription_id.to_string()).await;
+    let transfer = match Self::get_last_ordinal_transfer(server_config.pool, inscription_id.to_string()).await {
+      Ok(transfer) => transfer,
+      Err(error) => {
+        log::warn!("Error getting /inscription_last_transfer: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving last transfer for {}", inscription_id.to_string()),
+        ).into_response();
+      }    
+    };
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(transfer),
-    )
+    ).into_response()
   }
 
   async fn inscription_last_transfer_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let transfer = Self::get_last_ordinal_transfer_by_number(server_config.pool, number).await;
+    let transfer = match Self::get_last_ordinal_transfer_by_number(server_config.pool, number).await {
+      Ok(transfer) => transfer,
+      Err(error) => {
+        log::warn!("Error getting /inscription_last_transfer_number: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving last transfer for {}", number),
+        ).into_response();
+      }
+    };
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(transfer),
-    )
+    ).into_response()
   }
 
   async fn inscription_transfers(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let transfers = Self::get_ordinal_transfers(server_config.pool, inscription_id.to_string()).await;
+    let transfers = match Self::get_ordinal_transfers(server_config.pool, inscription_id.to_string()).await {
+      Ok(transfers) => transfers,
+      Err(error) => {
+        log::warn!("Error getting /inscription_transfers: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving transfers for {}", inscription_id.to_string()),
+        ).into_response();
+      }
+    };
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(transfers),
-    )
+    ).into_response()
   }
 
   async fn inscription_transfers_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let transfers = Self::get_ordinal_transfers_by_number(server_config.pool, number).await;
+    let transfers = match Self::get_ordinal_transfers_by_number(server_config.pool, number).await {
+      Ok(transfers) => transfers,
+      Err(error) => {
+        log::warn!("Error getting /inscription_transfers_number: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving transfers for {}", number),
+        ).into_response();
+      }
+    };
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(transfers),
-    )
+    ).into_response()
   }
 
   async fn inscriptions_in_address(Path(address): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let inscriptions: Vec<TransferWithMetadata> = Self::get_inscriptions_by_address(server_config.pool, address).await;
+    let inscriptions: Vec<TransferWithMetadata> = match Self::get_inscriptions_by_address(server_config.pool, address.clone()).await {
+      Ok(inscriptions) => inscriptions,
+      Err(error) => {
+        log::warn!("Error getting /inscriptions_in_address: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving inscriptions for {}", address),
+        ).into_response();
+      }
+    };
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(inscriptions),
-    )
+    ).into_response()
   }
 
   async fn inscriptions_on_sat(Path(sat): Path<u64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let inscriptions: Vec<Metadata> = Self::get_inscriptions_on_sat(server_config.pool, sat).await;
+    let inscriptions: Vec<Metadata> = match Self::get_inscriptions_on_sat(server_config.pool, sat).await {
+      Ok(inscriptions) => inscriptions,
+      Err(error) => {
+        log::warn!("Error getting /inscriptions_on_sat: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving inscriptions for {}", sat),
+        ).into_response();
+      }
+    };
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(inscriptions),
-    )
+    ).into_response()
   }
 
   async fn inscriptions_in_sat_block(Path(block): Path<u64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let inscriptions: Vec<Metadata> = Self::get_inscriptions_in_sat_block(server_config.pool, block).await;
+    let inscriptions: Vec<Metadata> = match Self::get_inscriptions_in_sat_block(server_config.pool, block).await {
+      Ok(inscriptions) => inscriptions,
+      Err(error) => {
+        log::warn!("Error getting /inscriptions_in_sat_block: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving inscriptions for {}", block),
+        ).into_response();
+      }
+    };
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(inscriptions),
-    )
+    ).into_response()
   }
 
   async fn sat_metadata(Path(sat): Path<u64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let sat_metadata = Self::get_sat_metadata(server_config.pool, sat).await;
+    let sat_metadata = match Self::get_sat_metadata(server_config.pool, sat).await {
+      Ok(sat_metadata) => sat_metadata,
+      Err(error) => {
+        log::warn!("Error getting /sat_metadata: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving metadata for {}", sat),
+        ).into_response();
+      }    
+    };
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(sat_metadata),
-    )
+    ).into_response()
   }
 
   async fn satributes(Path(sat): Path<u64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let satributes = Self::get_satributes(server_config.pool, sat).await;
+    let satributes = match Self::get_satributes(server_config.pool, sat).await {
+      Ok(satributes) => satributes,
+      Err(error) => {
+        log::warn!("Error getting /satributes: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving satributes for {}", sat),
+        ).into_response();
+      }
+    };
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(satributes),
-    )
+    ).into_response()
   }
 
   async fn shutdown_signal() {
@@ -2951,8 +3115,8 @@ impl Vermilion {
     }
   }
 
-  async fn get_ordinal_metadata(pool: mysql_async::Pool, inscription_id: String) -> Metadata {
-    let mut conn = Self::get_conn(pool).await.unwrap();
+  async fn get_ordinal_metadata(pool: mysql_async::Pool, inscription_id: String) -> anyhow::Result<Metadata> {
+    let mut conn = Self::get_conn(pool).await?;
     let result = conn.exec_map(
       "SELECT * FROM ordinals WHERE id=:id LIMIT 1", 
       params! {
@@ -2960,12 +3124,12 @@ impl Vermilion {
       },
       Self::map_row_to_metadata
     );
-    let result = result.await.unwrap().pop().unwrap();
-    result
+    let result = result.await?.pop().ok_or(anyhow::anyhow!("ID not found in ordinals table"))?;
+    Ok(result)
   }
 
-  async fn get_ordinal_metadata_by_number(pool: mysql_async::Pool, number: i64) -> Metadata {
-    let mut conn = Self::get_conn(pool).await.unwrap();
+  async fn get_ordinal_metadata_by_number(pool: mysql_async::Pool, number: i64) -> anyhow::Result<Metadata> {
+    let mut conn = Self::get_conn(pool).await?;
     let result = conn.exec_map(
       "SELECT * FROM ordinals WHERE number=:number LIMIT 1", 
       params! {
@@ -2973,12 +3137,12 @@ impl Vermilion {
       },
       Self::map_row_to_metadata
     );
-    let result = result.await.unwrap().pop().unwrap();
-    result    
+    let result = result.await?.pop().ok_or(anyhow::anyhow!("Number not found in ordinals table"))?;
+    Ok(result)
   }
 
-  async fn get_matching_inscriptions(pool: mysql_async::Pool, inscription_id: String) -> Vec<InscriptionNumberEdition> {
-    let mut conn = Self::get_conn(pool).await.unwrap();
+  async fn get_matching_inscriptions(pool: mysql_async::Pool, inscription_id: String) -> anyhow::Result<Vec<InscriptionNumberEdition>> {
+    let mut conn = Self::get_conn(pool).await?;
     let editions = conn.exec_map(
       "with a as (select sha256 from editions where id = :id) select id, number, edition, t.total from a left join editions e on a.sha256=e.sha256 left join editions_total t on t.sha256=a.sha256 order by edition asc limit 100",
       params! {
@@ -2990,12 +3154,12 @@ impl Vermilion {
         edition: row.get("edition").unwrap(),
         total: row.get("total").unwrap()
       }
-    ).await.unwrap();
-    editions
+    ).await?;
+    Ok(editions)
   }
 
-  async fn get_matching_inscriptions_by_number(pool: mysql_async::Pool, number: i64) -> Vec<InscriptionNumberEdition> {
-    let mut conn = Self::get_conn(pool).await.unwrap();
+  async fn get_matching_inscriptions_by_number(pool: mysql_async::Pool, number: i64) -> anyhow::Result<Vec<InscriptionNumberEdition>> {
+    let mut conn = Self::get_conn(pool).await?;
     let editions = conn.exec_map(
       "with a as (select sha256 from editions where number = :number) select id, number, edition, t.total from a left join editions e on a.sha256=e.sha256 left join editions_total t on t.sha256=a.sha256 order by edition asc limit 100", 
       params! {
@@ -3007,12 +3171,12 @@ impl Vermilion {
         edition: row.get("edition").unwrap(),
         total: row.get("total").unwrap()
       }
-    ).await.unwrap();
-    editions
+    ).await?;
+    Ok(editions)
   }
 
-  async fn get_matching_inscriptions_by_sha256(pool: mysql_async::Pool, sha256: String) -> Vec<InscriptionNumberEdition> {
-    let mut conn = Self::get_conn(pool).await.unwrap();
+  async fn get_matching_inscriptions_by_sha256(pool: mysql_async::Pool, sha256: String) -> anyhow::Result<Vec<InscriptionNumberEdition>> {
+    let mut conn = Self::get_conn(pool).await?;
     let editions = conn.exec_map(
       " select id, number, edition, t.total from (select * from editions where sha256=:sha256) e inner join editions_total t on t.sha256=e.sha256 order by edition asc limit 100",
       params! {
@@ -3024,24 +3188,24 @@ impl Vermilion {
         edition: row.get("edition").unwrap(),
         total: row.get("total").unwrap()
       }
-    ).await.unwrap();
-    editions
+    ).await?;
+    Ok(editions)
   }
 
-  async fn get_inscriptions_within_block(pool: mysql_async::Pool, block: i64) -> Vec<Metadata> {
-    let mut conn = Self::get_conn(pool).await.unwrap();
+  async fn get_inscriptions_within_block(pool: mysql_async::Pool, block: i64) -> anyhow::Result<Vec<Metadata>> {
+    let mut conn = Self::get_conn(pool).await?;
     let inscriptions = conn.exec_map(
       "SELECT * FROM ordinals WHERE genesis_height=:block", 
       params! {
         "block" => block
       },
       Self::map_row_to_metadata
-    ).await.unwrap();
-    inscriptions
+    ).await?;
+    Ok(inscriptions)
   }
   
-  async fn get_random_inscription(pool: mysql_async::Pool, random_float: f64) -> (Metadata, (f64, f64)) {
-    let mut conn = Self::get_conn(pool).await.unwrap();
+  async fn get_random_inscription(pool: mysql_async::Pool, random_float: f64) -> anyhow::Result<(Metadata, (f64, f64))> {
+    let mut conn = Self::get_conn(pool).await?;
     let random_inscription_band = conn.exec_map(
       "SELECT first_number, class_band_start, class_band_end FROM weights where band_end>:random_float limit 1",
       params! {
@@ -3052,24 +3216,18 @@ impl Vermilion {
         start: row.get("class_band_start").unwrap(),
         end: row.get("class_band_end").unwrap()
       }
-    ).await
-    .unwrap()
-    .pop()
-    .unwrap();
+    ).await?.pop().ok_or(anyhow::anyhow!("No random inscription band found in weights table"))?;
     let metadata: Metadata = conn.exec_map(
       "SELECT * from ordinals where sequence_number=:sequence_number limit 1", 
       params! {
         "sequence_number" => random_inscription_band.sequence_number
       },
       Self::map_row_to_metadata
-    ).await
-    .unwrap()
-    .pop()
-    .unwrap();
-    (metadata,(random_inscription_band.start, random_inscription_band.end))
+    ).await?.pop().ok_or(anyhow::anyhow!("No random inscription found in ordinals table"))?;
+    Ok((metadata,(random_inscription_band.start, random_inscription_band.end)))
   }
 
-  async fn get_random_inscriptions(pool: mysql_async::Pool, n: u32, mut bands: Vec<(f64, f64)>) -> (Vec<Metadata>, Vec<(f64, f64)>) {
+  async fn get_random_inscriptions(pool: mysql_async::Pool, n: u32, mut bands: Vec<(f64, f64)>) -> anyhow::Result<(Vec<Metadata>, Vec<(f64, f64)>)> {
     let n = std::cmp::min(n, 100);
     let mut rng = rand::rngs::StdRng::from_entropy();
     let mut random_floats = Vec::new();
@@ -3093,23 +3251,23 @@ impl Vermilion {
       set.spawn(Self::get_random_inscription(pool.clone(), random_floats[i as usize]));
     }
     while let Some(res) = set.join_next().await {
-      let random_inscription_details = res.unwrap();
+      let random_inscription_details = res??;
       random_metadatas.push(random_inscription_details.0);
       bands.push(random_inscription_details.1);
     }
-    (random_metadatas, bands)
+    Ok((random_metadatas, bands))
   }
 
-  async fn get_recent_inscriptions(pool: mysql_async::Pool, n: u32) -> Vec<Metadata> {
-    let mut conn = Self::get_conn(pool).await.unwrap();
+  async fn get_recent_inscriptions(pool: mysql_async::Pool, n: u32) -> anyhow::Result<Vec<Metadata>> {
+    let mut conn = Self::get_conn(pool).await?;
     let inscriptions = conn.exec_map(
       "SELECT * FROM ordinals order by sequence_number desc limit :n", 
       params! {
         "n" => n
       },
       Self::map_row_to_metadata
-    ).await.unwrap();
-    inscriptions
+    ).await?;
+    Ok(inscriptions)
   }
 
   async fn get_conn(pool: mysql_async::Pool) -> Result<mysql_async::Conn, mysql_async::Error> {
@@ -3117,8 +3275,8 @@ impl Vermilion {
     conn
   }
 
-  async fn get_last_ordinal_transfer(pool: mysql_async::Pool, inscription_id: String) -> Transfer {
-    let mut conn = Self::get_conn(pool).await.unwrap();
+  async fn get_last_ordinal_transfer(pool: mysql_async::Pool, inscription_id: String) -> anyhow::Result<Transfer> {
+    let mut conn = Self::get_conn(pool).await?;
     let transfer = conn.exec_map(
       "select * from transfers where id=:id order by block_number desc limit 1", 
       params! {
@@ -3135,12 +3293,12 @@ impl Vermilion {
         address: row.get("address").unwrap(),
         is_genesis: row.get("is_genesis").unwrap()
       }
-    ).await.unwrap().pop().unwrap();
-    transfer
+    ).await?.pop().ok_or(anyhow::anyhow!("ID not found in transfer table"))?;
+    Ok(transfer)
   }
 
-  async fn get_last_ordinal_transfer_by_number(pool: mysql_async::Pool, number: i64) -> Transfer {
-    let mut conn = Self::get_conn(pool).await.unwrap();
+  async fn get_last_ordinal_transfer_by_number(pool: mysql_async::Pool, number: i64) -> anyhow::Result<Transfer> {
+    let mut conn = Self::get_conn(pool).await?;
     let transfer = conn.exec_map(
       "with a as (Select id from ordinals where number=:number) select b.* from transfers b, a where a.id=b.id order by block_number desc limit 1", 
       params! {
@@ -3157,12 +3315,12 @@ impl Vermilion {
         address: row.get("address").unwrap(),
         is_genesis: row.get("is_genesis").unwrap()
       }
-    ).await.unwrap().pop().unwrap();
-    transfer
+    ).await?.pop().ok_or(anyhow::anyhow!("Number not found in transfer table"))?;
+    Ok(transfer)
   }
 
-  async fn get_ordinal_transfers(pool: mysql_async::Pool, inscription_id: String) -> Vec<Transfer> {
-    let mut conn = Self::get_conn(pool).await.unwrap();
+  async fn get_ordinal_transfers(pool: mysql_async::Pool, inscription_id: String) -> anyhow::Result<Vec<Transfer>> {
+    let mut conn = Self::get_conn(pool).await?;
     let transfers = conn.exec_map(
       "select * from transfers where id=:id order by block_number asc", 
       params! {
@@ -3179,12 +3337,12 @@ impl Vermilion {
         address: row.get("address").unwrap(),
         is_genesis: row.get("is_genesis").unwrap()
       }
-    ).await.unwrap();
-    transfers
+    ).await?;
+    Ok(transfers)
   }
 
-  async fn get_ordinal_transfers_by_number(pool: mysql_async::Pool, number: i64) -> Vec<Transfer> {
-    let mut conn = Self::get_conn(pool).await.unwrap();
+  async fn get_ordinal_transfers_by_number(pool: mysql_async::Pool, number: i64) -> anyhow::Result<Vec<Transfer>> {
+    let mut conn = Self::get_conn(pool).await?;
     let transfers = conn.exec_map(
       "with a as (Select id from ordinals where number=:number) select b.* from transfers b, a where a.id=b.id order by block_number desc", 
       params! {
@@ -3201,12 +3359,12 @@ impl Vermilion {
         address: row.get("address").unwrap(),
         is_genesis: row.get("is_genesis").unwrap()
       }
-    ).await.unwrap();
-    transfers
+    ).await?;
+    Ok(transfers)
   }
 
-  async fn get_inscriptions_by_address(pool: mysql_async::Pool, address: String) -> Vec<TransferWithMetadata> {
-    let mut conn = Self::get_conn(pool).await.unwrap();
+  async fn get_inscriptions_by_address(pool: mysql_async::Pool, address: String) -> anyhow::Result<Vec<TransferWithMetadata>> {
+    let mut conn = Self::get_conn(pool).await?;
     let transfers = conn.exec_map(
       "select a.*, o.* from addresses a left join ordinals o on a.id=o.id where a.address=:address",
       params! {
@@ -3245,12 +3403,12 @@ impl Vermilion {
         is_bitmap_style: row.get("is_bitmap_style").unwrap(),
         is_recursive: row.get("is_recursive").unwrap()
       }
-    ).await.unwrap();
-    transfers
+    ).await?;
+    Ok(transfers)
   }
 
-  async fn get_inscriptions_on_sat(pool: mysql_async::Pool, sat: u64) -> Vec<Metadata> {
-    let mut conn = Self::get_conn(pool).await.unwrap();
+  async fn get_inscriptions_on_sat(pool: mysql_async::Pool, sat: u64) -> anyhow::Result<Vec<Metadata>> {
+    let mut conn = Self::get_conn(pool).await?;
     let result = conn.exec_map(
       "SELECT * FROM ordinals WHERE sat=:sat", 
       params! {
@@ -3258,12 +3416,12 @@ impl Vermilion {
       },
       Self::map_row_to_metadata
     );
-    let result = result.await.unwrap();
-    result
+    let result = result.await?;
+    Ok(result)
   }
 
-  async fn get_inscriptions_in_sat_block(pool: mysql_async::Pool, block: u64) -> Vec<Metadata> {
-    let mut conn = Self::get_conn(pool).await.unwrap();
+  async fn get_inscriptions_in_sat_block(pool: mysql_async::Pool, block: u64) -> anyhow::Result<Vec<Metadata>> {
+    let mut conn = Self::get_conn(pool).await?;
     let result = conn.exec_map(
       "select * from ordinals where sat in (select sat from sat where block=:block)", 
       params! {
@@ -3271,12 +3429,12 @@ impl Vermilion {
       },
       Self::map_row_to_metadata
     );
-    let result = result.await.unwrap();
-    result
+    let result = result.await?;
+    Ok(result)
   }
 
-  async fn get_sat_metadata(pool: mysql_async::Pool, sat: u64) -> SatMetadata {
-    let mut conn = Self::get_conn(pool).await.unwrap();
+  async fn get_sat_metadata(pool: mysql_async::Pool, sat: u64) -> anyhow::Result<SatMetadata> {
+    let mut conn = Self::get_conn(pool).await?;
     let result = conn.exec_map(
       "SELECT * FROM sat WHERE sat=:sat", 
       params! {
@@ -3297,12 +3455,12 @@ impl Vermilion {
         timestamp: row.get("timestamp").unwrap()
       }
     );
-    let result = result.await.unwrap().pop().unwrap();
-    result
+    let result = result.await?.pop().ok_or(anyhow::anyhow!("Sat not found in table"))?;
+    Ok(result)
   }
 
-  async fn get_satributes(pool: mysql_async::Pool, sat: u64) -> Vec<Satribute> {
-    let mut conn = Self::get_conn(pool).await.unwrap();
+  async fn get_satributes(pool: mysql_async::Pool, sat: u64) -> anyhow::Result<Vec<Satribute>> {
+    let mut conn = Self::get_conn(pool).await?;
     let result = conn.exec_map(
       "SELECT * FROM satributes WHERE sat=:sat", 
       params! {
@@ -3313,8 +3471,8 @@ impl Vermilion {
         satribute: row.get("satribute").unwrap(),
       }
     );
-    let result = result.await.unwrap();
-    result
+    let result = result.await?;
+    Ok(result)
   }
 
   async fn create_metadata_insert_trigger(pool: mysql_async::Pool) -> anyhow::Result<()> {
