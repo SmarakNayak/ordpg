@@ -222,6 +222,12 @@ pub struct TransferWithMetadata {
 }
 
 #[derive(Clone, Serialize)]
+pub struct BlockHeight {
+  block_number: u32,
+  block_timestamp: i64
+}
+
+#[derive(Clone, Serialize)]
 pub struct Content {
   content: Vec<u8>,
   content_type: Option<String>
@@ -689,6 +695,7 @@ impl Vermilion {
         let pool = Pool::new(url.as_str());
         let create_tranfer_result = Self::create_transfers_table(pool.clone()).await;
         let create_address_result = Self::create_address_table(pool.clone()).await;
+        let create_blockheight_result = Self::create_blockheight_table(pool.clone()).await;
         if create_tranfer_result.is_err() {
           println!("Error creating db tables: {:?}", create_tranfer_result.unwrap_err());
           return;            
@@ -697,18 +704,22 @@ impl Vermilion {
           println!("Error creating db tables: {:?}", create_address_result.unwrap_err());
           return;
         }
+        if create_blockheight_result.is_err() {
+          println!("Error creating db tables: {:?}", create_blockheight_result.unwrap_err());
+          return;
+        }
 
         let fetcher = fetcher::Fetcher::new(&options).unwrap();
-        let first_height = options.first_inscription_height();
-        let db_height = match Self::get_start_block(pool.clone()).await {
-          Ok(db_height) => db_height,
+        let first_inscription_height = options.first_inscription_height();
+        let mut height = match Self::get_start_block(pool.clone()).await {
+          Ok(height) => height,
           Err(err) => {
             log::info!("Error getting start block from db: {:?}, waiting a minute", err);
             return;
           }
         };
-        let mut height = std::cmp::max(first_height, db_height.try_into().unwrap());
         log::info!("Address indexing block start height: {:?}", height);
+        let mut blockheights = Vec::new();
         loop {
           let t0 = Instant::now();
           // break if ctrl-c is received
@@ -724,6 +735,42 @@ impl Vermilion {
             continue;
           }
 
+          let blockheight = BlockHeight {
+            block_number: height,
+            block_timestamp: index.block_time(Height(height)).unwrap().timestamp().timestamp_millis()
+          };
+          blockheights.push(blockheight);
+
+          if height < first_inscription_height {
+            if height % 100000 == 0 {
+              log::info!("Inserting blockheights @ {}", height);
+              match Self::mass_insert_blockheights(pool.clone(), blockheights.clone()).await {
+                Ok(_) => {
+                  blockheights = Vec::new();
+                },
+                Err(err) => {
+                  log::info!("Error inserting blockheights into db: {:?}, waiting a minute", err);
+                  tokio::time::sleep(Duration::from_secs(60)).await;
+                  continue;
+                }
+              }
+            }
+            height += 1;
+            continue;
+          } else {
+            match Self::mass_insert_blockheights(pool.clone(), blockheights.clone()).await {
+              Ok(_) => {
+                log::debug!("Inserted blockheights @ {}", height);
+                blockheights = Vec::new();
+              },
+              Err(err) => {
+                log::info!("Error inserting blockheights into db: {:?}, waiting a minute", err);
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                continue;
+              }
+            }
+          }
+
           let t1 = Instant::now();
           let transfers = match index.get_transfers_by_block_height(height) {
             Ok(transfers) => transfers,
@@ -735,6 +782,7 @@ impl Vermilion {
           };
           
           if transfers.len() == 0 {
+            log::debug!("No transfers found for block height: {:?}, skipping", height);
             height += 1;
             continue;
           }
@@ -2348,7 +2396,7 @@ impl Vermilion {
       let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
         REPLACE INTO TABLE `transfers`
         FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '\"'
-        LINES TERMINATED BY '\r\n'
+        LINES TERMINATED BY '\n'
         (id, block_number, block_timestamp, satpoint, transaction, vout, offset, address, @vis_genesis)
         SET is_genesis = (@vis_genesis = 'true')
         "#).await?;
@@ -2479,7 +2527,7 @@ impl Vermilion {
       let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
         REPLACE INTO TABLE `addresses`
         FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '\"'
-        LINES TERMINATED BY '\r\n'
+        LINES TERMINATED BY '\n'
         (id, block_number, block_timestamp, satpoint, transaction, vout, offset, address, @vis_genesis)
         SET is_genesis = (@vis_genesis = 'true')
         "#).await?;
@@ -2487,17 +2535,17 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn get_start_block(pool: mysql_async::Pool) -> Result<u64, Box<dyn std::error::Error>> {
+  pub(crate) async fn get_start_block(pool: mysql_async::Pool) -> Result<u32, Box<dyn std::error::Error>> {
     let mut conn = Self::get_conn(pool).await?;
-    let row = conn.query_iter("select max(block_number) from transfers")
+    let row = conn.query_iter("select max(block_number) from blockheights")
       .await?
       .next()
       .await?
       .unwrap();
-    let row = mysql_async::from_row::<Option<i64>>(row);
+    let row = mysql_async::from_row::<Option<u32>>(row);
     let block_number = match row {
       Some(row) => {
-        let block_number: u64 = row.try_into().unwrap();
+        let block_number: u32 = row;
         block_number+1
       },
       None => {
@@ -2506,6 +2554,55 @@ impl Vermilion {
     };
     Ok(block_number)
   }
+
+  pub(crate) async fn insert_blockheight(pool: mysql_async::Pool, blockheights: Vec<BlockHeight>) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = Self::get_conn(pool).await?;
+    let _exec = conn.exec_batch(r"INSERT INTO blockheights (block_number, block_timestamp) VALUES (:block_number, :block_timestamp) ON DUPLICATE KEY UPDATE block_timestamp=VALUES(block_timestamp)",
+    blockheights.iter().map(
+      |blockheight|
+      params! {
+        "block_number" => &blockheight.block_number,
+        "block_timestamp" => &blockheight.block_timestamp
+      }
+    )).await?;
+    Ok(())
+  }
+
+  pub(crate) async fn mass_insert_blockheights(pool: mysql_async::Pool, blockheights: Vec<BlockHeight>) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = Self::get_conn(pool).await?;
+    let mut wtr = WriterBuilder::new()
+      .has_headers(false)
+      .from_writer(vec![]);
+    for blockheight in blockheights.iter() {
+      wtr.serialize(blockheight).unwrap();
+    }
+    let inner = wtr.into_inner().unwrap();
+    let bytes = Bytes::from(inner);
+    // We are going to call `LOAD DATA LOCAL` so let's setup a one-time handler.
+    conn.set_infile_handler(async move {
+      // We need to return a stream of `io::Result<Bytes>`
+      Ok(futures::stream::iter([bytes]).map(Ok).boxed())
+    });
+  
+    let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
+      REPLACE INTO TABLE `blockheights`
+      FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '\"'
+      LINES TERMINATED BY '\n'
+      (block_number, block_timestamp)
+      "#).await?;
+    Ok(())
+  }
+
+  pub(crate) async fn create_blockheight_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = Self::get_conn(pool).await?;
+    conn.query_drop(
+      r"CREATE TABLE IF NOT EXISTS blockheights (
+        block_number int not null primary key,
+        block_timestamp bigint not null
+      )").await?;
+    Ok(())
+  }
+
   //Server api functions
   async fn root() -> &'static str {
 "If Bitcoin is to change the culture of money, it needs to be cool. Ordinals was the missing piece. The path to $1m is preordained"
@@ -3455,7 +3552,40 @@ impl Vermilion {
         timestamp: row.get("timestamp").unwrap()
       }
     );
-    let result = result.await?.pop().ok_or(anyhow::anyhow!("Sat not found in table"))?;
+    let result = match result.await?.pop() {
+      Some(result) => result,
+      None => {
+        let parsed_sat = Sat(sat);
+        let mut metadata = SatMetadata {
+          sat: sat,
+          decimal: parsed_sat.decimal().to_string(),
+          degree: parsed_sat.degree().to_string(),
+          name: parsed_sat.name(),
+          block: parsed_sat.height().0,
+          cycle: parsed_sat.cycle(),
+          epoch: parsed_sat.epoch().0,
+          period: parsed_sat.period(),
+          offset: parsed_sat.third(),
+          rarity: parsed_sat.rarity().to_string(),
+          percentile: parsed_sat.percentile(),
+          timestamp: 0
+        };
+        let blockheight_result = conn.exec_map(
+          "Select * from blockheights where block_number=?", 
+          params! {
+            "block_number" => metadata.block
+          },
+          |row: mysql_async::Row| BlockHeight {
+            block_number: row.get("block_number").unwrap(),
+            block_timestamp: row.get("block_timestamp").unwrap()
+          }
+        ).await?.pop();
+        if let Some(blockheight) = blockheight_result {
+          metadata.timestamp = blockheight.block_timestamp;
+        }
+        metadata
+      }
+    };
     Ok(result)
   }
 
@@ -3471,7 +3601,17 @@ impl Vermilion {
         satribute: row.get("satribute").unwrap(),
       }
     );
-    let result = result.await?;
+    let mut result = result.await?;
+    if result.len() == 0 {
+      let parsed_sat = Sat(sat);
+      for block_rarity in parsed_sat.block_rarities().iter() {
+        let satribute = Satribute {
+          sat: sat,
+          satribute: block_rarity.to_string()
+        };
+        result.push(satribute);
+      }
+    }
     Ok(result)
   }
 
