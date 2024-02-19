@@ -3571,7 +3571,7 @@ impl Vermilion {
           timestamp: 0
         };
         let blockheight_result = conn.exec_map(
-          "Select * from blockheights where block_number=?", 
+          "Select * from blockheights where block_number=:block_number", 
           params! {
             "block_number" => metadata.block
           },
