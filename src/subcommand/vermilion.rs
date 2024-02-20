@@ -3469,7 +3469,7 @@ impl Vermilion {
       query.push_str(")");
     }
     if params.satributes.len() > 0 {
-      query.push_str(format!(" AND (o.sat in (SELECT sat FROM satributes WHERE satribute IN ({})))", params.satributes.join(",")).as_str());
+      query.push_str(format!(" AND (o.sat in (SELECT sat FROM satributes WHERE satribute IN ('{}')))", params.satributes.join("','")).as_str());
     }
     if params.sort_by == "newest" {
       query.push_str(" ORDER BY o.sequence_number DESC");
