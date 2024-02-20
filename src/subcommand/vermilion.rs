@@ -3448,7 +3448,7 @@ impl Vermilion {
       query.push_str(" AND (");
       for (i, content_type) in params.content_types.iter().enumerate() {
         if content_type == "text" {
-          query.push_str("(o.content_type LIKE '%text/' AND o.content_type NOT LIKE '%text/html' AND o.is_json=0 AND o.is_maybe_json=0)");
+          query.push_str("(o.content_type LIKE '%text/' AND o.content_type NOT LIKE '%text/html' AND o.is_json=0 AND o.is_maybe_json=0 AND o.is_bitmap_style=0)");
         } else if content_type == "image" {
           query.push_str("o.content_type IN ('image/jpeg', 'image/png', 'image/svg+xml', 'image/webp', 'image/avif')");
         } else if content_type == "gif" {
@@ -3461,6 +3461,8 @@ impl Vermilion {
           query.push_str("o.content_type LIKE '%text/html'");
         } else if content_type == "json" {
           query.push_str("o.is_json=1");
+        } else if content_type == "namespace" {
+          query.push_str("o.is_bitmap_style=1");
         }
         if i < params.content_types.len() - 1 {
           query.push_str(" OR ");
