@@ -1381,7 +1381,7 @@ impl Vermilion {
         INDEX index_size (content_length),
         INDEX index_type (content_type(40)),
         INDEX index_metaprotocol (metaprotocol(20)),
-        FULLTEXT INDEX index_text (text),
+        FULLTEXT INDEX index_text (text)
       )").await?;
     Ok(())
   }
