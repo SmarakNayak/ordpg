@@ -257,6 +257,35 @@ pub struct QueryNumber {
   n: u32
 }
 
+#[derive(Deserialize)]
+pub struct InscriptionQueryParams {
+  content_types: Option<String>,
+  satributes: Option<String>,
+  sort_by: Option<String>,
+  page_number: Option<usize>,
+  page_size: Option<usize>
+}
+
+pub struct ParsedInscriptionQueryParams {
+  content_types: Vec<String>,
+  satributes: Vec<String>,
+  sort_by: String,
+  page_number: usize,
+  page_size: usize
+}
+
+impl From<InscriptionQueryParams> for ParsedInscriptionQueryParams {
+  fn from(params: InscriptionQueryParams) -> Self {
+      Self {
+        content_types: params.content_types.map_or(Vec::new(), |v| v.split(",").map(|s| s.to_string()).collect()),
+        satributes: params.satributes.map_or(Vec::new(), |v| v.split(",").map(|s| s.to_string()).collect()),
+        sort_by: params.sort_by.map_or("newest".to_string(), |v| v),
+        page_number: params.page_number.map_or(0, |v| v),
+        page_size: params.page_size.map_or(10, |v| v),
+      }
+  }
+}
+
 pub struct RandomInscriptionBand {
   sequence_number: u64,
   start: f64,
@@ -940,6 +969,7 @@ impl Vermilion {
           .route("/inscription_editions_number/:number", get(Self::inscription_editions_number))
           .route("/inscription_editions_sha256/:sha256", get(Self::inscription_editions_sha256))
           .route("/inscriptions_in_block/:block", get(Self::inscriptions_in_block))
+          .route("/inscriptions", get(Self::inscriptions))
           .route("/random_inscription", get(Self::random_inscription))
           .route("/random_inscriptions", get(Self::random_inscriptions))
           .route("/recent_inscriptions", get(Self::recent_inscriptions))
@@ -2859,6 +2889,49 @@ impl Vermilion {
     ).into_response()
   }
 
+  async fn inscriptions(params: Query<InscriptionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    //1. parse params
+    let params = ParsedInscriptionQueryParams::from(params.0);
+    //2. validate params
+    for content_type in &params.content_types {
+      if !["text", "image", "gif", "audio", "video", "html", "json"].contains(&content_type.as_str()) {
+        return (
+          StatusCode::BAD_REQUEST,
+          format!("Invalid content_type: {}", content_type),
+        ).into_response();
+      }
+    }
+    for satribute in &params.satributes {
+      if !["vintage", "nakamoto", "firsttransaction", "palindrome", "pizza", "block9", "block9_450", "block78", "alpha", "omega", "uniform_palinception", "perfect_palinception", "block286", "jpeg", 
+           "uncommon", "rare", "epic", "legendary", "mythic", "black_uncommon", "black_rare", "black_epic", "black_legendary"].contains(&satribute.as_str()) {
+        return (
+          StatusCode::BAD_REQUEST,
+          format!("Invalid satribute: {}", satribute),
+        ).into_response();
+      }
+    }
+    if !["newest", "oldest", "newest_sat", "oldest_sat", "rarest_sat", "commonest_sat", "biggest", "smallest", "highest_fee", "lowest_fee"].contains(&params.sort_by.as_str()) {
+      return (
+        StatusCode::BAD_REQUEST,
+        format!("Invalid sort_by: {}", params.sort_by),
+      ).into_response();
+    }
+    let inscriptions = match Self::get_inscriptions(server_config.pool, params).await {
+      Ok(inscriptions) => inscriptions,
+      Err(error) => {
+        log::warn!("Error getting /inscriptions: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving inscriptions"),
+        ).into_response();
+      }
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(inscriptions),
+    ).into_response()
+  }
+
   async fn inscription_last_transfer(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     let transfer = match Self::get_last_ordinal_transfer(server_config.pool, inscription_id.to_string()).await {
       Ok(transfer) => transfer,
@@ -3362,6 +3435,71 @@ impl Vermilion {
       params! {
         "n" => n
       },
+      Self::map_row_to_metadata
+    ).await?;
+    Ok(inscriptions)
+  }
+
+  async fn get_inscriptions(pool: mysql_async::Pool, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<Metadata>> {
+    let mut conn = Self::get_conn(pool).await?;
+    //1. build query
+    let mut query = "SELECT o.* FROM ordinals o WHERE 1=1".to_string();
+    if params.content_types.len() > 0 {
+      query.push_str(" AND (");
+      for (i, content_type) in params.content_types.iter().enumerate() {
+        if content_type == "text" {
+          query.push_str("(o.content_type LIKE '%text/' AND o.content_type NOT LIKE '%text/html' AND o.is_json=0 AND o.is_maybe_json=0)");
+        } else if content_type == "image" {
+          query.push_str("o.content_type IN ('image/jpeg', 'image/png', 'image/svg+xml', 'image/webp', 'image/avif')");
+        } else if content_type == "gif" {
+          query.push_str("o.content_type = 'image/gif'");
+        } else if content_type == "audio" {
+          query.push_str("o.content_type IN ('audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/webm')");
+        } else if content_type == "video" {
+          query.push_str("o.content_type IN ('video/mp4', 'video/ogg', 'video/webm'");
+        } else if content_type == "html" {
+          query.push_str("o.content_type LIKE '%text/html'");
+        } else if content_type == "json" {
+          query.push_str("o.is_json=1");
+        }
+        if i < params.content_types.len() - 1 {
+          query.push_str(" OR ");
+        }
+      }
+      query.push_str(")");
+    }
+    if params.satributes.len() > 0 {
+      query.push_str(format!(" AND (o.sat in (SELECT sat FROM satributes WHERE satribute IN ({})))", params.satributes.join(",")).as_str());
+    }
+    if params.sort_by == "newest" {
+      query.push_str(" ORDER BY o.sequence_number DESC");
+    } else if params.sort_by == "oldest" {
+      query.push_str(" ORDER BY o.sequence_number ASC");
+    } else if params.sort_by == "newest_sat" {
+      query.push_str(" ORDER BY o.sat DESC");
+    } else if params.sort_by == "oldest_sat" {
+      query.push_str(" ORDER BY o.sat ASC");
+    } else if params.sort_by == "rarest_sat" {
+      //query.push_str(" ORDER BY o.sat ASC");
+    } else if params.sort_by == "commonest_sat" {
+      //query.push_str(" ORDER BY o.sat DESC");
+    } else if params.sort_by == "biggest" {
+      query.push_str(" ORDER BY o.content_length DESC");
+    } else if params.sort_by == "smallest" {
+      query.push_str(" ORDER BY o.content_length ASC");
+    } else if params.sort_by == "highest_fee" {
+      query.push_str(" ORDER BY o.genesis_fee DESC");
+    } else if params.sort_by == "lowest_fee" {
+      query.push_str(" ORDER BY o.genesis_fee ASC");
+    }
+    if params.page_size > 0 {
+      query.push_str(format!(" LIMIT {}", params.page_size).as_str());
+    }
+    if params.page_number > 0 {
+      query.push_str(format!(" OFFSET {}", params.page_number * params.page_size).as_str());
+    }
+    let inscriptions = conn.query_map(
+      query,
       Self::map_row_to_metadata
     ).await?;
     Ok(inscriptions)
