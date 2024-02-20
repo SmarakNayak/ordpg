@@ -1376,7 +1376,12 @@ impl Vermilion {
         INDEX index_sha256 (sha256),
         INDEX index_sat (sat),
         INDEX index_parent (parent),
-        INDEX index_delegate (delegate)
+        INDEX index_delegate (delegate),
+        INDEX index_fee (genesis_fee),
+        INDEX index_size (content_length),
+        INDEX index_type (content_type(40)),
+        INDEX index_metaprotocol (metaprotocol(20)),
+        FULLTEXT INDEX index_text (text),
       )").await?;
     Ok(())
   }
