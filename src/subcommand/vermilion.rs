@@ -612,6 +612,11 @@ impl Vermilion {
               };
               satributes_vec.push(satribute);
             }
+            let rarity = Satribute {
+              sat: sat_metadata.sat,
+              satribute: sat.rarity().to_string()
+            };
+            satributes_vec.push(rarity);
           }
           let satribute_insert_result = Self::mass_insert_satributes(cloned_pool.clone(), satributes_vec).await;
           let t51c = Instant::now();
@@ -3453,17 +3458,17 @@ impl Vermilion {
       query.push_str(" AND (");
       for (i, content_type) in params.content_types.iter().enumerate() {
         if content_type == "text" {
-          query.push_str("(o.content_type LIKE '%text/' AND o.content_type NOT LIKE '%text/html' AND o.is_json=0 AND o.is_maybe_json=0 AND o.is_bitmap_style=0)");
+          query.push_str("(o.content_type IN ('text/plain;charset=utf-8', 'text/plain','text/markdown', 'text/javascript', 'text/plain;charset=us-ascii', 'text/rtf') AND o.is_json=0 AND o.is_maybe_json=0 AND o.is_bitmap_style=0)");
         } else if content_type == "image" {
-          query.push_str("o.content_type IN ('image/jpeg', 'image/png', 'image/svg+xml', 'image/webp', 'image/avif')");
+          query.push_str("o.content_type IN ('image/jpeg', 'image/png', 'image/svg+xml', 'image/webp', 'image/avif', 'image/tiff', 'image/heic', 'image/jp2')");
         } else if content_type == "gif" {
           query.push_str("o.content_type = 'image/gif'");
         } else if content_type == "audio" {
-          query.push_str("o.content_type IN ('audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/webm')");
+          query.push_str("o.content_type IN ('audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/webm', 'audio/flac', 'audio/mod', 'audio/midi', 'audio/x-m4a')");
         } else if content_type == "video" {
           query.push_str("o.content_type IN ('video/mp4', 'video/ogg', 'video/webm'");
         } else if content_type == "html" {
-          query.push_str("o.content_type LIKE '%text/html'");
+          query.push_str("o.content_type IN ('text/html;charset=utf-8', 'text/html')");
         } else if content_type == "json" {
           query.push_str("o.is_json=1");
         } else if content_type == "namespace" {
