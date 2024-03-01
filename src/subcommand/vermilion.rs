@@ -54,6 +54,12 @@ use futures::StreamExt;
 use csv::Writer;
 use csv::WriterBuilder;
 
+use deadpool_postgres::{Config as deadpoolConfig, Manager, ManagerConfig, Pool as deadpool, RecyclingMethod};
+use tokio_postgres::{NoTls, Error};
+use tokio_postgres::binary_copy::BinaryCopyInWriter;
+use tokio_postgres::types::{ToSql, Type};
+use futures::pin_mut;
+
 #[derive(Debug, Parser, Clone)]
 pub(crate) struct Vermilion {
   #[arg(
@@ -119,7 +125,7 @@ pub(crate) struct Vermilion {
 
 #[derive(Clone, Serialize)]
 pub struct Metadata {  
-  sequence_number: u32,
+  sequence_number: i64,
   id: String,
   content_length: Option<i64>,
   content_type: Option<String>,
@@ -127,14 +133,14 @@ pub struct Metadata {
   genesis_fee: i64,
   genesis_height: i64,
   genesis_transaction: String,
-  pointer: Option<u64>,
-  number: i32,
+  pointer: Option<i64>,
+  number: i64,
   parent: Option<String>,
   delegate: Option<String>,
   metaprotocol: Option<String>,
   embedded_metadata: Option<String>,
   sat: Option<i64>,
-  charms: Option<u16>,
+  charms: Option<i16>,
   timestamp: i64,
   sha256: Option<String>,
   text: Option<String>,
@@ -146,15 +152,15 @@ pub struct Metadata {
 
 #[derive(Clone, Serialize)]
 pub struct SatMetadata {
-  sat: u64,
+  sat: i64,
   decimal: String,
   degree: String,
   name: String,
-  block: u32,
-  cycle: u32,
-  epoch: u32,
-  period: u32,
-  offset: u64,
+  block: i64,
+  cycle: i64,
+  epoch: i64,
+  period: i64,
+  third: i64,
   rarity: String,
   percentile: String,
   timestamp: i64
@@ -162,7 +168,7 @@ pub struct SatMetadata {
 
 #[derive(Serialize)]
 pub struct Satribute {
-  sat: u64,
+  sat: i64,
   satribute: String,
 }
 
@@ -180,8 +186,8 @@ pub struct Transfer {
   block_timestamp: i64,
   satpoint: String,
   transaction: String,
-  vout: u32,
-  offset: u64,
+  vout: i32,
+  offset: i64,
   address: String,
   is_genesis: bool
 }
@@ -193,8 +199,8 @@ pub struct TransferWithMetadata {
   block_timestamp: i64,
   satpoint: String,
   transaction: String,
-  vout: u32,
-  offset: u64,
+  vout: i64,
+  offset: i64,
   address: String,
   is_genesis: bool,
   content_length: Option<i64>,
@@ -203,11 +209,11 @@ pub struct TransferWithMetadata {
   genesis_fee: i64,
   genesis_height: i64,
   genesis_transaction: String,
-  pointer: Option<u64>,
+  pointer: Option<i64>,
   number: i64,
-  sequence_number: Option<u64>,
+  sequence_number: Option<i64>,
   sat: Option<i64>,
-  charms: Option<u16>,
+  charms: Option<i16>,
   parent: Option<String>,
   delegate: Option<String>,
   metaprotocol: Option<String>,
@@ -237,8 +243,8 @@ pub struct Content {
 pub struct InscriptionNumberEdition {
   id: String,
   number: i64,
-  edition: u64,
-  total: u64
+  edition: i64,
+  total: i64
 }
 
 #[derive(Clone, Serialize)]
@@ -287,7 +293,7 @@ impl From<InscriptionQueryParams> for ParsedInscriptionQueryParams {
 }
 
 pub struct RandomInscriptionBand {
-  sequence_number: u64,
+  sequence_number: i64,
   start: f64,
   end: f64
 }
@@ -336,6 +342,7 @@ pub struct IndexerTimings {
 #[derive(Clone)]
 pub struct ApiServerConfig {
   pool: mysql_async::Pool,
+  deadpool: deadpool,
   s3client: s3::Client,
   bucket_name: String
 }
@@ -409,8 +416,16 @@ impl Vermilion {
         .unwrap();
     rt.block_on(async {
       let config = options.load_config().unwrap();
+      let cloned_config = options.clone().load_config().unwrap();
       let url = config.db_connection_string.unwrap();
       let pool = Pool::new(url.as_str());
+      let deadpool = match Self::get_deadpool(cloned_config).await {
+        Ok(deadpool) => deadpool,
+        Err(err) => {
+          println!("Error creating deadpool: {:?}", err);
+          return;
+        }
+      };
       let start_number_override = config.start_number_override;
       let s3_config = aws_config::from_env().load().await;
       let s3client = s3::Client::new(&s3_config);
@@ -421,7 +436,7 @@ impl Vermilion {
       let sem = Arc::new(Semaphore::new(n_threads));
       let status_vector: Arc<Mutex<Vec<SequenceNumberStatus>>> = Arc::new(Mutex::new(Vec::new()));
       let timing_vector: Arc<Mutex<Vec<IndexerTimings>>> = Arc::new(Mutex::new(Vec::new()));
-      let init_result = Self::initialize_db_tables(pool.clone()).await;
+      let init_result = Self::initialize_db_tables(deadpool.clone()).await;
       if init_result.is_err() {
         println!("Error initializing db tables: {:?}", init_result.unwrap_err());
         return;
@@ -430,11 +445,8 @@ impl Vermilion {
       let start_number = match start_number_override {
         Some(start_number_override) => start_number_override,
         None => {
-          match Self::get_last_number(pool.clone()).await {
-            Ok(last_number) => match last_number {
-              Some(last_number) => last_number + 1,
-              None => 0                
-            },
+          match Self::get_last_number(deadpool.clone()).await {
+            Ok(last_number) => (last_number + 1) as u64,
             Err(err) => {
               println!("Error getting last number from db: {:?}, stopping, try restarting process", err);
               return;
@@ -461,7 +473,8 @@ impl Vermilion {
         }
         let permit = Arc::clone(&sem).acquire_owned().await;
         let cloned_index = index.clone();
-        let cloned_pool = pool.clone();        
+        let cloned_pool = pool.clone();
+        let cloned_deadpool = deadpool.clone();
         let cloned_s3client = s3client.clone();
         let cloned_bucket_name = s3_bucket_name.clone();
         let cloned_status_vector = status_vector.clone();
@@ -598,13 +611,13 @@ impl Vermilion {
 
           //4.1 Insert metadata
           let t51 = Instant::now();
-          let insert_result = Self::mass_insert_metadata_and_editions(cloned_pool.clone(), metadata_vec.clone()).await;
+          let insert_result = Self::bulk_insert_metadata(cloned_deadpool.clone(), metadata_vec.clone()).await;
           let t51a = Instant::now();
-          let sat_insert_result = Self::mass_insert_sat_metadata(cloned_pool.clone(), sat_metadata_vec.clone()).await;
+          let sat_insert_result = Self::bulk_insert_sat_metadata(cloned_deadpool.clone(), sat_metadata_vec.clone()).await;
           let t51b = Instant::now();
           let mut satributes_vec = Vec::new();
           for sat_metadata in sat_metadata_vec.iter() {
-            let sat = Sat(sat_metadata.sat);
+            let sat = Sat(sat_metadata.sat as u64);
             for block_rarity in sat.block_rarities().iter() {
               let satribute = Satribute {
                 sat: sat_metadata.sat,
@@ -618,7 +631,7 @@ impl Vermilion {
             };
             satributes_vec.push(rarity);
           }
-          let satribute_insert_result = Self::mass_insert_satributes(cloned_pool.clone(), satributes_vec).await;
+          let satribute_insert_result = Self::bulk_insert_satributes(cloned_deadpool.clone(), satributes_vec).await;
           let t51c = Instant::now();
           //4.2 Upload content to db
           let mut content_vec: Vec<ContentBlob> = Vec::new();
@@ -637,7 +650,7 @@ impl Vermilion {
               content_vec.push(content_blob);
             }
           }
-          let content_result = Self::mass_insert_content(cloned_pool.clone(), content_vec).await;
+          let content_result = Self::bulk_insert_content(cloned_deadpool.clone(), content_vec).await;
 
           //4.3 Update status
           let t52 = Instant::now();
@@ -908,8 +921,8 @@ impl Vermilion {
               block_timestamp: block_time.timestamp().timestamp_millis(),
               satpoint: point.to_string(),
               transaction: point.outpoint.txid.to_string(),
-              vout: point.outpoint.vout,
-              offset: point.offset,
+              vout: point.outpoint.vout as i32,
+              offset: point.offset as i64,
               address: address,
               is_genesis: point.outpoint.txid == id.txid && point.outpoint.vout == id.index
             };
@@ -946,14 +959,23 @@ impl Vermilion {
       let rt = Runtime::new().unwrap();
       rt.block_on(async move {
         let config = options.load_config().unwrap();
+        let config_clone = options.clone().load_config().unwrap();
         let url = config.db_connection_string.unwrap();
         let pool = mysql_async::Pool::new(url.as_str());
+        let deadpool = match Self::get_deadpool(config_clone).await {
+          Ok(deadpool) => deadpool,
+          Err(err) => {
+            println!("Error creating deadpool: {:?}", err);
+            return;
+          }
+        };
         let bucket_name = config.s3_bucket_name.unwrap();
         let s3_config = aws_config::from_env().load().await;
         let s3client = s3::Client::new(&s3_config);
         
         let server_config = ApiServerConfig {
           pool: pool,
+          deadpool: deadpool,
           s3client: s3client,
           bucket_name: bucket_name
         };
@@ -1287,15 +1309,15 @@ impl Vermilion {
       genesis_fee: entry.fee.try_into().unwrap(),
       genesis_height: entry.height.try_into().unwrap(),
       genesis_transaction: inscription_id.txid.to_string(),
-      pointer: inscription.pointer(),
-      number: entry.inscription_number,
-      sequence_number: entry.sequence_number,
+      pointer: inscription.pointer().map(|value| { value.try_into().unwrap()}),
+      number: entry.inscription_number as i64,
+      sequence_number: entry.sequence_number as i64,
       parent: parent,
       delegate: inscription.delegate().map(|x| x.to_string()),
       metaprotocol: metaprotocol,
       embedded_metadata: embedded_metadata,
       sat: sat,
-      charms: Some(entry.charms),
+      charms: Some(entry.charms.try_into().unwrap()),
       timestamp: entry.timestamp.try_into().unwrap(),
       sha256: sha256.clone(),
       text: text,
@@ -1309,15 +1331,15 @@ impl Vermilion {
       Some(sat) => {
         let sat_blocktime = index.block_time(sat.height())?;
         let sat_metadata = SatMetadata {
-          sat: sat.0,
+          sat: sat.0 as i64,
           decimal: sat.decimal().to_string(),
           degree: sat.degree().to_string(),
           name: sat.name(),
-          block: sat.height().0,
-          cycle: sat.cycle(),
-          epoch: sat.epoch().0,
-          period: sat.period(),
-          offset: sat.third(),
+          block: sat.height().0 as i64,
+          cycle: sat.cycle() as i64,
+          epoch: sat.epoch().0 as i64,
+          period: sat.period() as i64,
+          third: sat.third() as i64,
           rarity: sat.rarity().to_string(),
           percentile: sat.percentile(),
           timestamp: sat_blocktime.timestamp().timestamp()
@@ -1332,7 +1354,7 @@ impl Vermilion {
     Ok((metadata, sat_metadata))
   }
 
-  pub(crate) async fn initialize_db_tables(pool: mysql_async::Pool) -> anyhow::Result<()> {
+  pub(crate) async fn initialize_db_tables(pool: deadpool_postgres::Pool) -> anyhow::Result<()> {
     Self::create_metadata_table(pool.clone()).await.context("Failed to create metadata table")?;
     Self::create_sat_table(pool.clone()).await.context("Failed to create sat table")?;
     Self::create_content_table(pool.clone()).await.context("Failed to create content table")?;
@@ -1342,149 +1364,138 @@ impl Vermilion {
     Self::create_procedure_log(pool.clone()).await.context("Failed to create proc log")?;
     Self::create_edition_procedure(pool.clone()).await.context("Failed to create edition proc")?;
     Self::create_weights_procedure(pool.clone()).await.context("Failed to create weights proc")?;
-    Self::create_edition_insert_trigger(pool.clone()).await.context("Failed to create edition trigger")?;
-    Self::create_metadata_insert_trigger(pool.clone()).await.context("Failed to create metadata trigger")?;
+    //Self::create_edition_insert_trigger(pool.clone()).await.context("Failed to create edition trigger")?;
+    //Self::create_metadata_insert_trigger(pool.clone()).await.context("Failed to create metadata trigger")?;
     Ok(())
   }
 
-  pub(crate) async fn create_metadata_table(pool: mysql_async::Pool) -> anyhow::Result<()> {
-    let mut conn = Self::get_conn(pool).await?;
-    conn.query_drop(
+  pub(crate) async fn create_metadata_table(pool: deadpool_postgres::Pool) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
       r"CREATE TABLE IF NOT EXISTS ordinals (
-        sequence_number bigint unsigned not null primary key,
+        sequence_number bigint not null primary key,
         id varchar(80) not null,
         content_length bigint,
         content_type text,
         content_encoding text,
         genesis_fee bigint,
         genesis_height bigint,
-        genesis_transaction text,
-        pointer bigint unsigned,
+        genesis_transaction varchar(80),
+        pointer bigint,
         number bigint,          
         parent varchar(80),
         delegate varchar(80),
-        metaprotocol mediumtext,
-        embedded_metadata mediumtext,
+        metaprotocol text,
+        embedded_metadata text,
         sat bigint,
         charms smallint,
         timestamp bigint,
         sha256 varchar(64),
-        text mediumtext,
+        text text,
         is_json boolean,
         is_maybe_json boolean,
         is_bitmap_style boolean,
-        is_recursive boolean,        
-        INDEX index_sequence_number (sequence_number),
-        INDEX index_id (id),
-        INDEX index_number (number),
-        INDEX index_block (genesis_height),
-        INDEX index_sha256 (sha256),
-        INDEX index_sat (sat),
-        INDEX index_parent (parent),
-        INDEX index_delegate (delegate),
-        INDEX index_fee (genesis_fee),
-        INDEX index_size (content_length),
-        INDEX index_type (content_type(40)),
-        INDEX index_metaprotocol (metaprotocol(20)),
-        FULLTEXT INDEX index_text (text)
+        is_recursive boolean
       )").await?;
+    // conn.simple_query(r"
+    //   CREATE INDEX IF NOT EXISTS index_metadata_id ON ordinals (id);
+    //   CREATE INDEX IF NOT EXISTS index_metadata_number ON ordinals (number);
+    //   CREATE INDEX IF NOT EXISTS index_metadata_block ON ordinals (genesis_height);
+    //   CREATE INDEX IF NOT EXISTS index_metadata_sha256 ON ordinals (sha256);
+    //   CREATE INDEX IF NOT EXISTS index_metadata_sat ON ordinals (sat);
+    //   CREATE INDEX IF NOT EXISTS index_metadata_parent ON ordinals (parent);
+    //   CREATE INDEX IF NOT EXISTS index_metadata_delegate ON ordinals (delegate);
+    //   CREATE INDEX IF NOT EXISTS index_metadata_fee ON ordinals (genesis_fee);
+    //   CREATE INDEX IF NOT EXISTS index_metadata_size ON ordinals (content_length);
+    //   CREATE INDEX IF NOT EXISTS index_metadata_type ON ordinals (content_type);
+    //   CREATE INDEX IF NOT EXISTS index_metadata_metaprotocol ON ordinals (metaprotocol);
+    //   CREATE INDEX IF NOT EXISTS index_metadata_text ON ordinals USING GIN (to_tsvector('english', text));
+    // ").await?;
+  
     Ok(())
   }
-
-  pub(crate) async fn create_edition_table(pool: mysql_async::Pool) -> anyhow::Result<()> {
-    let mut conn = Self::get_conn(pool).await?;
-    conn.query_drop(
+  
+  pub(crate) async fn create_sat_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(r"
+      CREATE TABLE IF NOT EXISTS sat (
+      sat bigint not null primary key,
+      sat_decimal text,
+      degree text,
+      name text,
+      block bigint,
+      cycle bigint,
+      epoch bigint,
+      period bigint,
+      third bigint,
+      rarity varchar(20),
+      percentile text,
+      timestamp bigint
+      )").await?;
+    conn.simple_query(r"
+      CREATE INDEX IF NOT EXISTS index_sat_block ON sat (block);
+      CREATE INDEX IF NOT EXISTS index_sat_rarity ON sat (rarity);
+      ").await?;
+    Ok(())
+  }
+  
+  pub(crate) async fn create_content_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
+      r"CREATE TABLE IF NOT EXISTS content (
+        content_id SERIAL,
+        sha256 varchar(64) NOT NULL PRIMARY KEY,
+        content bytea,
+        content_type text
+      )").await?;
+    conn.simple_query(r"
+      CREATE INDEX IF NOT EXISTS index_content_content_id ON content (content_id);
+      ").await?;
+    Ok(())
+  }
+  
+  pub(crate) async fn create_edition_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
       r"CREATE TABLE IF NOT EXISTS editions (
           id varchar(80) not null primary key,
           number bigint,
-          sequence_number bigint unsigned,
+          sequence_number bigint,
           sha256 varchar(64),
-          edition bigint unsigned,
-          INDEX index_number (number),
-          INDEX index_sha256 (sha256)
+          edition bigint
       )").await?;
+      conn.simple_query(r"
+        CREATE INDEX IF NOT EXISTS index_editions_number ON editions (number);
+        CREATE INDEX IF NOT EXISTS index_editions_sha256 ON editions (sha256);
+      ").await?;
     Ok(())
   }
-
-  pub(crate) async fn create_editions_total_table(pool: mysql_async::Pool) -> anyhow::Result<()> {
-    let mut conn = Self::get_conn(pool).await?;
-    conn.query_drop(
+  
+  pub(crate) async fn create_editions_total_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
       r"CREATE TABLE IF NOT EXISTS editions_total (
           sha256 varchar(64) not null primary key,
-          total bigint unsigned
+          total bigint
       )").await?;
     Ok(())
   }
-
-  pub(crate) async fn create_sat_table(pool: mysql_async::Pool) -> anyhow::Result<()> {
-    let mut conn = Self::get_conn(pool).await?;
-    conn.query_drop(
-      r"CREATE TABLE IF NOT EXISTS sat (
-        sat bigint not null primary key,
-        sat_decimal text,
-        degree text,
-        name text,
-        block bigint unsigned,
-        cycle bigint unsigned,
-        epoch bigint unsigned,
-        period bigint unsigned,
-        offset bigint unsigned,
-        rarity varchar(20),
-        percentile text,
-        timestamp bigint,
-        INDEX index_sat (sat),
-        INDEX index_block (block),
-        INDEX index_rarity (rarity)
-      )").await?;
-    Ok(())
-  }
-
-  pub(crate) async fn create_content_table(pool: mysql_async::Pool) -> anyhow::Result<()> {
-    let mut conn = Self::get_conn(pool).await?;
-    conn.query_drop(
-      r"CREATE TABLE IF NOT EXISTS content (
-        content_id int unsigned NOT NULL AUTO_INCREMENT UNIQUE,
-        sha256 varchar(64) NOT NULL PRIMARY KEY,
-        content mediumblob,
-        content_type text,
-        INDEX index_sha256 (sha256)
-      )").await?;
-    Ok(())
-  }
-
-  pub(crate) async fn create_satribute_criteria_table(pool: mysql_async::Pool) -> anyhow::Result<()> {
-    let mut conn = Self::get_conn(pool).await?;
-    conn.query_drop(
-      r"CREATE TABLE IF NOT EXISTS satribute_criteria_new (
-        satribute varchar(20) not null,
-        sat bigint,
-        sat_range_start bigint,
-        sat_range_end bigint,
-        block int,
-        block_range_start int,
-        block_range_end int,
-        INDEX index_satribute (satribute),
-        INDEX index_sat (sat),
-        INDEX index_sat_range (sat_range_start, sat_range_end),
-        INDEX index_block (block),
-        INDEX index_block_range (block_range_start, block_range_end)
-      )").await?;
-    Ok(())
-  }
-
-  pub(crate) async fn create_satributes_table(pool: mysql_async::Pool) -> anyhow::Result<()> {
-    let mut conn = Self::get_conn(pool).await?;
-    conn.query_drop(
+  
+  pub(crate) async fn create_satributes_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
       r"CREATE TABLE IF NOT EXISTS satributes (
         sat bigint not null,
         satribute varchar(30) not null,
-        INDEX index_sat (sat),
-        INDEX index_satribute (satribute),
         CONSTRAINT satribute_key PRIMARY KEY (sat, satribute)
       )").await?;
+    conn.simple_query(r"
+      CREATE INDEX IF NOT EXISTS index_satributes_sat ON satributes (sat);
+      CREATE INDEX IF NOT EXISTS index_satributes_satribute ON satributes (satribute);
+    ").await?;
     Ok(())
   }
-
+  
   pub(crate) async fn bulk_insert<F, P, T>(
     pool: mysql_async::Pool,
     table: String,
@@ -1605,257 +1616,92 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn bulk_insert_metadata(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut conn = Self::get_conn(pool.clone()).await?;
-    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
-    let insert_query = r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, pointer, number, sequence_number, parent, metaprotocol, embedded_metadata, sat, timestamp, sha256, text, is_json, is_maybe_json, is_bitmap_style, is_recursive)
-    VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :pointer, :number, :sequence_number, :parent, :metaprotocol, :embedded_metadata, :sat, :timestamp, :sha256, :text, :is_json, :is_maybe_json, :is_bitmap_style, :is_recursive)";
-    let insert_query_update = r"INSERT INTO ordinals (id, content_length, content_type, genesis_fee, genesis_height, genesis_transaction, pointer, number, sequence_number, parent, metaprotocol, embedded_metadata, sat, timestamp, sha256, text, is_json, is_maybe_json, is_bitmap_style, is_recursive)
-    VALUES (:id, :content_length, :content_type, :genesis_fee, :genesis_height, :genesis_transaction, :pointer, :number, :sequence_number, :parent, :metaprotocol, :embedded_metadata, :sat, :timestamp, :sha256, :text, :is_json, :is_maybe_json, :is_bitmap_style, :is_recursive)
-    ON DUPLICATE KEY UPDATE content_length=VALUES(content_length), content_type=VALUES(content_type), genesis_fee=VALUES(genesis_fee), genesis_height=VALUES(genesis_height), genesis_transaction=VALUES(genesis_transaction), 
-    pointer=VALUES(pointer), number=VALUES(number), sequence_number=VALUES(sequence_number), parent=VALUES(parent), metaprotocol=VALUES(metaprotocol), embedded_metadata=VALUES(embedded_metadata), 
-    sat=VALUES(sat), timestamp=VALUES(timestamp), sha256=VALUES(sha256), text=VALUES(text), is_json=VALUES(is_json), is_maybe_json=VALUES(is_maybe_json), is_bitmap_style=VALUES(is_bitmap_style), is_recursive=VALUES(is_recursive)";
-    let mut _exec = tx.exec_batch(
-      insert_query,
-      metadata_vec.iter().map(|metadata| params! { 
-        "id" => &metadata.id,
-        "content_length" => &metadata.content_length,
-        "content_type" => &metadata.content_type,
-        "genesis_fee" => &metadata.genesis_fee,
-        "genesis_height" => &metadata.genesis_height,
-        "genesis_transaction" => &metadata.genesis_transaction,
-        "pointer" => &metadata.pointer,
-        "number" => &metadata.number,
-        "sequence_number" => &metadata.sequence_number,
-        "parent" => &metadata.parent,
-        "metaprotocol" => &metadata.metaprotocol,
-        "embedded_metadata" => &metadata.embedded_metadata,
-        "sat" => &metadata.sat,
-        "timestamp" => &metadata.timestamp,
-        "sha256" => &metadata.sha256,
-        "text" => &metadata.text,
-        "is_json" => &metadata.is_json,
-        "is_maybe_json" => &metadata.is_maybe_json,
-        "is_bitmap_style" => &metadata.is_bitmap_style,
-        "is_recursive" => &metadata.is_recursive
-      })
-    ).await;
-    match _exec {
-      Ok(_) => {},
-      Err(error) => {
-        if error.to_string().contains("Duplicate entry") {
-          log::info!("Duplicates found, updating metadata");
-          let mut _exec = tx.exec_batch(
-            insert_query_update,
-            metadata_vec.iter().map(|metadata| params! { 
-              "id" => &metadata.id,
-              "content_length" => &metadata.content_length,
-              "content_type" => &metadata.content_type,
-              "genesis_fee" => &metadata.genesis_fee,
-              "genesis_height" => &metadata.genesis_height,
-              "genesis_transaction" => &metadata.genesis_transaction,
-              "pointer" => &metadata.pointer,
-              "number" => &metadata.number,
-              "sequence_number" => &metadata.sequence_number,
-              "parent" => &metadata.parent,
-              "metaprotocol" => &metadata.metaprotocol,
-              "embedded_metadata" => &metadata.embedded_metadata,
-              "sat" => &metadata.sat,
-              "timestamp" => &metadata.timestamp,
-              "sha256" => &metadata.sha256,
-              "text" => &metadata.text,
-              "is_json" => &metadata.is_json,
-              "is_maybe_json" => &metadata.is_maybe_json,
-              "is_bitmap_style" => &metadata.is_bitmap_style,
-              "is_recursive" => &metadata.is_recursive
-            })
-          ).await;
-        } else {          
-          log::warn!("Error bulk inserting ordinal metadata: {}", error); 
-          return Err(Box::new(error));
-        }
-      }
-    };
-    let result = tx.commit().await;
-    match result {
-      Ok(_) => Ok(()),
-      Err(error) => {
-        log::warn!("Error bulk inserting ordinal metadata: {}", error);
-        Err(Box::new(error))
-      }
+  async fn bulk_insert_metadata(pool: deadpool_postgres::Pool, data: Vec<Metadata>) -> anyhow::Result<()> {
+    let mut conn = pool.get().await?;
+    let tx = conn.transaction().await?;
+    let copy_stm = r#"COPY ordinals (
+      sequence_number, 
+      id, 
+      content_length, 
+      content_type, 
+      content_encoding, 
+      genesis_fee, 
+      genesis_height, 
+      genesis_transaction, 
+      pointer, 
+      number, 
+      parent, 
+      delegate, 
+      metaprotocol, 
+      embedded_metadata, 
+      sat, 
+      charms, 
+      timestamp, 
+      sha256, 
+      text, 
+      is_json, 
+      is_maybe_json, 
+      is_bitmap_style, 
+      is_recursive) FROM STDIN BINARY"#;
+    let col_types = vec![
+      Type::INT8,
+      Type::VARCHAR,
+      Type::INT8,
+      Type::TEXT,
+      Type::TEXT,
+      Type::INT8,
+      Type::INT8,
+      Type::VARCHAR,
+      Type::INT8,
+      Type::INT8,
+      Type::VARCHAR,
+      Type::VARCHAR,
+      Type::TEXT,
+      Type::TEXT,
+      Type::INT8,
+      Type::INT2,
+      Type::INT8,
+      Type::VARCHAR,
+      Type::TEXT,
+      Type::BOOL,
+      Type::BOOL,
+      Type::BOOL,
+      Type::BOOL
+    ];
+    let sink = tx.copy_in(copy_stm).await?;
+    let writer = BinaryCopyInWriter::new(sink, &col_types);
+    pin_mut!(writer);
+    for m in data {
+      let mut row: Vec<&'_ (dyn ToSql + Sync)> = Vec::new();
+      row.push(&m.sequence_number);
+      row.push(&m.id);
+      row.push(&m.content_length);
+      row.push(&m.content_type);
+      row.push(&m.content_encoding);
+      row.push(&m.genesis_fee);
+      row.push(&m.genesis_height);
+      row.push(&m.genesis_transaction);
+      row.push(&m.pointer);
+      row.push(&m.number);
+      row.push(&m.parent);
+      row.push(&m.delegate);
+      row.push(&m.metaprotocol);
+      row.push(&m.embedded_metadata);
+      row.push(&m.sat);
+      row.push(&m.charms);
+      row.push(&m.timestamp);
+      row.push(&m.sha256);
+      row.push(&m.text);
+      row.push(&m.is_json);
+      row.push(&m.is_maybe_json);
+      row.push(&m.is_bitmap_style);
+      row.push(&m.is_recursive);
+      writer.as_mut().write(&row).await?;
     }
-  }
-
-  pub(crate) async fn bulk_insert_metadata2(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut conn = Self::get_conn(pool.clone()).await?;
-    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
-    let mut _exec = Self::bulk_insert(pool.clone(),
-      "ordinals".to_string(),
-      vec![
-        "id".to_string(),
-        "content_length".to_string(),
-        "content_type".to_string(),
-        "genesis_fee".to_string(),
-        "genesis_height".to_string(),
-        "genesis_transaction".to_string(),
-        "pointer".to_string(),
-        "number".to_string(),
-        "sequence_number".to_string(),
-        "parent".to_string(),
-        "metaprotocol".to_string(),
-        "embedded_metadata".to_string(),
-        "sat".to_string(),
-        "timestamp".to_string(),
-        "sha256".to_string(),
-        "text".to_string(),
-        "is_json".to_string(),
-        "is_maybe_json".to_string(),
-        "is_bitmap_style".to_string(),
-        "is_recursive".to_string()
-      ],
-      metadata_vec.clone(),
-      |metadata| params! { 
-        "id" => &metadata.id,
-        "content_length" => &metadata.content_length,
-        "content_type" => &metadata.content_type,
-        "content_encoding" => &metadata.content_encoding,
-        "genesis_fee" => &metadata.genesis_fee,
-        "genesis_height" => &metadata.genesis_height,
-        "genesis_transaction" => &metadata.genesis_transaction,
-        "pointer" => &metadata.pointer,
-        "number" => &metadata.number,
-        "sequence_number" => &metadata.sequence_number,
-        "parent" => &metadata.parent,
-        "delegate" => &metadata.delegate,
-        "metaprotocol" => &metadata.metaprotocol,
-        "embedded_metadata" => &metadata.embedded_metadata,
-        "sat" => &metadata.sat,
-        "charms" => &metadata.charms,
-        "timestamp" => &metadata.timestamp,
-        "sha256" => &metadata.sha256,
-        "text" => &metadata.text,
-        "is_json" => &metadata.is_json,
-        "is_maybe_json" => &metadata.is_maybe_json,
-        "is_bitmap_style" => &metadata.is_bitmap_style,
-        "is_recursive" => &metadata.is_recursive
-      }
-    ).await;
-    match _exec {
-      Ok(_) => {},
-      Err(error) => {
-        if error.to_string().contains("Duplicate entry") {
-          log::info!("Duplicates found, updating metadata");
-          let mut _exec = Self::bulk_insert_update(pool.clone(),
-            "ordinals".to_string(),
-            vec![
-              "id".to_string(),
-              "content_length".to_string(),
-              "content_type".to_string(),
-              "content_encoding".to_string(),
-              "genesis_fee".to_string(),
-              "genesis_height".to_string(),
-              "genesis_transaction".to_string(),
-              "pointer".to_string(),
-              "number".to_string(),
-              "sequence_number".to_string(),
-              "parent".to_string(),
-              "delegate".to_string(),
-              "metaprotocol".to_string(),
-              "embedded_metadata".to_string(),
-              "sat".to_string(),
-              "charms".to_string(),
-              "timestamp".to_string(),
-              "sha256".to_string(),
-              "text".to_string(),
-              "is_json".to_string(),
-              "is_maybe_json".to_string(),
-              "is_bitmap_style".to_string(),
-              "is_recursive".to_string()
-            ],
-            vec![
-              "content_length".to_string(),
-              "content_type".to_string(),
-              "content_encoding".to_string(),
-              "genesis_fee".to_string(),
-              "genesis_height".to_string(),
-              "genesis_transaction".to_string(),
-              "pointer".to_string(),
-              "number".to_string(),
-              "sequence_number".to_string(),
-              "parent".to_string(),
-              "delegate".to_string(),
-              "metaprotocol".to_string(),
-              "embedded_metadata".to_string(),
-              "sat".to_string(),
-              "charms".to_string(),
-              "timestamp".to_string(),
-              "sha256".to_string(),
-              "text".to_string(),
-              "is_json".to_string(),
-              "is_maybe_json".to_string(),
-              "is_bitmap_style".to_string(),
-              "is_recursive".to_string()
-            ],
-            metadata_vec.clone(),
-            |metadata| params! { 
-              "id" => &metadata.id,
-              "content_length" => &metadata.content_length,
-              "content_type" => &metadata.content_type,
-              "content_encoding" => &metadata.content_encoding,
-              "genesis_fee" => &metadata.genesis_fee,
-              "genesis_height" => &metadata.genesis_height,
-              "genesis_transaction" => &metadata.genesis_transaction,
-              "pointer" => &metadata.pointer,
-              "number" => &metadata.number,
-              "sequence_number" => &metadata.sequence_number,
-              "parent" => &metadata.parent,
-              "delegate" => &metadata.delegate,
-              "metaprotocol" => &metadata.metaprotocol,
-              "embedded_metadata" => &metadata.embedded_metadata,
-              "sat" => &metadata.sat,
-              "charms" => &metadata.charms,
-              "timestamp" => &metadata.timestamp,
-              "sha256" => &metadata.sha256,
-              "text" => &metadata.text,
-              "is_json" => &metadata.is_json,
-              "is_maybe_json" => &metadata.is_maybe_json,
-              "is_bitmap_style" => &metadata.is_bitmap_style,
-              "is_recursive" => &metadata.is_recursive
-            }
-          ).await;
-        } else {          
-          log::warn!("Error bulk inserting ordinal metadata: {}", error); 
-          return Err(Box::new(error));
-        }
-      }
-    };
-
-    let edition_query = r"INSERT INTO editions (id, number, sequence_number, sha256, edition) VALUES (:id, :number, :sequence_number, :sha256, 0) ON DUPLICATE KEY UPDATE number=Values(number), sequence_number=Values(sequence_number), sha256=Values(sha256), edition=0";
-    let _edition_exec = tx.exec_batch(
-      edition_query,
-        metadata_vec.iter().map(|metadata| params! {
-          "id" => &metadata.id,
-          "number" => &metadata.number,
-          "sequence_number" => &metadata.sequence_number,
-          "sha256" => &metadata.sha256
-      })
-    ).await;
-    match _edition_exec {
-      Ok(_) => {},
-      Err(error) => {
-        log::warn!("Error bulk inserting edition: {}", error);
-        return Err(Box::new(error));
-      }
-    };
-
-    let result = tx.commit().await;
-    match result {
-      Ok(_) => Ok(()),
-      Err(error) => {
-        log::warn!("Error committing bulk insertion of ordinal metadata: {}", error);
-        Err(Box::new(error))
-      }
-    }
+  
+    writer.finish().await?;
+    tx.commit().await?;
+    Ok(())
   }
 
   pub(crate) async fn mass_insert_metadata(conn: &mut mysql_async::Conn, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -1900,44 +1746,59 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn bulk_insert_sat_metadata(pool: mysql_async::Pool, metadata_vec: Vec<SatMetadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut conn = Self::get_conn(pool).await?;
-    let mut tx = conn.start_transaction(TxOpts::default()).await?;
-    let _exec = tx.exec_batch(
-      r"INSERT INTO sat (sat, sat_decimal, degree, name, block, cycle, epoch, period, offset, rarity, percentile, timestamp)
-        VALUES (:sat, :sat_decimal, :degree, :name, :block, :cycle, :epoch, :period, :offset, :rarity, :percentile, :timestamp)
-        ON DUPLICATE KEY UPDATE sat_decimal=VALUES(sat_decimal), degree=VALUES(degree), name=VALUES(name), block=VALUES(block), cycle=VALUES(cycle), epoch=VALUES(epoch), 
-        period=VALUES(period), offset=VALUES(offset), rarity=VALUES(rarity), percentile=VALUES(percentile), timestamp=VALUES(timestamp)",
-        metadata_vec.iter().map(|metadata| params! {
-          "sat" => &metadata.sat,
-          "sat_decimal" => &metadata.decimal,
-          "degree" => &metadata.degree,
-          "name" => &metadata.name,
-          "block" => &metadata.block,
-          "cycle" => &metadata.cycle,
-          "epoch" => &metadata.epoch,
-          "period" => &metadata.period,
-          "offset" => &metadata.offset,
-          "rarity" => &metadata.rarity,
-          "percentile" => &metadata.percentile,
-          "timestamp" => &metadata.timestamp
-      })
-    ).await;
-    match _exec {
-      Ok(_) => {},
-      Err(error) => {
-        log::warn!("Error bulk inserting sat metadata: {}", error);
-        return Err(Box::new(error));
-      }
-    };
-    let result = tx.commit().await;
-    match result {
-      Ok(_) => Ok(()),
-      Err(error) => {
-        log::warn!("Error bulk inserting ordinal sat metadata: {}", error);
-        Err(Box::new(error))
-      }
+  async fn bulk_insert_sat_metadata(pool: deadpool_postgres::Pool, data: Vec<SatMetadata>) -> anyhow::Result<()> {
+    let mut conn = pool.get().await?;
+    let tx = conn.transaction().await?;
+    let copy_stm = r#"COPY sat (
+      sat,
+      sat_decimal,
+      degree,
+      name,
+      block,
+      cycle,
+      epoch,
+      period,
+      third,
+      rarity,
+      percentile,
+      timestamp) FROM STDIN BINARY"#;
+    let col_types = vec![
+      Type::INT8,
+      Type::TEXT,
+      Type::TEXT,
+      Type::TEXT,
+      Type::INT8,
+      Type::INT8,
+      Type::INT8,
+      Type::INT8,
+      Type::INT8,
+      Type::TEXT,
+      Type::TEXT,
+      Type::INT8
+    ];
+    let sink = tx.copy_in(copy_stm).await?;
+    let writer = BinaryCopyInWriter::new(sink, &col_types);
+    pin_mut!(writer);
+    for m in data {
+      let mut row: Vec<&'_ (dyn ToSql + Sync)> = Vec::new();
+      row.push(&m.sat);
+      row.push(&m.decimal);
+      row.push(&m.degree);
+      row.push(&m.name);
+      row.push(&m.block);
+      row.push(&m.cycle);
+      row.push(&m.epoch);
+      row.push(&m.period);
+      row.push(&m.third);
+      row.push(&m.rarity);
+      row.push(&m.percentile);
+      row.push(&m.timestamp);
+      writer.as_mut().write(&row).await?;
     }
+  
+    writer.finish().await?;
+    tx.commit().await?;
+    Ok(())
   }
 
   pub(crate) async fn mass_insert_sat_metadata(pool: mysql_async::Pool, metadata_vec: Vec<SatMetadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -1966,33 +1827,33 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn bulk_insert_content(pool: mysql_async::Pool, content_vec: Vec<ContentBlob>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut conn = Self::get_conn(pool).await?;
-    let mut tx = conn.start_transaction(TxOpts::default()).await?;
-    let _exec = tx.exec_batch(
-      r"INSERT INTO content (sha256, content, content_type) VALUES (:sha256, :content, :content_type) ON DUPLICATE KEY UPDATE sha256=sha256",
-      content_vec.iter().map(|content_blob| params! {
-        "sha256" => &content_blob.sha256,
-        "content" => &content_blob.content,
-        "content_type" => &content_blob.content_type
-      })
-    ).await;
-    match _exec {
-      Ok(_) => {},
-      Err(error) => {
-        log::debug!("Error bulk inserting content: {}", error);
-        return Err(Box::new(error));
-      }
-    };
-
-    let result = tx.commit().await;
-    match result {
-      Ok(_) => Ok(()),
-      Err(error) => {
-        log::debug!("Error bulk inserting content: {}", error);
-        Err(Box::new(error))
-      }
+  async fn bulk_insert_content(pool: deadpool_postgres::Pool<>, data: Vec<ContentBlob>) -> anyhow::Result<()> {
+    let mut conn = pool.get().await?;
+    let tx = conn.transaction().await?;
+    tx.simple_query("CREATE TEMP TABLE inserts ON COMMIT DROP AS TABLE content WITH NO DATA").await?;
+    let copy_stm = r#"COPY inserts (
+      sha256, 
+      content, 
+      content_type) FROM STDIN BINARY"#;
+    let col_types = vec![
+      Type::VARCHAR,
+      Type::BYTEA,
+      Type::TEXT
+    ];
+    let sink = tx.copy_in(copy_stm).await?;
+    let writer = BinaryCopyInWriter::new(sink, &col_types);
+    pin_mut!(writer);
+    for m in data {
+      let mut row: Vec<&'_ (dyn ToSql + Sync)> = Vec::new();
+      row.push(&m.sha256);
+      row.push(&m.content);
+      row.push(&m.content_type);
+      writer.as_mut().write(&row).await?;
     }
+    writer.finish().await?;
+    tx.simple_query("INSERT INTO content SELECT nextval('content_content_id_seq'), sha256, content, content_type FROM inserts ON CONFLICT DO NOTHING").await?;
+    tx.commit().await?;
+    Ok(())
   }
 
   pub(crate) async fn mass_insert_content(pool: mysql_async::Pool, content_vec: Vec<ContentBlob>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -2086,28 +1947,28 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn bulk_insert_satributes(pool: mysql_async::Pool, satribute_vec: Vec<Satribute>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut conn = Self::get_conn(pool).await?;
-    let mut tx = conn.start_transaction(TxOpts::default()).await?;
-    let insert_query = r"INSERT INTO satributes (sat, satribute) VALUES (:sat, :satribute) ON DUPLICATE KEY UPDATE sat=sat";
-
-    let _insert_exec = tx.exec_batch(
-      insert_query,
-      satribute_vec.iter().map(|satribute| params! {
-          "sat" => &satribute.sat,
-          "satribute" => &satribute.satribute
-      })
-    ).await;
-    match _insert_exec {
-      Ok(_) => {
-        tx.commit().await?;
-      },
-      Err(error) => {
-        tx.rollback().await?;
-        log::warn!("Error bulk inserting satributes: {}", error);
-        return Err(Box::new(error));
-      }
-    };
+  async fn bulk_insert_satributes(pool: deadpool_postgres::Pool, data: Vec<Satribute>) -> anyhow::Result<()> {
+    let mut conn = pool.get().await?;
+    let tx = conn.transaction().await?;
+    let copy_stm = r#"COPY satributes (
+      sat,
+      satribute) FROM STDIN BINARY"#;
+    let col_types = vec![
+      Type::INT8,
+      Type::VARCHAR
+    ];
+    let sink = tx.copy_in(copy_stm).await?;
+    let writer = BinaryCopyInWriter::new(sink, &col_types);
+    pin_mut!(writer);
+    for m in data {
+      let mut row: Vec<&'_ (dyn ToSql + Sync)> = Vec::new();
+      row.push(&m.sat);
+      row.push(&m.satribute);
+      writer.as_mut().write(&row).await?;
+    }
+  
+    writer.finish().await?;
+    tx.commit().await?;
     Ok(())
   }
 
@@ -2136,39 +1997,11 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn get_last_number(pool: mysql_async::Pool) -> Result<Option<u64>, Box<dyn std::error::Error>> {
-    let mut conn = Self::get_conn(pool).await?;
-    let row = conn.query_iter("select min(previous) from (select sequence_number, Lag(sequence_number,1) over (order BY sequence_number) as previous from ordinals) a where sequence_number != previous+1")
-      .await?
-      .next()
-      .await?
-      .unwrap();
-    let row = mysql_async::from_row::<Option<u64>>(row);
-    let number = match row {
-      Some(row) => {
-        let number: u64 = row;
-        Some(number)
-      },
-      None => {
-        let row = conn.query_iter("select max(sequence_number) from ordinals")
-          .await?
-          .next()
-          .await?
-          .unwrap();
-        let max = mysql_async::from_row::<Option<u64>>(row);
-        match max {
-          Some(max) => {
-            let number: u64 = max;
-            Some(number)
-          },
-          None => {
-            None
-          }
-        }
-      }
-    };
-
-    Ok(number)
+  pub(crate) async fn get_last_number(pool: deadpool_postgres::Pool<>) -> anyhow::Result<i64> {
+    let conn = pool.get().await?;
+    let row = conn.query_one("SELECT max(sequence_number) from ordinals", &[]).await?;
+    let last_number: Option<i64> = row.get(0);
+    Ok(last_number.unwrap_or(-1))
   }
 
   pub(crate) async fn get_needed_sequence_numbers(status_vector: Arc<Mutex<Vec<SequenceNumberStatus>>>) -> Vec<u64> {
@@ -2649,7 +2482,7 @@ impl Vermilion {
   }
 
   async fn home(State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let content_blob = match Self::get_ordinal_content(server_config.pool,  "6fb976ab49dcec017f1e201e84395983204ae1a7c2abf7ced0a85d692e442799i0".to_string()).await {
+    let content_blob = match Self::get_ordinal_content(server_config.deadpool,  "6fb976ab49dcec017f1e201e84395983204ae1a7c2abf7ced0a85d692e442799i0".to_string()).await {
       Ok(content_blob) => content_blob,
       Err(error) => {
         log::warn!("Error getting /home: {}", error);
@@ -2673,7 +2506,7 @@ impl Vermilion {
   }
 
   async fn inscription(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let content_blob = match Self::get_ordinal_content(server_config.pool, inscription_id.to_string()).await {
+    let content_blob = match Self::get_ordinal_content(server_config.deadpool, inscription_id.to_string()).await {
       Ok(content_blob) => content_blob,
       Err(error) => {
         log::warn!("Error getting /inscription: {}", error);
@@ -2693,7 +2526,7 @@ impl Vermilion {
   }
 
   async fn inscription_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let content_blob = match Self::get_ordinal_content_by_number(server_config.pool,  number).await {
+    let content_blob = match Self::get_ordinal_content_by_number(server_config.deadpool,  number).await {
       Ok(content_blob) => content_blob,
       Err(error) => {
         log::warn!("Error getting /inscription_number: {}", error);
@@ -2713,7 +2546,7 @@ impl Vermilion {
   }
 
   async fn inscription_sha256(Path(sha256): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let content_blob = match Self::get_ordinal_content_by_sha256(server_config.pool, sha256.clone(), None).await {
+    let content_blob = match Self::get_ordinal_content_by_sha256(server_config.deadpool, sha256.clone(), None).await {
       Ok(content_blob) => content_blob,
       Err(error) => {
         log::warn!("Error getting /inscription_sha256: {}", error);
@@ -2733,7 +2566,7 @@ impl Vermilion {
   }
 
   async fn inscription_metadata(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let metadata = match Self::get_ordinal_metadata(server_config.pool, inscription_id.to_string()).await {
+    let metadata = match Self::get_ordinal_metadata(server_config.deadpool, inscription_id.to_string()).await {
       Ok(metadata) => metadata,
       Err(error) => {
         log::warn!("Error getting /inscription_metadata: {}", error);
@@ -2752,7 +2585,7 @@ impl Vermilion {
   }
 
   async fn inscription_metadata_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let metadata = match Self::get_ordinal_metadata_by_number(server_config.pool, number).await {
+    let metadata = match Self::get_ordinal_metadata_by_number(server_config.deadpool, number).await {
       Ok(metadata) => metadata,
       Err(error) => {
         log::warn!("Error getting /inscription_metadata_number: {}", error);
@@ -2770,7 +2603,7 @@ impl Vermilion {
   }
 
   async fn inscription_editions(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let editions = match Self::get_matching_inscriptions(server_config.pool, inscription_id.to_string()).await {
+    let editions = match Self::get_matching_inscriptions(server_config.deadpool, inscription_id.to_string()).await {
       Ok(editions) => editions,
       Err(error) => {
         log::warn!("Error getting /inscription_editions: {}", error);
@@ -2787,7 +2620,7 @@ impl Vermilion {
   }
 
   async fn inscription_editions_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let editions = match Self::get_matching_inscriptions_by_number(server_config.pool, number).await {
+    let editions = match Self::get_matching_inscriptions_by_number(server_config.deadpool, number).await {
       Ok(editions) => editions,
       Err(error) => {
         log::warn!("Error getting /inscription_editions_number: {}", error);
@@ -2805,7 +2638,7 @@ impl Vermilion {
   }
 
   async fn inscription_editions_sha256(Path(sha256): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let editions = match Self::get_matching_inscriptions_by_sha256(server_config.pool, sha256.clone()).await {
+    let editions = match Self::get_matching_inscriptions_by_sha256(server_config.deadpool, sha256.clone()).await {
       Ok(editions) => editions,
       Err(error) => {
         log::warn!("Error getting /inscription_editions_sha256: {}", error);
@@ -2822,7 +2655,7 @@ impl Vermilion {
   }
 
   async fn inscriptions_in_block(Path(block): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let inscriptions = match Self::get_inscriptions_within_block(server_config.pool, block).await {
+    let inscriptions = match Self::get_inscriptions_within_block(server_config.deadpool, block).await {
       Ok(inscriptions) => inscriptions,
       Err(error) => {
         log::warn!("Error getting /inscriptions_in_block: {}", error);
@@ -2842,7 +2675,7 @@ impl Vermilion {
   async fn random_inscription(State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     let mut rng = rand::rngs::StdRng::from_entropy();
     let random_float = rng.gen::<f64>();
-    let (inscription_number, _band) = match Self::get_random_inscription(server_config.pool, random_float).await {
+    let (inscription_number, _band) = match Self::get_random_inscription(server_config.deadpool, random_float).await {
       Ok((inscription_number, band)) => (inscription_number, band),
       Err(error) => {
         log::warn!("Error getting /random_inscription: {}", error);
@@ -2864,7 +2697,7 @@ impl Vermilion {
         println!("Band: {:?}", band);
     }
     let n = n.0.n;
-    let (inscription_numbers, new_bands) = match Self::get_random_inscriptions(server_config.pool, n, bands).await {
+    let (inscription_numbers, new_bands) = match Self::get_random_inscriptions(server_config.deadpool, n, bands).await {
       Ok((inscription_numbers, new_bands)) => (inscription_numbers, new_bands),
       Err(error) => {
         log::warn!("Error getting /random_inscriptions: {}", error);
@@ -2883,7 +2716,7 @@ impl Vermilion {
 
   async fn recent_inscriptions(n: Query<QueryNumber>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     let n = n.0.n;
-    let inscriptions = match Self::get_recent_inscriptions(server_config.pool, n).await {
+    let inscriptions = match Self::get_recent_inscriptions(server_config.deadpool, n).await {
       Ok(inscriptions) => inscriptions,
       Err(error) => {
         log::warn!("Error getting /recent_inscriptions: {}", error);
@@ -2943,7 +2776,7 @@ impl Vermilion {
   }
 
   async fn inscription_last_transfer(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let transfer = match Self::get_last_ordinal_transfer(server_config.pool, inscription_id.to_string()).await {
+    let transfer = match Self::get_last_ordinal_transfer(server_config.deadpool, inscription_id.to_string()).await {
       Ok(transfer) => transfer,
       Err(error) => {
         log::warn!("Error getting /inscription_last_transfer: {}", error);
@@ -2960,7 +2793,7 @@ impl Vermilion {
   }
 
   async fn inscription_last_transfer_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let transfer = match Self::get_last_ordinal_transfer_by_number(server_config.pool, number).await {
+    let transfer = match Self::get_last_ordinal_transfer_by_number(server_config.deadpool, number).await {
       Ok(transfer) => transfer,
       Err(error) => {
         log::warn!("Error getting /inscription_last_transfer_number: {}", error);
@@ -2977,7 +2810,7 @@ impl Vermilion {
   }
 
   async fn inscription_transfers(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let transfers = match Self::get_ordinal_transfers(server_config.pool, inscription_id.to_string()).await {
+    let transfers = match Self::get_ordinal_transfers(server_config.deadpool, inscription_id.to_string()).await {
       Ok(transfers) => transfers,
       Err(error) => {
         log::warn!("Error getting /inscription_transfers: {}", error);
@@ -2994,7 +2827,7 @@ impl Vermilion {
   }
 
   async fn inscription_transfers_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let transfers = match Self::get_ordinal_transfers_by_number(server_config.pool, number).await {
+    let transfers = match Self::get_ordinal_transfers_by_number(server_config.deadpool, number).await {
       Ok(transfers) => transfers,
       Err(error) => {
         log::warn!("Error getting /inscription_transfers_number: {}", error);
@@ -3011,7 +2844,7 @@ impl Vermilion {
   }
 
   async fn inscriptions_in_address(Path(address): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let inscriptions: Vec<TransferWithMetadata> = match Self::get_inscriptions_by_address(server_config.pool, address.clone()).await {
+    let inscriptions: Vec<TransferWithMetadata> = match Self::get_inscriptions_by_address(server_config.deadpool, address.clone()).await {
       Ok(inscriptions) => inscriptions,
       Err(error) => {
         log::warn!("Error getting /inscriptions_in_address: {}", error);
@@ -3027,8 +2860,8 @@ impl Vermilion {
     ).into_response()
   }
 
-  async fn inscriptions_on_sat(Path(sat): Path<u64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let inscriptions: Vec<Metadata> = match Self::get_inscriptions_on_sat(server_config.pool, sat).await {
+  async fn inscriptions_on_sat(Path(sat): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let inscriptions: Vec<Metadata> = match Self::get_inscriptions_on_sat(server_config.deadpool, sat).await {
       Ok(inscriptions) => inscriptions,
       Err(error) => {
         log::warn!("Error getting /inscriptions_on_sat: {}", error);
@@ -3044,8 +2877,8 @@ impl Vermilion {
     ).into_response()
   }
 
-  async fn inscriptions_in_sat_block(Path(block): Path<u64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let inscriptions: Vec<Metadata> = match Self::get_inscriptions_in_sat_block(server_config.pool, block).await {
+  async fn inscriptions_in_sat_block(Path(block): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let inscriptions: Vec<Metadata> = match Self::get_inscriptions_in_sat_block(server_config.deadpool, block).await {
       Ok(inscriptions) => inscriptions,
       Err(error) => {
         log::warn!("Error getting /inscriptions_in_sat_block: {}", error);
@@ -3061,8 +2894,8 @@ impl Vermilion {
     ).into_response()
   }
 
-  async fn sat_metadata(Path(sat): Path<u64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let sat_metadata = match Self::get_sat_metadata(server_config.pool, sat).await {
+  async fn sat_metadata(Path(sat): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let sat_metadata = match Self::get_sat_metadata(server_config.deadpool, sat).await {
       Ok(sat_metadata) => sat_metadata,
       Err(error) => {
         log::warn!("Error getting /sat_metadata: {}", error);
@@ -3078,8 +2911,8 @@ impl Vermilion {
     ).into_response()
   }
 
-  async fn satributes(Path(sat): Path<u64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let satributes = match Self::get_satributes(server_config.pool, sat).await {
+  async fn satributes(Path(sat): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let satributes = match Self::get_satributes(server_config.deadpool, sat).await {
       Ok(satributes) => satributes,
       Err(error) => {
         log::warn!("Error getting /satributes: {}", error);
@@ -3160,71 +2993,40 @@ impl Vermilion {
     content
   }
 
-  async fn get_ordinal_content(pool: mysql_async::Pool, inscription_id: String) -> anyhow::Result<ContentBlob> {
-    let cloned_pool = pool.clone();
-    let mut conn = Self::get_conn(pool).await?;    
-    let row: Option<Row> = conn.exec_first(
-      "SELECT sha256, content_type FROM ordinals WHERE id=:id LIMIT 1", 
-      params! {
-        "id" => inscription_id
-      }
-    )
-    .await?;
-
-    let (sha256, content_type) = match row {
-      Some(row) => mysql_async::from_row::<(String, String)>(row),
-      None => {
-        let content = ContentBlob {
-          sha256: "".to_string(),
-          content: "This content doesn't exist or hasn't been indexed yet.".as_bytes().to_vec(),
-          content_type: "text/plain".to_string(),
-        };
-        return Ok(content);
-      }        
-    };
-
-    let content = Self::get_ordinal_content_by_sha256(cloned_pool, sha256, Some(content_type)).await;
+  async fn get_ordinal_content(pool: deadpool, inscription_id: String) -> anyhow::Result<ContentBlob> {
+    let conn = pool.clone().get().await?;
+    let row = conn.query_one(
+      "SELECT sha256, content_type FROM ordinals WHERE id=$1 LIMIT 1",
+      &[&inscription_id]
+    ).await?;
+    let sha256: String = row.get(0);
+    let content_type: String = row.get(1);
+    let content = Self::get_ordinal_content_by_sha256(pool, sha256, Some(content_type)).await;
     content
   }
 
-  async fn get_ordinal_content_by_number(pool: mysql_async::Pool, number: i64) -> anyhow::Result<ContentBlob> {
-    let cloned_pool = pool.clone();
-    let mut conn = Self::get_conn(pool).await?;    
-    let row: Option<Row> = conn.exec_first(
-      "SELECT sha256, content_type FROM ordinals WHERE number=:number LIMIT 1", 
-      params! {
-        "number" => number
-      }
-    )
-    .await?;
-
-    let (sha256, content_type) = match row {
-      Some(row) => mysql_async::from_row::<(String, String)>(row),
-      None => {
-        let content = ContentBlob {
-          sha256: "".to_string(),
-          content: "This content doesn't exist or hasn't been indexed yet.".as_bytes().to_vec(),
-          content_type: "text/plain".to_string(),
-        };
-        return Ok(content);
-      }        
-    };
-
-    let content = Self::get_ordinal_content_by_sha256(cloned_pool, sha256, Some(content_type)).await;
+  async fn get_ordinal_content_by_number(pool: deadpool, number: i64) -> anyhow::Result<ContentBlob> {
+    let conn = pool.clone().get().await?;
+    let row = conn.query_one(
+      "SELECT sha256, content_type FROM ordinals WHERE number=$1 LIMIT 1",
+      &[&number]
+    ).await?;
+    let sha256: String = row.get(0);
+    let content_type: String = row.get(1);
+    let content = Self::get_ordinal_content_by_sha256(pool, sha256, Some(content_type)).await;
     content
   }
 
-  async fn get_ordinal_content_by_sha256(pool: mysql_async::Pool, sha256: String, content_type_override: Option<String>) -> anyhow::Result<ContentBlob> {
-    let mut conn = Self::get_conn(pool).await?;
-    let moderation_flag: Option<String> = conn.exec_first(
+  async fn get_ordinal_content_by_sha256(pool: deadpool, sha256: String, content_type_override: Option<String>) -> anyhow::Result<ContentBlob> {
+    let conn = pool.get().await?;
+    let moderation_flag = conn.query_one(
       r"SELECT coalesce(human_override_moderation_flag, automated_moderation_flag)
               FROM content_moderation
-              WHERE sha256=:sha256
+              WHERE sha256=$1
               LIMIT 1",
-      params! {
-        "sha256" => sha256.clone()
-      }
+      &[&sha256]
     ).await?;
+    let moderation_flag: Option<String> = moderation_flag.get(0);
 
     if let Some(flag) = moderation_flag {
         if flag == "SAFE_MANUAL" || flag == "SAFE_AUTOMATED" {
@@ -3245,26 +3047,23 @@ impl Vermilion {
       };
       return Ok(content);
     }
-    //Proceed if content exists and is safe
-    let result = conn.exec_map(
+    //Proceed if safe
+    let row = conn.query_one(
       r"SELECT *
               FROM content
-              WHERE sha256=:sha256
+              WHERE sha256=$1
               LIMIT 1",
-      params! {
-        "sha256" => sha256
-      },
-      |mut row: mysql_async::Row| ContentBlob {
-        sha256: row.get("sha256").unwrap(),
-        content: row.take("content").unwrap(),
-        content_type: row.take("content_type").unwrap(),
-      }
-    );
-    let mut result = result.await?.pop().ok_or(anyhow::anyhow!("Content sha256 not found"))?;
+      &[&sha256]
+    ).await?;
+    let mut content_blob = ContentBlob {
+      sha256: row.get("sha256"),
+      content: row.get("content"),
+      content_type: row.get("content_type"),
+    };
     if let Some(content_type) = content_type_override {
-        result.content_type = content_type;
+      content_blob.content_type = content_type;
     }
-    Ok(result)
+    Ok(content_blob)
   }
 
   fn map_row_to_metadata(mut row: mysql_async::Row) -> Metadata {
@@ -3295,119 +3094,139 @@ impl Vermilion {
     }
   }
 
-  async fn get_ordinal_metadata(pool: mysql_async::Pool, inscription_id: String) -> anyhow::Result<Metadata> {
-    let mut conn = Self::get_conn(pool).await?;
-    let result = conn.exec_map(
-      "SELECT * FROM ordinals WHERE id=:id LIMIT 1", 
-      params! {
-        "id" => inscription_id
-      },
-      Self::map_row_to_metadata
-    );
-    let result = result.await?.pop().ok_or(anyhow::anyhow!("ID not found in ordinals table"))?;
-    Ok(result)
+  fn map_row_to_metadata2(row: tokio_postgres::Row) -> Metadata {
+    Metadata {
+      id: row.get("id"),
+      content_length: row.get("content_length"),
+      content_type: row.get("content_type"), 
+      content_encoding: row.get("content_encoding"),
+      genesis_fee: row.get("genesis_fee"),
+      genesis_height: row.get("genesis_height"),
+      genesis_transaction: row.get("genesis_transaction"),
+      pointer: row.get("pointer"),
+      number: row.get("number"),
+      sequence_number: row.get("sequence_number"),
+      parent: row.get("parent"),
+      delegate: row.get("delegate"),
+      metaprotocol: row.get("metaprotocol"),
+      embedded_metadata: row.get("embedded_metadata"),
+      sat: row.get("sat"),
+      charms: row.get("charms"),
+      timestamp: row.get("timestamp"),
+      sha256: row.get("sha256"),
+      text: row.get("text"),
+      is_json: row.get("is_json"),
+      is_maybe_json: row.get("is_maybe_json"),
+      is_bitmap_style: row.get("is_bitmap_style"),
+      is_recursive: row.get("is_recursive")
+    }
   }
 
-  async fn get_ordinal_metadata_by_number(pool: mysql_async::Pool, number: i64) -> anyhow::Result<Metadata> {
-    let mut conn = Self::get_conn(pool).await?;
-    let result = conn.exec_map(
-      "SELECT * FROM ordinals WHERE number=:number LIMIT 1", 
-      params! {
-        "number" => number
-      },
-      Self::map_row_to_metadata
-    );
-    let result = result.await?.pop().ok_or(anyhow::anyhow!("Number not found in ordinals table"))?;
-    Ok(result)
-  }
-
-  async fn get_matching_inscriptions(pool: mysql_async::Pool, inscription_id: String) -> anyhow::Result<Vec<InscriptionNumberEdition>> {
-    let mut conn = Self::get_conn(pool).await?;
-    let editions = conn.exec_map(
-      "with a as (select sha256 from editions where id = :id) select id, number, edition, t.total from a left join editions e on a.sha256=e.sha256 left join editions_total t on t.sha256=a.sha256 order by edition asc limit 100",
-      params! {
-        "id" => inscription_id
-      },
-      |row: mysql_async::Row| InscriptionNumberEdition {
-        id: row.get("id").unwrap(),
-        number: row.get("number").unwrap(),
-        edition: row.get("edition").unwrap(),
-        total: row.get("total").unwrap()
-      }
+  async fn get_ordinal_metadata(pool: deadpool, inscription_id: String) -> anyhow::Result<Metadata> {
+    let conn = pool.get().await?;
+    let result = conn.query_one(
+      "SELECT * FROM ordinals WHERE id=$1 LIMIT 1", 
+      &[&inscription_id]
     ).await?;
+    Ok(Self::map_row_to_metadata2(result))
+  }
+
+  async fn get_ordinal_metadata_by_number(pool: deadpool, number: i64) -> anyhow::Result<Metadata> {
+    let conn = pool.get().await?;
+    let result = conn.query_one(
+      "SELECT * FROM ordinals WHERE number=$1 LIMIT 1", 
+      &[&number]
+    ).await?;
+    Ok(Self::map_row_to_metadata2(result))
+  }
+
+  async fn get_matching_inscriptions(pool: deadpool, inscription_id: String) -> anyhow::Result<Vec<InscriptionNumberEdition>> {
+    let conn = pool.get().await?;
+    let result = conn.query(
+      "with a as (select sha256 from editions where id = $1) select id, number, edition, t.total from a left join editions e on a.sha256=e.sha256 left join editions_total t on t.sha256=a.sha256 order by edition asc limit 100",
+      &[&inscription_id]
+    ).await?;
+    let mut editions = Vec::new();
+    for row in result {
+      editions.push(InscriptionNumberEdition {
+        id: row.get("id"),
+        number: row.get("number"),
+        edition: row.get("edition"),
+        total: row.get("total")
+      });
+    }
     Ok(editions)
   }
 
-  async fn get_matching_inscriptions_by_number(pool: mysql_async::Pool, number: i64) -> anyhow::Result<Vec<InscriptionNumberEdition>> {
-    let mut conn = Self::get_conn(pool).await?;
-    let editions = conn.exec_map(
-      "with a as (select sha256 from editions where number = :number) select id, number, edition, t.total from a left join editions e on a.sha256=e.sha256 left join editions_total t on t.sha256=a.sha256 order by edition asc limit 100", 
-      params! {
-        "number" => number
-      },
-      |row: mysql_async::Row| InscriptionNumberEdition {
-        id: row.get("id").unwrap(),
-        number: row.get("number").unwrap(),
-        edition: row.get("edition").unwrap(),
-        total: row.get("total").unwrap()
-      }
+  async fn get_matching_inscriptions_by_number(pool: deadpool, number: i64) -> anyhow::Result<Vec<InscriptionNumberEdition>> {
+    let conn = pool.get().await?;
+    let result = conn.query(
+      "with a as (select sha256 from editions where number = $1) select id, number, edition, t.total from a left join editions e on a.sha256=e.sha256 left join editions_total t on t.sha256=a.sha256 order by edition asc limit 100",
+      &[&number]
     ).await?;
+    let mut editions = Vec::new();
+    for row in result {
+      editions.push(InscriptionNumberEdition {
+        id: row.get("id"),
+        number: row.get("number"),
+        edition: row.get("edition"),
+        total: row.get("total")
+      });
+    }
     Ok(editions)
   }
 
-  async fn get_matching_inscriptions_by_sha256(pool: mysql_async::Pool, sha256: String) -> anyhow::Result<Vec<InscriptionNumberEdition>> {
-    let mut conn = Self::get_conn(pool).await?;
-    let editions = conn.exec_map(
-      " select id, number, edition, t.total from (select * from editions where sha256=:sha256) e inner join editions_total t on t.sha256=e.sha256 order by edition asc limit 100",
-      params! {
-        "sha256" => sha256
-      },
-      |row: mysql_async::Row| InscriptionNumberEdition {
-        id: row.get("id").unwrap(),
-        number: row.get("number").unwrap(),
-        edition: row.get("edition").unwrap(),
-        total: row.get("total").unwrap()
-      }
+  async fn get_matching_inscriptions_by_sha256(pool: deadpool, sha256: String) -> anyhow::Result<Vec<InscriptionNumberEdition>> {
+    let conn = pool.get().await?;
+    let result = conn.query(
+      "select id, number, edition, t.total from (select * from editions where sha256=:sha256) e inner join editions_total t on t.sha256=e.sha256 order by edition asc limit 100",
+      &[&sha256]
     ).await?;
+    let mut editions = Vec::new();
+    for row in result {
+      editions.push(InscriptionNumberEdition {
+        id: row.get("id"),
+        number: row.get("number"),
+        edition: row.get("edition"),
+        total: row.get("total")
+      });
+    }
     Ok(editions)
   }
 
-  async fn get_inscriptions_within_block(pool: mysql_async::Pool, block: i64) -> anyhow::Result<Vec<Metadata>> {
-    let mut conn = Self::get_conn(pool).await?;
-    let inscriptions = conn.exec_map(
-      "SELECT * FROM ordinals WHERE genesis_height=:block", 
-      params! {
-        "block" => block
-      },
-      Self::map_row_to_metadata
+  async fn get_inscriptions_within_block(pool: deadpool, block: i64) -> anyhow::Result<Vec<Metadata>> {
+    let conn = pool.get().await?;
+    let result = conn.query(
+      "SELECT * FROM ordinals WHERE genesis_height=$1", 
+      &[&block]
     ).await?;
+    let mut inscriptions = Vec::new();
+    for row in result {
+      inscriptions.push(Self::map_row_to_metadata2(row));
+    }
     Ok(inscriptions)
   }
   
-  async fn get_random_inscription(pool: mysql_async::Pool, random_float: f64) -> anyhow::Result<(Metadata, (f64, f64))> {
-    let mut conn = Self::get_conn(pool).await?;
-    let random_inscription_band = conn.exec_map(
-      "SELECT first_number, class_band_start, class_band_end FROM weights where band_end>:random_float limit 1",
-      params! {
-        "random_float" => random_float
-      },
-      |mut row: mysql_async::Row| RandomInscriptionBand {
-        sequence_number: row.get("first_number").unwrap(),
-        start: row.get("class_band_start").unwrap(),
-        end: row.get("class_band_end").unwrap()
-      }
-    ).await?.pop().ok_or(anyhow::anyhow!("No random inscription band found in weights table"))?;
-    let metadata: Metadata = conn.exec_map(
-      "SELECT * from ordinals where sequence_number=:sequence_number limit 1", 
-      params! {
-        "sequence_number" => random_inscription_band.sequence_number
-      },
-      Self::map_row_to_metadata
-    ).await?.pop().ok_or(anyhow::anyhow!("No random inscription found in ordinals table"))?;
+  async fn get_random_inscription(pool: deadpool, random_float: f64) -> anyhow::Result<(Metadata, (f64, f64))> {
+    let conn = pool.get().await?;
+    let random_inscription_band = conn.query_one(
+      "SELECT first_number, class_band_start, class_band_end FROM weights where band_end>$1 limit 1",
+      &[&random_float]
+    ).await?;
+    let random_inscription_band = RandomInscriptionBand {
+      sequence_number: random_inscription_band.get("first_number"),
+      start: random_inscription_band.get("class_band_start"),
+      end: random_inscription_band.get("class_band_end")
+    };
+    let metadata = conn.query_one(
+      "SELECT * from ordinals where sequence_number=$1 limit 1", 
+      &[&random_inscription_band.sequence_number]
+    ).await?;
+    let metadata = Self::map_row_to_metadata2(metadata);
     Ok((metadata,(random_inscription_band.start, random_inscription_band.end)))
   }
 
-  async fn get_random_inscriptions(pool: mysql_async::Pool, n: u32, mut bands: Vec<(f64, f64)>) -> anyhow::Result<(Vec<Metadata>, Vec<(f64, f64)>)> {
+  async fn get_random_inscriptions(pool: deadpool, n: u32, mut bands: Vec<(f64, f64)>) -> anyhow::Result<(Vec<Metadata>, Vec<(f64, f64)>)> {
     let n = std::cmp::min(n, 100);
     let mut rng = rand::rngs::StdRng::from_entropy();
     let mut random_floats = Vec::new();
@@ -3438,15 +3257,16 @@ impl Vermilion {
     Ok((random_metadatas, bands))
   }
 
-  async fn get_recent_inscriptions(pool: mysql_async::Pool, n: u32) -> anyhow::Result<Vec<Metadata>> {
-    let mut conn = Self::get_conn(pool).await?;
-    let inscriptions = conn.exec_map(
-      "SELECT * FROM ordinals order by sequence_number desc limit :n", 
-      params! {
-        "n" => n
-      },
-      Self::map_row_to_metadata
+  async fn get_recent_inscriptions(pool: deadpool, n: u32) -> anyhow::Result<Vec<Metadata>> {
+    let conn = pool.get().await?;
+    let result = conn.query(
+      "SELECT * FROM ordinals order by sequence_number desc limit $1", 
+      &[&n]
     ).await?;
+    let mut inscriptions = Vec::new();
+    for row in result {
+      inscriptions.push(Self::map_row_to_metadata2(row));
+    }
     Ok(inscriptions)
   }
 
@@ -3522,309 +3342,310 @@ impl Vermilion {
     conn
   }
 
-  async fn get_last_ordinal_transfer(pool: mysql_async::Pool, inscription_id: String) -> anyhow::Result<Transfer> {
-    let mut conn = Self::get_conn(pool).await?;
-    let transfer = conn.exec_map(
-      "select * from transfers where id=:id order by block_number desc limit 1", 
-      params! {
-        "id" => inscription_id
-      },
-      |row: mysql_async::Row| Transfer {
-        id: row.get("id").unwrap(),
-        block_number: row.get("block_number").unwrap(),
-        block_timestamp: row.get("block_timestamp").unwrap(),
-        satpoint: row.get("satpoint").unwrap(),
-        transaction: row.get("transaction").unwrap(),
-        vout: row.get("vout").unwrap(),
-        offset: row.get("offset").unwrap(),
-        address: row.get("address").unwrap(),
-        is_genesis: row.get("is_genesis").unwrap()
-      }
-    ).await?.pop().ok_or(anyhow::anyhow!("ID not found in transfer table"))?;
+  async fn get_deadpool(config: Config) -> anyhow::Result<deadpool> {
+    let mut deadpool_cfg = deadpool_postgres::Config::new();
+    deadpool_cfg.host = config.db_host;
+    deadpool_cfg.dbname = config.db_name;
+    deadpool_cfg.user = config.db_user;
+    deadpool_cfg.password = config.db_password;
+    deadpool_cfg.manager = Some(ManagerConfig { recycling_method: RecyclingMethod::Fast });
+    let deadpool = deadpool_cfg.create_pool(Some(deadpool_postgres::Runtime::Tokio1), NoTls)?;
+    Ok(deadpool)
+  }
+
+  async fn get_last_ordinal_transfer(pool: deadpool, inscription_id: String) -> anyhow::Result<Transfer> {
+    let conn = pool.get().await?;
+    let result = conn.query_one(
+      "SELECT * FROM transfers WHERE id=$1 ORDER BY block_number DESC LIMIT 1", 
+      &[&inscription_id]
+    ).await?;
+    let transfer = Transfer {
+      id: result.get("id"),
+      block_number: result.get("block_number"),
+      block_timestamp: result.get("block_timestamp"),
+      satpoint: result.get("satpoint"),
+      transaction: result.get("transaction"),
+      vout: result.get("vout"),
+      offset: result.get("offset"),
+      address: result.get("address"),
+      is_genesis: result.get("is_genesis")
+    };
     Ok(transfer)
   }
 
-  async fn get_last_ordinal_transfer_by_number(pool: mysql_async::Pool, number: i64) -> anyhow::Result<Transfer> {
-    let mut conn = Self::get_conn(pool).await?;
-    let transfer = conn.exec_map(
-      "with a as (Select id from ordinals where number=:number) select b.* from transfers b, a where a.id=b.id order by block_number desc limit 1", 
-      params! {
-        "number" => number
-      },
-      |row: mysql_async::Row| Transfer {
-        id: row.get("id").unwrap(),
-        block_number: row.get("block_number").unwrap(),
-        block_timestamp: row.get("block_timestamp").unwrap(),
-        satpoint: row.get("satpoint").unwrap(),
-        transaction: row.get("transaction").unwrap(),
-        vout: row.get("vout").unwrap(),
-        offset: row.get("offset").unwrap(),
-        address: row.get("address").unwrap(),
-        is_genesis: row.get("is_genesis").unwrap()
-      }
-    ).await?.pop().ok_or(anyhow::anyhow!("Number not found in transfer table"))?;
+  async fn get_last_ordinal_transfer_by_number(pool: deadpool, number: i64) -> anyhow::Result<Transfer> {
+    let conn = pool.get().await?;
+    let result = conn.query_one(
+      "with a as (Select id from ordinals where number=$1) select b.* from transfers b, a where a.id=b.id order by block_number desc limit 1", 
+      &[&number]
+    ).await?;
+    let transfer = Transfer {
+      id: result.get("id"),
+      block_number: result.get("block_number"),
+      block_timestamp: result.get("block_timestamp"),
+      satpoint: result.get("satpoint"),
+      transaction: result.get("transaction"),
+      vout: result.get("vout"),
+      offset: result.get("offset"),
+      address: result.get("address"),
+      is_genesis: result.get("is_genesis")
+    };
     Ok(transfer)
   }
 
-  async fn get_ordinal_transfers(pool: mysql_async::Pool, inscription_id: String) -> anyhow::Result<Vec<Transfer>> {
-    let mut conn = Self::get_conn(pool).await?;
-    let transfers = conn.exec_map(
-      "select * from transfers where id=:id order by block_number asc", 
-      params! {
-        "id" => inscription_id
-      },
-      |row: mysql_async::Row| Transfer {
-        id: row.get("id").unwrap(),
-        block_number: row.get("block_number").unwrap(),
-        block_timestamp: row.get("block_timestamp").unwrap(),
-        satpoint: row.get("satpoint").unwrap(),
-        transaction: row.get("transaction").unwrap(),
-        vout: row.get("vout").unwrap(),
-        offset: row.get("offset").unwrap(),
-        address: row.get("address").unwrap(),
-        is_genesis: row.get("is_genesis").unwrap()
-      }
+  async fn get_ordinal_transfers(pool: deadpool, inscription_id: String) -> anyhow::Result<Vec<Transfer>> {
+    let conn = pool.get().await?;
+    let result = conn.query(
+      "SELECT * FROM transfers WHERE id=$1 ORDER BY block_number ASC", 
+      &[&inscription_id]
     ).await?;
+    let mut transfers = Vec::new();
+    for row in result {
+      transfers.push(Transfer {
+        id: row.get("id"),
+        block_number: row.get("block_number"),
+        block_timestamp: row.get("block_timestamp"),
+        satpoint: row.get("satpoint"),
+        transaction: row.get("transaction"),
+        vout: row.get("vout"),
+        offset: row.get("offset"),
+        address: row.get("address"),
+        is_genesis: row.get("is_genesis")
+      });
+    }
     Ok(transfers)
   }
 
-  async fn get_ordinal_transfers_by_number(pool: mysql_async::Pool, number: i64) -> anyhow::Result<Vec<Transfer>> {
-    let mut conn = Self::get_conn(pool).await?;
-    let transfers = conn.exec_map(
-      "with a as (Select id from ordinals where number=:number) select b.* from transfers b, a where a.id=b.id order by block_number desc", 
-      params! {
-        "number" => number
-      },
-      |row: mysql_async::Row| Transfer {
-        id: row.get("id").unwrap(),
-        block_number: row.get("block_number").unwrap(),
-        block_timestamp: row.get("block_timestamp").unwrap(),
-        satpoint: row.get("satpoint").unwrap(),
-        transaction: row.get("transaction").unwrap(),
-        vout: row.get("vout").unwrap(),
-        offset: row.get("offset").unwrap(),
-        address: row.get("address").unwrap(),
-        is_genesis: row.get("is_genesis").unwrap()
-      }
+  async fn get_ordinal_transfers_by_number(pool: deadpool, number: i64) -> anyhow::Result<Vec<Transfer>> {
+    let conn = pool.get().await?;
+    let result = conn.query(
+      "with a as (Select id from ordinals where number=$1) select b.* from transfers b, a where a.id=b.id order by block_number desc", 
+      &[&number]
     ).await?;
+    let mut transfers = Vec::new();
+    for row in result {
+      transfers.push(Transfer {
+        id: row.get("id"),
+        block_number: row.get("block_number"),
+        block_timestamp: row.get("block_timestamp"),
+        satpoint: row.get("satpoint"),
+        transaction: row.get("transaction"),
+        vout: row.get("vout"),
+        offset: row.get("offset"),
+        address: row.get("address"),
+        is_genesis: row.get("is_genesis")
+      });
+    }
     Ok(transfers)
   }
 
-  async fn get_inscriptions_by_address(pool: mysql_async::Pool, address: String) -> anyhow::Result<Vec<TransferWithMetadata>> {
-    let mut conn = Self::get_conn(pool).await?;
-    let transfers = conn.exec_map(
-      "select a.*, o.* from addresses a left join ordinals o on a.id=o.id where a.address=:address",
-      params! {
-        "address" => address
-      },
-      |mut row: mysql_async::Row| TransferWithMetadata {
-        id: row.get("id").unwrap(),
-        block_number: row.get("block_number").unwrap(),
-        block_timestamp: row.get("block_timestamp").unwrap(),
-        satpoint: row.get("satpoint").unwrap(),
-        transaction: row.get("transaction").unwrap(),
-        vout: row.get("vout").unwrap(),
-        offset: row.get("offset").unwrap(),
-        address: row.get("address").unwrap(),
-        is_genesis: row.get("is_genesis").unwrap(),
-        content_length: row.take("content_length").unwrap(),
-        content_type: row.take("content_type").unwrap(),
-        content_encoding: row.take("content_encoding").unwrap(),
-        genesis_fee: row.get("genesis_fee").unwrap(),
-        genesis_height: row.get("genesis_height").unwrap(),
-        genesis_transaction: row.get("genesis_transaction").unwrap(),
-        pointer: row.take("pointer").unwrap(),
-        number: row.get("number").unwrap(),
-        sequence_number: row.take("sequence_number").unwrap(),
-        parent: row.take("parent").unwrap(),
-        delegate: row.take("delegate").unwrap(),
-        metaprotocol: row.take("metaprotocol").unwrap(),
-        embedded_metadata: row.take("embedded_metadata").unwrap(),
-        sat: row.take("sat").unwrap(),
-        charms: row.take("charms").unwrap(),
-        timestamp: row.get("timestamp").unwrap(),
-        sha256: row.take("sha256").unwrap(),
-        text: row.take("text").unwrap(),
-        is_json: row.get("is_json").unwrap(),
-        is_maybe_json: row.get("is_maybe_json").unwrap(),
-        is_bitmap_style: row.get("is_bitmap_style").unwrap(),
-        is_recursive: row.get("is_recursive").unwrap()
-      }
+  async fn get_inscriptions_by_address(pool: deadpool, address: String) -> anyhow::Result<Vec<TransferWithMetadata>> {
+    let conn = pool.get().await?;
+    let result = conn.query(
+      "SELECT a.*, o.* FROM addresses a LEFT JOIN ordinals o ON a.id=o.id WHERE a.address=$1", 
+      &[&address]
     ).await?;
+    let mut transfers = Vec::new();
+    for row in result {
+      transfers.push(TransferWithMetadata {
+        id: row.get("id"),
+        block_number: row.get("block_number"),
+        block_timestamp: row.get("block_timestamp"),
+        satpoint: row.get("satpoint"),
+        transaction: row.get("transaction"),
+        vout: row.get("vout"),
+        offset: row.get("offset"),
+        address: row.get("address"),
+        is_genesis: row.get("is_genesis"),
+        content_length: row.get("content_length"),
+        content_type: row.get("content_type"),
+        content_encoding: row.get("content_encoding"),
+        genesis_fee: row.get("genesis_fee"),
+        genesis_height: row.get("genesis_height"),
+        genesis_transaction: row.get("genesis_transaction"),
+        pointer: row.get("pointer"),
+        number: row.get("number"),
+        sequence_number: row.get("sequence_number"),
+        parent: row.get("parent"),
+        delegate: row.get("delegate"),
+        metaprotocol: row.get("metaprotocol"),
+        embedded_metadata: row.get("embedded_metadata"),
+        sat: row.get("sat"),
+        charms: row.get("charms"),
+        timestamp: row.get("timestamp"),
+        sha256: row.get("sha256"),
+        text: row.get("text"),
+        is_json: row.get("is_json"),
+        is_maybe_json: row.get("is_maybe_json"),
+        is_bitmap_style: row.get("is_bitmap_style"),
+        is_recursive: row.get("is_recursive")
+      });
+    }
     Ok(transfers)
   }
 
-  async fn get_inscriptions_on_sat(pool: mysql_async::Pool, sat: u64) -> anyhow::Result<Vec<Metadata>> {
-    let mut conn = Self::get_conn(pool).await?;
-    let result = conn.exec_map(
-      "SELECT * FROM ordinals WHERE sat=:sat", 
-      params! {
-        "sat" => sat
-      },
-      Self::map_row_to_metadata
-    );
-    let result = result.await?;
-    Ok(result)
+  async fn get_inscriptions_on_sat(pool: deadpool, sat: i64) -> anyhow::Result<Vec<Metadata>> {
+    let conn = pool.get().await?;
+    let result = conn.query(
+      "SELECT * FROM ordinals WHERE sat=$1", 
+      &[&sat]
+    ).await?;
+    let mut inscriptions = Vec::new();
+    for row in result {
+      inscriptions.push(Self::map_row_to_metadata2(row));
+    }
+    Ok(inscriptions)
   }
 
-  async fn get_inscriptions_in_sat_block(pool: mysql_async::Pool, block: u64) -> anyhow::Result<Vec<Metadata>> {
-    let mut conn = Self::get_conn(pool).await?;
-    let result = conn.exec_map(
-      "select * from ordinals where sat in (select sat from sat where block=:block)", 
-      params! {
-        "block" => block
-      },
-      Self::map_row_to_metadata
-    );
-    let result = result.await?;
-    Ok(result)
+  async fn get_inscriptions_in_sat_block(pool: deadpool, block: i64) -> anyhow::Result<Vec<Metadata>> {
+    let conn = pool.get().await?;
+    let result = conn.query(
+      "select * from ordinals where sat in (select sat from sat where block=$1)", 
+      &[&block]
+    ).await?;
+    let mut inscriptions = Vec::new();
+    for row in result {
+      inscriptions.push(Self::map_row_to_metadata2(row));
+    }
+    Ok(inscriptions)
   }
 
-  async fn get_sat_metadata(pool: mysql_async::Pool, sat: u64) -> anyhow::Result<SatMetadata> {
-    let mut conn = Self::get_conn(pool).await?;
-    let result = conn.exec_map(
-      "SELECT * FROM sat WHERE sat=:sat", 
-      params! {
-        "sat" => sat
+  async fn get_sat_metadata(pool: deadpool, sat: i64) -> anyhow::Result<SatMetadata> {
+    let conn = pool.get().await?;
+    let result = conn.query_one(
+      "SELECT * FROM sat WHERE sat=$1 limit 1", 
+      &[&sat]
+    ).await;
+    let sat_metadata = match result {
+      Ok(result) => {
+        SatMetadata {
+          sat: result.get("sat"),
+          decimal: result.get("sat_decimal"),
+          degree: result.get("degree"),
+          name: result.get("name"),
+          block: result.get("block"),
+          cycle: result.get("cycle"),
+          epoch: result.get("epoch"),
+          period: result.get("period"),
+          third: result.get("offset"),
+          rarity: result.get("rarity"),
+          percentile: result.get("percentile"),
+          timestamp: result.get("timestamp")
+        }      
       },
-      |row: mysql_async::Row| SatMetadata {
-        sat: row.get("sat").unwrap(),
-        decimal: row.get("sat_decimal").unwrap(),
-        degree: row.get("degree").unwrap(),
-        name: row.get("name").unwrap(),
-        block: row.get("block").unwrap(),
-        cycle: row.get("cycle").unwrap(),
-        epoch: row.get("epoch").unwrap(),
-        period: row.get("period").unwrap(),
-        offset: row.get("offset").unwrap(),
-        rarity: row.get("rarity").unwrap(),
-        percentile: row.get("percentile").unwrap(),
-        timestamp: row.get("timestamp").unwrap()
-      }
-    );
-    let result = match result.await?.pop() {
-      Some(result) => result,
-      None => {
-        let parsed_sat = Sat(sat);
+      Err(_) => {
+        let parsed_sat = Sat(sat as u64);
         let mut metadata = SatMetadata {
-          sat: sat,
+          sat: sat.try_into().unwrap(),
           decimal: parsed_sat.decimal().to_string(),
           degree: parsed_sat.degree().to_string(),
           name: parsed_sat.name(),
-          block: parsed_sat.height().0,
-          cycle: parsed_sat.cycle(),
-          epoch: parsed_sat.epoch().0,
-          period: parsed_sat.period(),
-          offset: parsed_sat.third(),
+          block: parsed_sat.height().0 as i64,
+          cycle: parsed_sat.cycle() as i64,
+          epoch: parsed_sat.epoch().0 as i64,
+          period: parsed_sat.period() as i64,
+          third: parsed_sat.third() as i64,
           rarity: parsed_sat.rarity().to_string(),
           percentile: parsed_sat.percentile(),
           timestamp: 0
         };
-        let blockheight_result = conn.exec_map(
-          "Select * from blockheights where block_number=:block_number", 
-          params! {
-            "block_number" => metadata.block
-          },
-          |row: mysql_async::Row| BlockHeight {
-            block_number: row.get("block_number").unwrap(),
-            block_timestamp: row.get("block_timestamp").unwrap()
-          }
-        ).await?.pop();
-        if let Some(blockheight) = blockheight_result {
-          metadata.timestamp = blockheight.block_timestamp;
-        }
+        let blockheight_result = conn.query_one(
+          "Select * from blockheights where block_number=$1 limit 1", 
+          &[&metadata.block]
+        ).await?;
+        let blockheight = BlockHeight {
+          block_number: blockheight_result.get("block_number"),
+          block_timestamp: blockheight_result.get("block_timestamp")
+        };
+        metadata.timestamp = blockheight.block_timestamp;
         metadata
       }
     };
-    Ok(result)
+    Ok(sat_metadata)
   }
 
-  async fn get_satributes(pool: mysql_async::Pool, sat: u64) -> anyhow::Result<Vec<Satribute>> {
-    let mut conn = Self::get_conn(pool).await?;
-    let result = conn.exec_map(
-      "SELECT * FROM satributes WHERE sat=:sat", 
-      params! {
-        "sat" => sat
-      },
-      |row: mysql_async::Row| Satribute {
-        sat: row.get("sat").unwrap(),
-        satribute: row.get("satribute").unwrap(),
-      }
-    );
-    let mut result = result.await?;
-    if result.len() == 0 {
-      let parsed_sat = Sat(sat);
+  async fn get_satributes(pool: deadpool, sat: i64) -> anyhow::Result<Vec<Satribute>> {
+    let conn = pool.get().await?;
+    let result = conn.query(
+      "SELECT * FROM satributes WHERE sat=$1", 
+      &[&sat]
+    ).await?;
+    let mut satributes = Vec::new();
+    for row in result {
+      satributes.push(Satribute {
+        sat: row.get("sat"),
+        satribute: row.get("satribute"),
+      });
+    }
+    if satributes.len() == 0 {
+      let parsed_sat = Sat(sat as u64);
       for block_rarity in parsed_sat.block_rarities().iter() {
         let satribute = Satribute {
-          sat: sat,
+          sat: sat as i64,
           satribute: block_rarity.to_string()
         };
-        result.push(satribute);
+        satributes.push(satribute);
       }
     }
-    Ok(result)
+    Ok(satributes)
   }
 
-  async fn create_metadata_insert_trigger(pool: mysql_async::Pool) -> anyhow::Result<()> {
-    let mut conn = Self::get_conn(pool).await?;
-    let mut tx = conn.start_transaction(TxOpts::default()).await?;
-    tx.query_drop(r"DROP TRIGGER IF EXISTS before_metadata_insert").await?;
-    tx.query_drop(
-      r#"CREATE TRIGGER before_metadata_insert
+  async fn create_metadata_insert_trigger(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(r"CREATE OR REPLACE FUNCTION before_metadata_insert() RETURNS TRIGGER AS $$
+      BEGIN
+        SELECT pg_try_advisory_lock(999) AS lock_acquired;
+        IF NOT lock_acquired THEN
+          RAISE EXCEPTION 'Cannot acquire editions_lock, please try again later.';
+        END IF;
+      END;
+      $$ LANGUAGE plpgsql;").await?;
+    conn.simple_query(
+      r#"CREATE OR REPLACE TRIGGER before_metadata_insert
       BEFORE INSERT ON ordinals
       FOR EACH ROW
-      BEGIN
-        IF NOT GET_LOCK('editions_lock', 1) THEN
-          SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Editions table is being updated, please try again later.';
-        END IF;
-      END;"#).await?;
-    let result = tx.commit().await;
-    match result {
-      Ok(_) => Ok(()),
-      Err(error) => {
-        log::warn!("Error creating ordinals insert trigger: {}", error);
-        Err(anyhow::Error::new(error))
-      }
-    }
+      EXECUTE PROCEDURE before_metadata_insert();"#).await?;
+    Ok(())
   }
 
-  async fn create_edition_insert_trigger(pool: mysql_async::Pool) -> anyhow::Result<()> {
-    let mut conn = Self::get_conn(pool).await?;
-    let mut tx = conn.start_transaction(TxOpts::default()).await?;
-    tx.query_drop(r"DROP TRIGGER IF EXISTS before_edition_insert").await?;
-    tx.query_drop(
-      r#"CREATE TRIGGER before_edition_insert
+  async fn create_edition_insert_trigger(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(r#"
+      CREATE OR REPLACE FUNCTION before_edition_insert() RETURNS TRIGGER AS $$
+      DECLARE previous_total INTEGER;
+      BEGIN
+        -- Get the previous total for the same sha256, or default to 0
+        SELECT COALESCE(total, 0) INTO previous_total FROM editions_total WHERE sha256 = NEW.sha256;
+      
+        -- Set the edition number in the new row to previous + 1
+        NEW.edition := previous_total + 1;
+      
+        -- Insert or update the total in editions_total
+        INSERT INTO editions_total (sha256, total) VALUES (NEW.sha256, previous_total + 1)
+        ON CONFLICT (sha256) DO UPDATE SET total = EXCLUDED.total;
+      
+        RETURN NULL;
+      END;
+      $$ LANGUAGE plpgsql;"#).await?;
+    conn.simple_query(
+      r#"CREATE OR REPLACE TRIGGER before_edition_insert
       BEFORE INSERT ON editions
       FOR EACH ROW
-      BEGIN
-        SET @previous_total = (coalesce((select total from editions_total where sha256 = NEW.sha256),0));
-        SET NEW.edition = @previous_total + 1;
-        INSERT INTO editions_total (sha256, total) VALUES (coalesce(NEW.sha256,""), @previous_total + 1) ON DUPLICATE KEY UPDATE total=VALUES(total);
-      END;"#).await?;
-    let result = tx.commit().await;
-    match result {
-      Ok(_) => Ok(()),
-      Err(error) => {
-        log::warn!("Error creating editions insert stored procedure: {}", error);
-        Err(anyhow::Error::new(error))
-      }
-    }
+      EXECUTE PROCEDURE before_edition_insert();"#).await?;
+    Ok(())
   }
-
-  async fn create_edition_procedure(pool: mysql_async::Pool) -> anyhow::Result<()> {
-    let mut conn = Self::get_conn(pool).await?;
-    let mut tx = conn.start_transaction(TxOpts::default()).await?;
-    tx.query_drop(r"DROP PROCEDURE IF EXISTS update_editions").await?;
-    tx.query_drop(
+  
+  async fn create_edition_procedure(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(r"DROP PROCEDURE IF EXISTS update_editions").await?;
+    conn.simple_query(
       r#"CREATE PROCEDURE update_editions()
+      LANGUAGE plpgsql
+      AS $$
       BEGIN
-      DECLARE EXIT HANDLER FOR SQLEXCEPTION
-      BEGIN
-        SELECT RELEASE_LOCK('editions_lock');
-      END;
-      START TRANSACTION;
-      IF NOT GET_LOCK('editions_lock', 300) THEN
-        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Cannot acquire editions_lock, please try again later.';
+      SELECT pg_try_advisory_lock(999) AS lock_acquired;
+      IF NOT lock_acquired THEN
+        RAISE EXCEPTION 'Cannot acquire editions_lock, please try again later.';
       END IF;
       SELECT max(sequence_number) from ordinals;
       IF "editions" NOT IN (SELECT table_name FROM information_schema.tables) THEN
@@ -3851,14 +3672,18 @@ impl Vermilion {
       CREATE INDEX idx_number ON editions_new (number);
       CREATE INDEX idx_sha256 ON editions_new (sha256);
       ALTER TABLE editions_total_new add primary key (sha256);
-      RENAME TABLE editions to editions_old, editions_new to editions, editions_total to editions_total_old, editions_total_new to editions_total;
+      ALTER TABLE editions RENAME to editions_old; 
+      ALTER TABLE editions_new RENAME to editions;
+      ALTER TABLE editions_total RENAME to editions_total_old;
+      ALTER TABLE editions_total_new RENAME to editions_total;
       DROP TABLE IF EXISTS editions_old;
       DROP TABLE IF EXISTS editions_total_old;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_INDEX_NEW", now(), found_rows());
       END IF;
-      SELECT RELEASE_LOCK('editions_lock');
-      COMMIT;
-      END;"#).await?;
+      SELECT pg_advisory_unlock(999);
+      EXCEPTION WHEN OTHERS THEN SELECT pg_advisory_unlock(999);
+      END;
+      $$;"#).await?;
     // tx.query_drop(r"DROP EVENT IF EXISTS editions_event").await?;
     // // select for update to block inserts onto ordinals table while editions are being updated
     // tx.query_drop(r"CREATE EVENT editions_event 
@@ -3869,30 +3694,24 @@ impl Vermilion {
     //                         CALL update_editions();
     //                         SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
     //                       END;").await?;
-    let result = tx.commit().await;
-    match result {
-      Ok(_) => Ok(()),
-      Err(error) => {
-        log::warn!("Error creating editions table stored procedure: {}", error);
-        Err(anyhow::Error::new(error))
-      }
-    }
+    Ok(())
   }
-
-  async fn create_weights_procedure(pool: mysql_async::Pool) -> anyhow::Result<()> {
-    let mut conn = Self::get_conn(pool).await?;
-    let mut tx = conn.start_transaction(TxOpts::default()).await?;
-    tx.query_drop(r"DROP PROCEDURE IF EXISTS update_weights").await?;
-    tx.query_drop(
-      r#"CREATE PROCEDURE update_weights()
+  
+  async fn create_weights_procedure(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(r"DROP PROCEDURE IF EXISTS update_weights").await?;
+    conn.simple_query(
+      r#"CREATE OR REPLACE PROCEDURE update_weights()
+      LANGUAGE plpgsql
+      AS $$
       BEGIN
       DROP TABLE IF EXISTS weights_1;
       DROP TABLE IF EXISTS weights_2;
       DROP TABLE IF EXISTS weights_3;
       DROP TABLE IF EXISTS weights_4;
       DROP TABLE IF EXISTS weights_5;
-      IF "weights" NOT IN (SELECT table_name FROM information_schema.tables) THEN
-      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_1", now());
+      IF 'weights' NOT IN (SELECT table_name FROM information_schema.tables) THEN
+      INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_1', now());
         CREATE TABLE weights_1 as
         select sha256, 
                min(sequence_number) as first_number, 
@@ -3903,11 +3722,11 @@ impl Vermilion {
         where is_json=0 and is_bitmap_style=0 and is_maybe_json=0 and sha256 in (
           select sha256 
           from content_moderation 
-          where coalesce(human_override_moderation_flag, automated_moderation_flag) = "SAFE_MANUAL" 
-          or coalesce(human_override_moderation_flag, automated_moderation_flag) = "SAFE_AUTOMATED")
+          where coalesce(human_override_moderation_flag, automated_moderation_flag) = 'SAFE_MANUAL' 
+          or coalesce(human_override_moderation_flag, automated_moderation_flag) = 'SAFE_AUTOMATED')
         group by sha256;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_1", now(), found_rows());
-      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_2", now());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_1', now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_2', now());
         CREATE TABLE weights_2 AS
         SELECT w.*,
               CASE
@@ -3917,8 +3736,8 @@ impl Vermilion {
               END AS CLASS
         FROM weights_1 w
         LEFT JOIN dbscan db ON w.sha256=db.sha256;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_2", now(), found_rows());
-      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_3", now());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_2', now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_3', now());
         CREATE TABLE weights_3 AS
         SELECT sha256, 
               min(class) as class,
@@ -3926,34 +3745,34 @@ impl Vermilion {
               sum(total_fee) AS total_fee
         FROM weights_2
         GROUP BY sha256;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_3", now(), found_rows());
-      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_4", now());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_3', now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_4', now());
         CREATE TABLE weights_4 AS
         SELECT *,
               (10-log(10,first_number+1))*total_fee AS weight
         FROM weights_3;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_4", now(), found_rows());
-      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_5", now());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_4', now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_5', now());
         CREATE TABLE weights_5 AS
         SELECT *,
               sum(weight) OVER(ORDER BY class, first_number)/sum(weight) OVER() AS band_end, 
               coalesce(sum(weight) OVER(ORDER BY class, first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS band_start
         FROM weights_4;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_5", now(), found_rows());
-      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_6", now());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_5', now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_6', now());
       CREATE TABLE weights AS
       SELECT *,
             min(band_start) OVER(PARTITION BY class) AS class_band_start,
             max(band_end) OVER(PARTITION BY class) AS class_band_end
       FROM weights_5;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_6", now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_6', now(), found_rows());
         CREATE INDEX idx_band_start ON weights (band_start);
         CREATE INDEX idx_band_end ON weights (band_end);
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_INDEX", now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_INDEX', now(), found_rows());
       
       ELSE
       
-      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_NEW", now());
+      INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_NEW', now());
       DROP TABLE IF EXISTS weights_new;
         CREATE TABLE weights_1 as
         select sha256, 
@@ -3965,11 +3784,11 @@ impl Vermilion {
         where is_json=0 and is_bitmap_style=0 and is_maybe_json=0 and sha256 in (
           select sha256 
           from content_moderation 
-          where coalesce(human_override_moderation_flag, automated_moderation_flag) = "SAFE_MANUAL" 
-          or coalesce(human_override_moderation_flag, automated_moderation_flag) = "SAFE_AUTOMATED")
+          where coalesce(human_override_moderation_flag, automated_moderation_flag) = 'SAFE_MANUAL' 
+          or coalesce(human_override_moderation_flag, automated_moderation_flag) = 'SAFE_AUTOMATED')
         group by sha256;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_1", now(), found_rows());
-      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_NEW_2", now());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_NEW_1', now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_NEW_2', now());
         CREATE TABLE weights_2 AS
         SELECT w.*,
               CASE
@@ -3979,8 +3798,8 @@ impl Vermilion {
               END AS CLASS
         FROM weights_1 w
         LEFT JOIN dbscan db ON w.sha256=db.sha256;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_2", now(), found_rows());
-      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_NEW_3", now());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_NEW_2', now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_NEW_3', now());
         CREATE TABLE weights_3 AS
         SELECT sha256, 
               min(class) as class,
@@ -3988,63 +3807,58 @@ impl Vermilion {
               sum(total_fee) AS total_fee
         FROM weights_2
         GROUP BY sha256;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_3", now(), found_rows());
-      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_NEW_4", now());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_NEW_3', now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_NEW_4', now());
         CREATE TABLE weights_4 AS
         SELECT *,
               (10-log(10,first_number+1))*total_fee AS weight
         FROM weights_3;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_4", now(), found_rows());
-      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_NEW_5", now());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_NEW_4', now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_NEW_5', now());
         CREATE TABLE weights_5 AS
         SELECT *,
               sum(weight) OVER(ORDER BY class, first_number)/sum(weight) OVER() AS band_end, 
               coalesce(sum(weight) OVER(ORDER BY class, first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS band_start
         FROM weights_4;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_5", now(), found_rows());
-      INSERT into proc_log(proc_name, step_name, ts) values ("WEIGHTS", "START_CREATE_NEW_6", now());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_NEW_5', now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_NEW_6', now());
       CREATE TABLE weights_new AS
       SELECT *,
             min(band_start) OVER(PARTITION BY class) AS class_band_start,
             max(band_end) OVER(PARTITION BY class) AS class_band_end
       FROM weights_5;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_CREATE_NEW_6", now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_NEW_6', now(), found_rows());
         CREATE INDEX idx_band_start ON weights_new (band_start);
         CREATE INDEX idx_band_end ON weights_new (band_end);
-        RENAME TABLE weights to weights_old, weights_new to weights;
+        ALTER TABLE weights RENAME to weights_old;
+        ALTER TABLE weights_new RENAME to weights;
         DROP TABLE IF EXISTS weights_old;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("WEIGHTS", "FINISH_INDEX_NEW", now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_INDEX_NEW', now(), found_rows());
       END IF;      
       DROP TABLE IF EXISTS weights_1;
       DROP TABLE IF EXISTS weights_2;
       DROP TABLE IF EXISTS weights_3;
       DROP TABLE IF EXISTS weights_4;
       DROP TABLE IF EXISTS weights_5;
-      END;"#).await?;
-    tx.query_drop(r"DROP EVENT IF EXISTS weights_event").await?;
-    tx.query_drop(r"CREATE EVENT weights_event 
-                          ON SCHEDULE EVERY 24 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400 - 43200) 
-                          DO
-                          BEGIN
-                            SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;
-                            CALL update_weights();
-                            SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
-                          END;").await?;
-    let result = tx.commit().await;
-    match result {
-      Ok(_) => Ok(()),
-      Err(error) => {
-        log::warn!("Error creating weights table stored procedure: {}", error);
-        Err(anyhow::Error::new(error))
-      }
-    }
+      END;
+      $$;"#).await?;
+    // conn.simple_query(r"DROP EVENT IF EXISTS weights_event").await?;
+    // conn.simple_query(r"CREATE EVENT weights_event 
+    //                       ON SCHEDULE EVERY 24 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400 - 43200) 
+    //                       DO
+    //                       BEGIN
+    //                         SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;
+    //                         CALL update_weights();
+    //                         SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+    //                       END;").await?;
+    Ok(())
   }
-
-  async fn create_procedure_log(pool: mysql_async::Pool) -> anyhow::Result<()> {
-    let mut conn = Self::get_conn(pool).await?;
-    conn.query_drop(
+  
+  async fn create_procedure_log(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
       r"CREATE TABLE IF NOT EXISTS proc_log (
-        id int unsigned auto_increment primary key,
+        id SERIAL PRIMARY KEY,
         proc_name varchar(40),
         step_name varchar(40),
         ts timestamp,
@@ -4052,5 +3866,5 @@ impl Vermilion {
       )").await?;
     Ok(())
   }
-
+  
 }
