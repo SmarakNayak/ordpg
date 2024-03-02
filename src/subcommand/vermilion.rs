@@ -1,6 +1,7 @@
 use self::migrate::Migrator;
 
 use super::*;
+use aws_config::imds::client;
 use axum_server::Handle;
 use mysql_async::Params;
 use serde_json::to_string;
@@ -610,10 +611,35 @@ impl Vermilion {
           }
 
           //4.1 Insert metadata
+          let mut client = match cloned_deadpool.get().await {
+            Ok(client) => client,
+            Err(err) => {
+              log::info!("Error getting db client: {:?}, waiting a minute", err);
+              let mut locked_status_vector = status_vector.lock().await;
+              for j in needed_numbers.clone() {              
+                let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == j).unwrap();
+                status.status = "ERROR".to_string();
+              }
+              return;
+            }
+          };
+          let tx = match client.transaction().await{
+            Ok(tx) => tx,
+            Err(err) => {
+              log::info!("Error starting db transaction: {:?}, waiting a minute", err);
+              let mut locked_status_vector = status_vector.lock().await;
+              for j in needed_numbers.clone() {
+                let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == j).unwrap();
+                status.status = "ERROR".to_string();
+              }
+              return;
+            }
+          };
           let t51 = Instant::now();
-          let insert_result = Self::bulk_insert_metadata(cloned_deadpool.clone(), metadata_vec.clone()).await;
+          let insert_result = Self::bulk_insert_metadata(&tx, metadata_vec.clone()).await;
+          let edition_result = Self::bulk_insert_editions(&tx, metadata_vec).await;
           let t51a = Instant::now();
-          let sat_insert_result = Self::bulk_insert_sat_metadata(cloned_deadpool.clone(), sat_metadata_vec.clone()).await;
+          let sat_insert_result = Self::bulk_insert_sat_metadata(&tx, sat_metadata_vec.clone()).await;
           let t51b = Instant::now();
           let mut satributes_vec = Vec::new();
           for sat_metadata in sat_metadata_vec.iter() {
@@ -631,7 +657,7 @@ impl Vermilion {
             };
             satributes_vec.push(rarity);
           }
-          let satribute_insert_result = Self::bulk_insert_satributes(cloned_deadpool.clone(), satributes_vec).await;
+          let satribute_insert_result = Self::bulk_insert_satributes(&tx, satributes_vec).await;
           let t51c = Instant::now();
           //4.2 Upload content to db
           let mut content_vec: Vec<ContentBlob> = Vec::new();
@@ -650,11 +676,11 @@ impl Vermilion {
               content_vec.push(content_blob);
             }
           }
-          let content_result = Self::bulk_insert_content(cloned_deadpool.clone(), content_vec).await;
-
+          let content_result = Self::bulk_insert_content(&tx, content_vec).await;
+          let commit_result = tx.commit().await;
           //4.3 Update status
           let t52 = Instant::now();
-          if insert_result.is_err() || sat_insert_result.is_err() || content_result.is_err() || satribute_insert_result.is_err() {
+          if insert_result.is_err() || sat_insert_result.is_err() || content_result.is_err() || satribute_insert_result.is_err() || commit_result.is_err() || edition_result.is_err() {
             log::info!("Error bulk inserting into db for sequence numbers: {}-{}. Will retry after 60s", first_number, last_number);
             if insert_result.is_err() {
               log::info!("Metadata Error: {:?}", insert_result.unwrap_err());
@@ -667,6 +693,12 @@ impl Vermilion {
             }
             if content_result.is_err() {
               log::info!("Content Error: {:?}", content_result.unwrap_err());
+            }
+            if commit_result.is_err() {
+              log::info!("Commit Error: {:?}", commit_result.unwrap_err());
+            }
+            if edition_result.is_err() {
+              log::info!("Edition Error: {:?}", edition_result.unwrap_err());
             }
             should_sleep = true;
             let mut locked_status_vector = status_vector.lock().await;
@@ -1616,9 +1648,7 @@ impl Vermilion {
     Ok(())
   }
 
-  async fn bulk_insert_metadata(pool: deadpool_postgres::Pool, data: Vec<Metadata>) -> anyhow::Result<()> {
-    let mut conn = pool.get().await?;
-    let tx = conn.transaction().await?;
+  async fn bulk_insert_metadata(tx: &deadpool_postgres::Transaction<'_>, data: Vec<Metadata>) -> anyhow::Result<()> {
     let copy_stm = r#"COPY ordinals (
       sequence_number, 
       id, 
@@ -1700,7 +1730,6 @@ impl Vermilion {
     }
   
     writer.finish().await?;
-    tx.commit().await?;
     Ok(())
   }
 
@@ -1746,10 +1775,9 @@ impl Vermilion {
     Ok(())
   }
 
-  async fn bulk_insert_sat_metadata(pool: deadpool_postgres::Pool, data: Vec<SatMetadata>) -> anyhow::Result<()> {
-    let mut conn = pool.get().await?;
-    let tx = conn.transaction().await?;
-    let copy_stm = r#"COPY sat (
+  async fn bulk_insert_sat_metadata(tx: &deadpool_postgres::Transaction<'_>, data: Vec<SatMetadata>) -> anyhow::Result<()> {
+    tx.simple_query("CREATE TEMP TABLE inserts_sat ON COMMIT DROP AS TABLE sat WITH NO DATA").await?;
+    let copy_stm = r#"COPY inserts_sat (
       sat,
       sat_decimal,
       degree,
@@ -1794,10 +1822,9 @@ impl Vermilion {
       row.push(&m.percentile);
       row.push(&m.timestamp);
       writer.as_mut().write(&row).await?;
-    }
-  
+    }  
     writer.finish().await?;
-    tx.commit().await?;
+    tx.simple_query("INSERT INTO sat SELECT * FROM inserts_sat ON CONFLICT DO NOTHING").await?;
     Ok(())
   }
 
@@ -1827,11 +1854,9 @@ impl Vermilion {
     Ok(())
   }
 
-  async fn bulk_insert_content(pool: deadpool_postgres::Pool<>, data: Vec<ContentBlob>) -> anyhow::Result<()> {
-    let mut conn = pool.get().await?;
-    let tx = conn.transaction().await?;
-    tx.simple_query("CREATE TEMP TABLE inserts ON COMMIT DROP AS TABLE content WITH NO DATA").await?;
-    let copy_stm = r#"COPY inserts (
+  async fn bulk_insert_content(tx: &deadpool_postgres::Transaction<'_>, data: Vec<ContentBlob>) -> anyhow::Result<()> {
+    tx.simple_query("CREATE TEMP TABLE inserts_content ON COMMIT DROP AS TABLE content WITH NO DATA").await?;
+    let copy_stm = r#"COPY inserts_content (
       sha256, 
       content, 
       content_type) FROM STDIN BINARY"#;
@@ -1851,8 +1876,7 @@ impl Vermilion {
       writer.as_mut().write(&row).await?;
     }
     writer.finish().await?;
-    tx.simple_query("INSERT INTO content SELECT nextval('content_content_id_seq'), sha256, content, content_type FROM inserts ON CONFLICT DO NOTHING").await?;
-    tx.commit().await?;
+    tx.simple_query("INSERT INTO content SELECT nextval('content_content_id_seq'), sha256, content, content_type FROM inserts_content ON CONFLICT DO NOTHING").await?;
     Ok(())
   }
 
@@ -1887,30 +1911,34 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn bulk_insert_editions(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut conn = Self::get_conn(pool).await?;
-    let mut tx = conn.start_transaction(TxOpts::default()).await?;
-    let insert_query = r"INSERT INTO editions (id, number, sequence_number, sha256, edition) VALUES (:id, :number, :sequence_number, :sha256, 0) ON DUPLICATE KEY UPDATE number=Values(number), sequence_number=Values(sequence_number), sha256=Values(sha256), edition=0";
-
-    let _insert_exec = tx.exec_batch(
-      insert_query,
-        metadata_vec.iter().map(|metadata| params! {
-          "id" => &metadata.id,
-          "number" => &metadata.number,
-          "sequence_number" => &metadata.sequence_number,
-          "sha256" => &metadata.sha256
-      })
-    ).await;
-    match _insert_exec {
-      Ok(_) => {
-        tx.commit().await?;
-      },
-      Err(error) => {
-        tx.rollback().await?;
-        log::warn!("Error bulk inserting edition: {}", error);
-        return Err(Box::new(error));
-      }
-    };
+  pub(crate) async fn bulk_insert_editions(tx: &deadpool_postgres::Transaction<'_>, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let copy_stm = r#"COPY editions (      
+      id,
+      number,
+      sequence_number,
+      sha256, 
+      edition) FROM STDIN BINARY"#;
+    let col_types = vec![
+      Type::VARCHAR,
+      Type::INT8,
+      Type::INT8,
+      Type::VARCHAR,
+      Type::INT8
+    ];
+    let sink = tx.copy_in(copy_stm).await?;
+    let writer = BinaryCopyInWriter::new(sink, &col_types);
+    pin_mut!(writer);
+    let edition: i64 = 0;
+    for m in metadata_vec {
+      let mut row: Vec<&'_ (dyn ToSql + Sync)> = Vec::new();
+      row.push(&m.id);
+      row.push(&m.number);
+      row.push(&m.sequence_number);
+      row.push(&m.sha256);
+      row.push(&edition);
+      writer.as_mut().write(&row).await?;
+    }
+    writer.finish().await?;
     Ok(())
   }
 
@@ -1947,10 +1975,9 @@ impl Vermilion {
     Ok(())
   }
 
-  async fn bulk_insert_satributes(pool: deadpool_postgres::Pool, data: Vec<Satribute>) -> anyhow::Result<()> {
-    let mut conn = pool.get().await?;
-    let tx = conn.transaction().await?;
-    let copy_stm = r#"COPY satributes (
+  async fn bulk_insert_satributes(tx: &deadpool_postgres::Transaction<'_>, data: Vec<Satribute>) -> anyhow::Result<()> {
+    tx.simple_query("CREATE TEMP TABLE inserts_satributes ON COMMIT DROP AS TABLE satributes WITH NO DATA").await?;
+    let copy_stm = r#"COPY inserts_satributes (
       sat,
       satribute) FROM STDIN BINARY"#;
     let col_types = vec![
@@ -1965,10 +1992,9 @@ impl Vermilion {
       row.push(&m.sat);
       row.push(&m.satribute);
       writer.as_mut().write(&row).await?;
-    }
-  
+    }  
     writer.finish().await?;
-    tx.commit().await?;
+    tx.simple_query("INSERT INTO satributes SELECT * FROM inserts_satributes ON CONFLICT DO NOTHING").await?;
     Ok(())
   }
 
