@@ -230,7 +230,7 @@ pub struct TransferWithMetadata {
 
 #[derive(Clone, Serialize)]
 pub struct BlockHeight {
-  block_number: u32,
+  block_number: i64,
   block_timestamp: i64
 }
 
@@ -770,11 +770,19 @@ impl Vermilion {
         .unwrap();
       rt.block_on(async move {
         let config = options.load_config().unwrap();
+        let cloned_config = options.clone().load_config().unwrap();
         let url = config.db_connection_string.unwrap();
         let pool = Pool::new(url.as_str());
-        let create_tranfer_result = Self::create_transfers_table(pool.clone()).await;
-        let create_address_result = Self::create_address_table(pool.clone()).await;
-        let create_blockheight_result = Self::create_blockheight_table(pool.clone()).await;
+        let deadpool = match Self::get_deadpool(cloned_config).await {
+          Ok(deadpool) => deadpool,
+          Err(err) => {
+            println!("Error creating deadpool: {:?}", err);
+            return;
+          }
+        };
+        let create_tranfer_result = Self::create_transfers_table(deadpool.clone()).await;
+        let create_address_result = Self::create_address_table(deadpool.clone()).await;
+        let create_blockheight_result = Self::create_blockheight_table(deadpool.clone()).await;
         if create_tranfer_result.is_err() {
           println!("Error creating db tables: {:?}", create_tranfer_result.unwrap_err());
           return;            
@@ -790,7 +798,7 @@ impl Vermilion {
 
         let fetcher = fetcher::Fetcher::new(&options).unwrap();
         let first_inscription_height = options.first_inscription_height();
-        let mut height = match Self::get_start_block(pool.clone()).await {
+        let mut height = match Self::get_start_block(deadpool.clone()).await {
           Ok(height) => height,
           Err(err) => {
             log::info!("Error getting start block from db: {:?}, waiting a minute", err);
@@ -815,29 +823,50 @@ impl Vermilion {
           }
 
           let blockheight = BlockHeight {
-            block_number: height,
+            block_number: height as i64,
             block_timestamp: index.block_time(Height(height)).unwrap().timestamp().timestamp_millis()
           };
           blockheights.push(blockheight);
 
+          let mut conn = match deadpool.get().await {
+            Ok(conn) => conn,
+            Err(err) => {
+              log::info!("Error getting db connection: {:?}, waiting a minute", err);
+              tokio::time::sleep(Duration::from_secs(60)).await;
+              continue;
+            }
+          };
+          let deadpool_tx = match conn.transaction().await {
+            Ok(tx) => tx,
+            Err(err) => {
+              log::info!("Error starting db transaction: {:?}, waiting a minute", err);
+              tokio::time::sleep(Duration::from_secs(60)).await;
+              continue;
+            }
+          };
+
           if height < first_inscription_height {
             if height % 100000 == 0 {
               log::info!("Inserting blockheights @ {}", height);
-              match Self::mass_insert_blockheights(pool.clone(), blockheights.clone()).await {
-                Ok(_) => {
-                  blockheights = Vec::new();
-                },
-                Err(err) => {
-                  log::info!("Error inserting blockheights into db: {:?}, waiting a minute", err);
-                  tokio::time::sleep(Duration::from_secs(60)).await;
-                  continue;
+              let insert = Self::bulk_insert_blockheights(&deadpool_tx, blockheights.clone()).await;
+              let commit = deadpool_tx.commit().await;
+              if insert.is_err() || commit.is_err() {
+                if insert.is_err() {
+                  log::info!("Error inserting blockheights into db: {:?}, waiting a minute", insert.unwrap_err());
                 }
+                if commit.is_err() {
+                  log::info!("Error committing blockheights into db: {:?}, waiting a minute", commit.unwrap_err());
+                }
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                continue;
+              } else {
+                blockheights = Vec::new();
               }
             }
             height += 1;
             continue;
           } else {
-            match Self::mass_insert_blockheights(pool.clone(), blockheights.clone()).await {
+            match Self::bulk_insert_blockheights(&deadpool_tx, blockheights.clone()).await {
               Ok(_) => {
                 log::debug!("Inserted blockheights @ {}", height);
                 blockheights = Vec::new();
@@ -961,16 +990,20 @@ impl Vermilion {
             transfer_vec.push(transfer);
           }
           let t5 = Instant::now();
-          let insert_transfer_result = Self::mass_insert_transfers(pool.clone(), transfer_vec.clone()).await;
+          let insert_transfer_result = Self::bulk_insert_transfers(&deadpool_tx, transfer_vec.clone()).await;
           let t6 = Instant::now();
-          let insert_address_result = Self::mass_insert_addresses(pool.clone(), transfer_vec).await;
-          if insert_transfer_result.is_err() || insert_address_result.is_err() {
+          let insert_address_result = Self::bulk_insert_addresses(&deadpool_tx, transfer_vec).await;
+          let commit_result = deadpool_tx.commit().await;
+          if insert_transfer_result.is_err() || insert_address_result.is_err() || commit_result.is_err(){
             log::info!("Error bulk inserting addresses into db for block height: {:?}, waiting a minute", height);
             if insert_transfer_result.is_err() {
               log::info!("Transfer Error: {:?}", insert_transfer_result.unwrap_err());
             }
             if insert_address_result.is_err() {
               log::info!("Address Error: {:?}", insert_address_result.unwrap_err());
+            }
+            if commit_result.is_err() {
+              log::info!("Commit Error: {:?}", commit_result.unwrap_err());
             }
             tokio::time::sleep(Duration::from_secs(60)).await;
             continue;              
@@ -1721,7 +1754,8 @@ impl Vermilion {
       row.push(&m.charms);
       row.push(&m.timestamp);
       row.push(&m.sha256);
-      row.push(&m.text);
+      let clean_text = &m.text.map(|s| s.replace("\0", ""));
+      row.push(clean_text);
       row.push(&m.is_json);
       row.push(&m.is_maybe_json);
       row.push(&m.is_bitmap_style);
@@ -2179,98 +2213,66 @@ impl Vermilion {
   }
 
   //Address Indexer Helper functions
-  pub(crate) async fn create_transfers_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = Self::get_conn(pool).await?;
-    conn.query_drop(
+  pub(crate) async fn create_transfers_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
       r"CREATE TABLE IF NOT EXISTS transfers (
         id varchar(80) not null,
         block_number bigint not null,
         block_timestamp bigint,
-        satpoint text,
+        satpoint varchar(100) not null,
         transaction text,
-        vout int unsigned,
-        offset bigint unsigned,
+        vout int,
+        satpoint_offset bigint,
         address text,
         is_genesis boolean,
-        PRIMARY KEY (`id`,`block_number`),
-        INDEX index_id (id),
-        INDEX index_block (block_number)
+        PRIMARY KEY (id, block_number, satpoint)
       )").await?;
+    conn.simple_query(r"
+      CREATE INDEX IF NOT EXISTS index_transfers_id ON transfers (id);
+      CREATE INDEX IF NOT EXISTS index_transfers_block ON transfers (block_number);
+    ").await?;
     Ok(())
   }
-
-  pub(crate) async fn bulk_insert_transfers(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut conn = Self::get_conn(pool).await?;
-    let mut tx = conn.start_transaction(TxOpts::default()).await?;
-    let _exec = tx.exec_batch(
-      r"INSERT INTO transfers (id, block_number, block_timestamp, satpoint, transaction, vout, offset,  address, is_genesis)
-        VALUES (:id, :block_number, :block_timestamp, :satpoint, :transaction, :vout, :offset, :address, :is_genesis)
-        ON DUPLICATE KEY UPDATE block_timestamp=VALUES(block_timestamp), satpoint=VALUES(satpoint), transaction=VALUES(transaction), vout=VALUES(vout), offset=VALUES(offset), address=VALUES(address), is_genesis=VALUES(is_genesis)",
-        transfer_vec.iter().map(|transfer| params! { 
-          "id" => &transfer.id,
-          "block_number" => &transfer.block_number,
-          "block_timestamp" => &transfer.block_timestamp,
-          "satpoint" => &transfer.satpoint,
-          "transaction" => &transfer.transaction,
-          "vout" => &transfer.vout,
-          "offset" => &transfer.offset,
-          "address" => &transfer.address,
-          "is_genesis" => &transfer.is_genesis
-      })
-    ).await;
-    match _exec {
-      Ok(_) => {},
-      Err(error) => {
-        log::warn!("Error bulk inserting ordinal transfers: {}", error);
-        return Err(Box::new(error));
-      }
-    };
-    let result = tx.commit().await;
-    match result {
-      Ok(_) => Ok(()),
-      Err(error) => {
-        log::warn!("Error bulk inserting ordinal transfers: {}", error);
-        Err(Box::new(error))
-      }
+  pub(crate) async fn bulk_insert_transfers(tx: &deadpool_postgres::Transaction<'_>, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let copy_stm = r#"COPY transfers (
+      id,
+      block_number,
+      block_timestamp,
+      satpoint,
+      transaction,
+      vout,
+      satpoint_offset,
+      address,
+      is_genesis) FROM STDIN BINARY"#;
+    let col_types = vec![
+      Type::VARCHAR,
+      Type::INT8,
+      Type::INT8,
+      Type::TEXT,
+      Type::TEXT,
+      Type::INT4,
+      Type::INT8,
+      Type::TEXT,
+      Type::BOOL
+    ];
+    let sink = tx.copy_in(copy_stm).await?;
+    let writer = BinaryCopyInWriter::new(sink, &col_types);
+    pin_mut!(writer);
+    for m in transfer_vec {
+      let mut row: Vec<&'_ (dyn ToSql + Sync)> = Vec::new();
+      row.push(&m.id);
+      row.push(&m.block_number);
+      row.push(&m.block_timestamp);
+      row.push(&m.satpoint);
+      row.push(&m.transaction);
+      row.push(&m.vout);
+      row.push(&m.offset);
+      row.push(&m.address);
+      row.push(&m.is_genesis);
+      writer.as_mut().write(&row).await?;
     }
-  }
-
-  pub(crate) async fn bulk_insert_transfers2(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    for chunk in transfer_vec.chunks(5000) {
-      let insert_result = Self::bulk_insert(pool.clone(), 
-        "transfers".to_string(), 
-        vec![
-          "id".to_string(), 
-          "block_number".to_string(), 
-          "block_timestamp".to_string(),
-          "satpoint".to_string(),
-          "transaction".to_string(),
-          "vout".to_string(),
-          "offset".to_string(),
-          "address".to_string(),
-          "is_genesis".to_string()], 
-        chunk.to_vec(), 
-        |object| {
-        params! {
-            "id" => &object.id,
-            "block_number" => object.block_number, 
-            "block_timestamp" => object.block_timestamp,
-            "satpoint" => &object.satpoint,
-            "transaction" => &object.transaction,
-            "vout" => object.vout,
-            "offset" => object.offset,
-            "address" => &object.address,
-            "is_genesis" => object.is_genesis
-        }
-      }).await;
-      match insert_result {
-        Ok(_) => {},
-        Err(error) => {
-          log::warn!("Error bulk inserting transfers: {}", error);
-          return Err(Box::new(error));
-        }
-      };
-    }
+    writer.finish().await?;
     Ok(())
   }
 
@@ -2303,105 +2305,75 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn create_address_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = Self::get_conn(pool).await?;
-    conn.query_drop(
+  pub(crate) async fn create_address_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
       r"CREATE TABLE IF NOT EXISTS addresses (
         id varchar(80) not null primary key,
         block_number bigint not null,
         block_timestamp bigint,
-        satpoint text,
+        satpoint varchar(100),
         transaction text,
-        vout int unsigned,
-        offset bigint unsigned,
+        vout int,
+        satpoint_offset bigint,
         address varchar(100),
-        is_genesis boolean,
-        INDEX index_id (id),
-        INDEX index_address (address)
+        is_genesis boolean
       )").await?;
+    conn.simple_query(r"
+      CREATE INDEX IF NOT EXISTS index_address ON addresses (address);
+    ").await?;
     Ok(())
   }
-
-  pub(crate) async fn bulk_insert_addresses(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut conn = Self::get_conn(pool).await?;
-    let mut tx = conn.start_transaction(TxOpts::default()).await?;
-    let _exec = tx.exec_batch(
-      r"INSERT INTO addresses (id, block_number, block_timestamp, satpoint, transaction, vout, offset, address, is_genesis)
-        VALUES (:id, :block_number, :block_timestamp, :satpoint, :transaction, :vout, :offset, :address, :is_genesis)
-        ON DUPLICATE KEY UPDATE block_number=VALUES(block_number), block_timestamp=VALUES(block_timestamp), satpoint=VALUES(satpoint), transaction=VALUES(transaction), vout=VALUES(vout), offset=VALUES(offset), address=VALUES(address), is_genesis=VALUES(is_genesis)",
-        transfer_vec.iter().map(|transfer| params! { 
-          "id" => &transfer.id,
-          "block_number" => &transfer.block_number,
-          "block_timestamp" => &transfer.block_timestamp,
-          "satpoint" => &transfer.satpoint,
-          "transaction" => &transfer.transaction,
-          "vout" => &transfer.vout,
-          "offset" => &transfer.offset,
-          "address" => &transfer.address,
-          "is_genesis" => &transfer.is_genesis
-      })
-    ).await;
-    match _exec {
-      Ok(_) => {},
-      Err(error) => {
-        log::warn!("Error bulk inserting ordinal addresses: {}", error);
-        return Err(Box::new(error));
-      }
-    };
-    let result = tx.commit().await;
-    match result {
-      Ok(_) => Ok(()),
-      Err(error) => {
-        log::warn!("Error bulk inserting ordinal addresses: {}", error);
-        Err(Box::new(error))
-      }
+  
+  pub(crate) async fn bulk_insert_addresses(tx: &deadpool_postgres::Transaction<'_>, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    tx.simple_query("CREATE TEMP TABLE inserts_addresses ON COMMIT DROP AS TABLE addresses WITH NO DATA").await?;
+    let copy_stm = r#"COPY inserts_addresses (
+      id,
+      block_number,
+      block_timestamp,
+      satpoint,
+      transaction,
+      vout,
+      satpoint_offset,
+      address,
+      is_genesis) FROM STDIN BINARY"#;
+    let col_types = vec![
+      Type::VARCHAR,
+      Type::INT8,
+      Type::INT8,
+      Type::TEXT,
+      Type::TEXT,
+      Type::INT4,
+      Type::INT8,
+      Type::VARCHAR,
+      Type::BOOL
+    ];
+    let sink = tx.copy_in(copy_stm).await?;
+    let writer = BinaryCopyInWriter::new(sink, &col_types);
+    pin_mut!(writer);
+    for m in transfer_vec {
+      let mut row: Vec<&'_ (dyn ToSql + Sync)> = Vec::new();
+      row.push(&m.id);
+      row.push(&m.block_number);
+      row.push(&m.block_timestamp);
+      row.push(&m.satpoint);
+      row.push(&m.transaction);
+      row.push(&m.vout);
+      row.push(&m.offset);
+      row.push(&m.address);
+      row.push(&m.is_genesis);
+      writer.as_mut().write(&row).await?;
     }
-  }
-
-  pub(crate) async fn bulk_insert_addresses2(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    for chunk in transfer_vec.chunks(5000) {
-      let insert_result = Self::bulk_insert_update(pool.clone(), 
-        "addresses".to_string(), 
-        vec![
-          "id".to_string(), 
-          "block_number".to_string(), 
-          "block_timestamp".to_string(),
-          "satpoint".to_string(),
-          "transaction".to_string(),
-          "vout".to_string(),
-          "offset".to_string(),
-          "address".to_string(),
-          "is_genesis".to_string()], 
-        vec![
-          "block_timestamp".to_string(),
-          "satpoint".to_string(),
-          "transaction".to_string(),
-          "vout".to_string(),
-          "offset".to_string(),
-          "address".to_string(),
-          "is_genesis".to_string()], 
-        chunk.to_vec(), 
-        |object| {
-        params! {
-            "id" => &object.id,
-            "block_number" => object.block_number, 
-            "block_timestamp" => object.block_timestamp,
-            "satpoint" => &object.satpoint,
-            "transaction" => &object.transaction,
-            "vout" => object.vout,
-            "offset" => object.offset,
-            "address" => &object.address,
-            "is_genesis" => object.is_genesis
-        }
-      }).await;
-      match insert_result {
-        Ok(_) => {},
-        Err(error) => {
-          log::warn!("Error bulk inserting addresses: {}", error);
-          return Err(Box::new(error));
-        }
-      };
-    }
+    writer.finish().await?;
+    tx.simple_query("INSERT INTO addresses SELECT * FROM inserts_addresses ON CONFLICT (id) DO UPDATE SET 
+      block_number = EXCLUDED.block_number, 
+      block_timestamp = EXCLUDED.block_timestamp,
+      satpoint = EXCLUDED.satpoint,
+      transaction = EXCLUDED.transaction,
+      vout = EXCLUDED.vout,
+      satpoint_offset = EXCLUDED.satpoint_offset,
+      address = EXCLUDED.address,
+      is_genesis = EXCLUDED.is_genesis").await?;
     Ok(())
   }
 
@@ -2434,36 +2406,37 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn get_start_block(pool: mysql_async::Pool) -> Result<u32, Box<dyn std::error::Error>> {
-    let mut conn = Self::get_conn(pool).await?;
-    let row = conn.query_iter("select max(block_number) from blockheights")
-      .await?
-      .next()
-      .await?
-      .unwrap();
-    let row = mysql_async::from_row::<Option<u32>>(row);
-    let block_number = match row {
-      Some(row) => {
-        let block_number: u32 = row;
-        block_number+1
+  pub(crate) async fn get_start_block(pool: deadpool) -> Result<u32, Box<dyn std::error::Error>> {
+    let conn = pool.get().await?;
+    let row = conn.query_one("SELECT max(block_number) from blockheights", &[]).await;
+    let last_block = match row {
+      Ok(row) => {
+        let last_block: Option<i64> = row.get(0);
+        last_block.unwrap_or(-1)
       },
-      None => {
-        0
-      }
+      Err(_) => -1
     };
-    Ok(block_number)
+    Ok((last_block + 1) as u32)
   }
 
-  pub(crate) async fn insert_blockheight(pool: mysql_async::Pool, blockheights: Vec<BlockHeight>) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = Self::get_conn(pool).await?;
-    let _exec = conn.exec_batch(r"INSERT INTO blockheights (block_number, block_timestamp) VALUES (:block_number, :block_timestamp) ON DUPLICATE KEY UPDATE block_timestamp=VALUES(block_timestamp)",
-    blockheights.iter().map(
-      |blockheight|
-      params! {
-        "block_number" => &blockheight.block_number,
-        "block_timestamp" => &blockheight.block_timestamp
-      }
-    )).await?;
+  pub(crate) async fn bulk_insert_blockheights(tx: &deadpool_postgres::Transaction<'_>, blockheights: Vec<BlockHeight>) -> Result<(), Box<dyn std::error::Error>> {
+    let copy_stm = r#"COPY blockheights (
+      block_number,
+      block_timestamp) FROM STDIN BINARY"#;
+    let col_types = vec![
+      Type::INT8,
+      Type::INT8
+    ];
+    let sink = tx.copy_in(copy_stm).await?;
+    let writer = BinaryCopyInWriter::new(sink, &col_types);
+    pin_mut!(writer);
+    for m in blockheights {
+      let mut row: Vec<&'_ (dyn ToSql + Sync)> = Vec::new();
+      row.push(&m.block_number);
+      row.push(&m.block_timestamp);
+      writer.as_mut().write(&row).await?;
+    }
+    writer.finish().await?;
     Ok(())
   }
 
@@ -2492,16 +2465,16 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn create_blockheight_table(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = Self::get_conn(pool).await?;
-    conn.query_drop(
+  pub(crate) async fn create_blockheight_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
       r"CREATE TABLE IF NOT EXISTS blockheights (
-        block_number int not null primary key,
+        block_number bigint not null primary key,
         block_timestamp bigint not null
       )").await?;
     Ok(())
   }
-
+  
   //Server api functions
   async fn root() -> &'static str {
 "If Bitcoin is to change the culture of money, it needs to be cool. Ordinals was the missing piece. The path to $1m is preordained"
