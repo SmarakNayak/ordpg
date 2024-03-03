@@ -1429,8 +1429,8 @@ impl Vermilion {
     Self::create_procedure_log(pool.clone()).await.context("Failed to create proc log")?;
     Self::create_edition_procedure(pool.clone()).await.context("Failed to create edition proc")?;
     Self::create_weights_procedure(pool.clone()).await.context("Failed to create weights proc")?;
-    //Self::create_edition_insert_trigger(pool.clone()).await.context("Failed to create edition trigger")?;
-    //Self::create_metadata_insert_trigger(pool.clone()).await.context("Failed to create metadata trigger")?;
+    Self::create_edition_insert_trigger(pool.clone()).await.context("Failed to create edition trigger")?;
+    Self::create_metadata_insert_trigger(pool.clone()).await.context("Failed to create metadata trigger")?;
     Ok(())
   }
 
@@ -3596,10 +3596,8 @@ impl Vermilion {
     let conn = pool.get().await?;
     conn.simple_query(r"CREATE OR REPLACE FUNCTION before_metadata_insert() RETURNS TRIGGER AS $$
       BEGIN
-        SELECT pg_try_advisory_lock(999) AS lock_acquired;
-        IF NOT lock_acquired THEN
-          RAISE EXCEPTION 'Cannot acquire editions_lock, please try again later.';
-        END IF;
+        LOCK TABLE ordinals IN EXCLUSIVE MODE;
+        RETURN NULL;
       END;
       $$ LANGUAGE plpgsql;").await?;
     conn.simple_query(
@@ -3615,15 +3613,17 @@ impl Vermilion {
     conn.simple_query(r#"
       CREATE OR REPLACE FUNCTION before_edition_insert() RETURNS TRIGGER AS $$
       DECLARE previous_total INTEGER;
+      DECLARE new_total INTEGER;
       BEGIN
         -- Get the previous total for the same sha256, or default to 0
-        SELECT COALESCE(total, 0) INTO previous_total FROM editions_total WHERE sha256 = NEW.sha256;
-      
+        SELECT total INTO previous_total FROM editions_total WHERE sha256 = NEW.sha256;
+        new_total := COALESCE(previous_total, 0) + 1;
+        -- RAISE NOTICE 'previous_total: %, new_total: %', previous_total, new_total;
         -- Set the edition number in the new row to previous + 1
-        NEW.edition := previous_total + 1;
+        NEW.edition := new_total;
       
         -- Insert or update the total in editions_total
-        INSERT INTO editions_total (sha256, total) VALUES (NEW.sha256, previous_total + 1)
+        INSERT INTO editions_total (sha256, total) VALUES (NEW.sha256, new_total)
         ON CONFLICT (sha256) DO UPDATE SET total = EXCLUDED.total;
       
         RETURN NULL;
@@ -3645,31 +3645,28 @@ impl Vermilion {
       LANGUAGE plpgsql
       AS $$
       BEGIN
-      SELECT pg_try_advisory_lock(999) AS lock_acquired;
-      IF NOT lock_acquired THEN
-        RAISE EXCEPTION 'Cannot acquire editions_lock, please try again later.';
-      END IF;
-      SELECT max(sequence_number) from ordinals;
-      IF "editions" NOT IN (SELECT table_name FROM information_schema.tables) THEN
-      INSERT into proc_log(proc_name, step_name, ts) values ("EDITIONS", "START_CREATE", now());
+      LOCK TABLE ordinals IN EXCLUSIVE MODE;
+      RAISE NOTICE 'update_editions: lock acquired';
+      IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'editions') THEN
+      INSERT into proc_log(proc_name, step_name, ts) values ('EDITIONS', 'START_CREATE', now());
       CREATE TABLE editions as select id, number, sequence_number, sha256, row_number() OVER(PARTITION BY sha256 ORDER BY sequence_number asc) as edition from ordinals;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_CREATE", now(), found_rows());
-      INSERT into proc_log(proc_name, step_name, ts) values ("EDITIONS", "START_CREATE_TOTAL", now());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('EDITIONS', 'FINISH_CREATE', now(), NULL);
+      INSERT into proc_log(proc_name, step_name, ts) values ('EDITIONS', 'START_CREATE_TOTAL', now());
       CREATE TABLE editions_total as select sha256, count(*) as total from ordinals where sha256 is not null group by sha256;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_CREATE_TOTAL", now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('EDITIONS', 'FINISH_CREATE_TOTAL', now(), NULL);
       ALTER TABLE editions add primary key (id);
       CREATE INDEX idx_number ON editions (number);
       CREATE INDEX idx_sha256 ON editions (sha256);
       ALTER TABLE editions_total add primary key (sha256);
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_INDEX", now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('EDITIONS', 'FINISH_INDEX', now(), NULL);
       ELSE
       DROP TABLE IF EXISTS editions_new, editions_total_new;
-      INSERT into proc_log(proc_name, step_name, ts) values ("EDITIONS", "START_CREATE_NEW", now());
+      INSERT into proc_log(proc_name, step_name, ts) values ('EDITIONS', 'START_CREATE_NEW', now());
       CREATE TABLE editions_new as select id, number, sequence_number, sha256, row_number() OVER(PARTITION BY sha256 ORDER BY sequence_number asc) as edition from ordinals;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_CREATE_NEW", now(), found_rows());
-      INSERT into proc_log(proc_name, step_name, ts) values ("EDITIONS", "START_CREATE_TOTAL_NEW", now());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('EDITIONS', 'FINISH_CREATE_NEW', now(), NULL);
+      INSERT into proc_log(proc_name, step_name, ts) values ('EDITIONS', 'START_CREATE_TOTAL_NEW', now());
       CREATE TABLE editions_total_new as select sha256, count(*) as total from ordinals where sha256 is not null group by sha256;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_CREATE_TOTAL_NEW", now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('EDITIONS', 'FINISH_CREATE_TOTAL_NEW', now(), NULL);
       ALTER TABLE editions_new add primary key (id);
       CREATE INDEX idx_number ON editions_new (number);
       CREATE INDEX idx_sha256 ON editions_new (sha256);
@@ -3680,22 +3677,10 @@ impl Vermilion {
       ALTER TABLE editions_total_new RENAME to editions_total;
       DROP TABLE IF EXISTS editions_old;
       DROP TABLE IF EXISTS editions_total_old;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ("EDITIONS", "FINISH_INDEX_NEW", now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('EDITIONS', 'FINISH_INDEX_NEW', now(), NULL);
       END IF;
-      SELECT pg_advisory_unlock(999);
-      EXCEPTION WHEN OTHERS THEN SELECT pg_advisory_unlock(999);
       END;
       $$;"#).await?;
-    // tx.query_drop(r"DROP EVENT IF EXISTS editions_event").await?;
-    // // select for update to block inserts onto ordinals table while editions are being updated
-    // tx.query_drop(r"CREATE EVENT editions_event 
-    //                       ON SCHEDULE EVERY 168 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400) 
-    //                       DO
-    //                       BEGIN
-    //                         SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
-    //                         CALL update_editions();
-    //                         SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
-    //                       END;").await?;
     Ok(())
   }
   
