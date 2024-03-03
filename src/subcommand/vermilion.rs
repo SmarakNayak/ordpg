@@ -2325,7 +2325,10 @@ impl Vermilion {
     Ok(())
   }
   
-  pub(crate) async fn bulk_insert_addresses(tx: &deadpool_postgres::Transaction<'_>, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+  pub(crate) async fn bulk_insert_addresses(tx: &deadpool_postgres::Transaction<'_>, mut transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    //ON CONFLICT DO UPDATE command cannot affect row a second time, so we reverse & dedup (effectively keeping the last transfer in block)
+    transfer_vec.reverse();
+    transfer_vec.dedup_by(|a, b| a.id == b.id);
     tx.simple_query("CREATE TEMP TABLE inserts_addresses ON COMMIT DROP AS TABLE addresses WITH NO DATA").await?;
     let copy_stm = r#"COPY inserts_addresses (
       id,
