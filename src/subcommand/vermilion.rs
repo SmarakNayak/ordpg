@@ -909,10 +909,6 @@ impl Vermilion {
                 log::info!("Attempting 1 at a time");
                 let mut txs = Vec::new();
                 for (id, satpoint) in transfers.clone() {
-                  // break if ctrl-c is received
-                  if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
-                    break;
-                  }
                   let tx = match fetcher.get_transactions(vec![satpoint.outpoint.txid]).await {
                     Ok(mut tx) => Some(tx.pop().unwrap()),
                     Err(e) => {                      
@@ -1462,20 +1458,20 @@ impl Vermilion {
         is_bitmap_style boolean,
         is_recursive boolean
       )").await?;
-    // conn.simple_query(r"
-    //   CREATE INDEX IF NOT EXISTS index_metadata_id ON ordinals (id);
-    //   CREATE INDEX IF NOT EXISTS index_metadata_number ON ordinals (number);
-    //   CREATE INDEX IF NOT EXISTS index_metadata_block ON ordinals (genesis_height);
-    //   CREATE INDEX IF NOT EXISTS index_metadata_sha256 ON ordinals (sha256);
-    //   CREATE INDEX IF NOT EXISTS index_metadata_sat ON ordinals (sat);
-    //   CREATE INDEX IF NOT EXISTS index_metadata_parent ON ordinals (parent);
-    //   CREATE INDEX IF NOT EXISTS index_metadata_delegate ON ordinals (delegate);
-    //   CREATE INDEX IF NOT EXISTS index_metadata_fee ON ordinals (genesis_fee);
-    //   CREATE INDEX IF NOT EXISTS index_metadata_size ON ordinals (content_length);
-    //   CREATE INDEX IF NOT EXISTS index_metadata_type ON ordinals (content_type);
-    //   CREATE INDEX IF NOT EXISTS index_metadata_metaprotocol ON ordinals (metaprotocol);
-    //   CREATE INDEX IF NOT EXISTS index_metadata_text ON ordinals USING GIN (to_tsvector('english', text));
-    // ").await?;
+    conn.simple_query(r"
+      CREATE INDEX IF NOT EXISTS index_metadata_id ON ordinals (id);
+      CREATE INDEX IF NOT EXISTS index_metadata_number ON ordinals (number);
+      CREATE INDEX IF NOT EXISTS index_metadata_block ON ordinals (genesis_height);
+      CREATE INDEX IF NOT EXISTS index_metadata_sha256 ON ordinals (sha256);
+      CREATE INDEX IF NOT EXISTS index_metadata_sat ON ordinals (sat);
+      CREATE INDEX IF NOT EXISTS index_metadata_parent ON ordinals (parent);
+      CREATE INDEX IF NOT EXISTS index_metadata_delegate ON ordinals (delegate);
+      CREATE INDEX IF NOT EXISTS index_metadata_fee ON ordinals (genesis_fee);
+      CREATE INDEX IF NOT EXISTS index_metadata_size ON ordinals (content_length);
+      CREATE INDEX IF NOT EXISTS index_metadata_type ON ordinals (content_type);
+      CREATE INDEX IF NOT EXISTS index_metadata_metaprotocol ON ordinals (metaprotocol);
+      CREATE INDEX IF NOT EXISTS index_metadata_text ON ordinals USING GIN (to_tsvector('english', text));
+    ").await?;
   
     Ok(())
   }
@@ -3596,7 +3592,9 @@ impl Vermilion {
     let conn = pool.get().await?;
     conn.simple_query(r"CREATE OR REPLACE FUNCTION before_metadata_insert() RETURNS TRIGGER AS $$
       BEGIN
+        -- RAISE NOTICE 'insert_metadata: waiting for lock';
         LOCK TABLE ordinals IN EXCLUSIVE MODE;
+        -- RAISE NOTICE 'insert_metadata: lock acquired';
         RETURN NULL;
       END;
       $$ LANGUAGE plpgsql;").await?;
@@ -3655,8 +3653,8 @@ impl Vermilion {
       CREATE TABLE editions_total as select sha256, count(*) as total from ordinals where sha256 is not null group by sha256;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('EDITIONS', 'FINISH_CREATE_TOTAL', now(), NULL);
       ALTER TABLE editions add primary key (id);
-      CREATE INDEX idx_number ON editions (number);
-      CREATE INDEX idx_sha256 ON editions (sha256);
+      CREATE INDEX IF NOT EXISTS idx_number ON editions (number);
+      CREATE INDEX IF NOT EXISTS idx_sha256 ON editions (sha256);
       ALTER TABLE editions_total add primary key (sha256);
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('EDITIONS', 'FINISH_INDEX', now(), NULL);
       ELSE
@@ -3668,8 +3666,8 @@ impl Vermilion {
       CREATE TABLE editions_total_new as select sha256, count(*) as total from ordinals where sha256 is not null group by sha256;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('EDITIONS', 'FINISH_CREATE_TOTAL_NEW', now(), NULL);
       ALTER TABLE editions_new add primary key (id);
-      CREATE INDEX idx_number ON editions_new (number);
-      CREATE INDEX idx_sha256 ON editions_new (sha256);
+      CREATE INDEX IF NOT EXISTS idx_number ON editions_new (number);
+      CREATE INDEX IF NOT EXISTS idx_sha256 ON editions_new (sha256);
       ALTER TABLE editions_total_new add primary key (sha256);
       ALTER TABLE editions RENAME to editions_old; 
       ALTER TABLE editions_new RENAME to editions;
