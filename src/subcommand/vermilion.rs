@@ -1942,7 +1942,8 @@ impl Vermilion {
   }
 
   pub(crate) async fn bulk_insert_editions(tx: &deadpool_postgres::Transaction<'_>, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let copy_stm = r#"COPY editions (      
+    tx.simple_query("CREATE TEMP TABLE inserts_editions ON COMMIT DROP AS TABLE editions WITH NO DATA").await?;
+    let copy_stm = r#"COPY inserts_editions (      
       id,
       number,
       sequence_number,
@@ -1969,6 +1970,7 @@ impl Vermilion {
       writer.as_mut().write(&row).await?;
     }
     writer.finish().await?;
+    tx.simple_query("INSERT INTO editions SELECT id, number, sequence_number, coalesce(sha256,''), edition FROM inserts_editions ON CONFLICT DO NOTHING").await?;
     Ok(())
   }
 
@@ -3622,8 +3624,7 @@ impl Vermilion {
       
         -- Insert or update the total in editions_total
         INSERT INTO editions_total (sha256, total) VALUES (NEW.sha256, new_total)
-        ON CONFLICT (sha256) DO UPDATE SET total = EXCLUDED.total
-        WHERE NEW.sha256 IS NOT NULL;
+        ON CONFLICT (sha256) DO UPDATE SET total = EXCLUDED.total;
       
         RETURN NULL;
       END;
