@@ -3622,7 +3622,8 @@ impl Vermilion {
       
         -- Insert or update the total in editions_total
         INSERT INTO editions_total (sha256, total) VALUES (NEW.sha256, new_total)
-        ON CONFLICT (sha256) DO UPDATE SET total = EXCLUDED.total;
+        ON CONFLICT (sha256) DO UPDATE SET total = EXCLUDED.total
+        WHERE NEW.sha256 IS NOT NULL;
       
         RETURN NULL;
       END;
