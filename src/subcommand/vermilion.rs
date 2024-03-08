@@ -1678,7 +1678,8 @@ impl Vermilion {
   }
 
   async fn bulk_insert_metadata(tx: &deadpool_postgres::Transaction<'_>, data: Vec<Metadata>) -> anyhow::Result<()> {
-    let copy_stm = r#"COPY ordinals (
+    tx.simple_query("CREATE TEMP TABLE inserts_ordinals ON COMMIT DROP AS TABLE ordinals WITH NO DATA").await?;
+    let copy_stm = r#"COPY inserts_ordinals (
       sequence_number, 
       id, 
       content_length, 
@@ -1760,6 +1761,7 @@ impl Vermilion {
     }
   
     writer.finish().await?;
+    tx.simple_query("INSERT INTO ordinals SELECT * FROM inserts_ordinals ON CONFLICT DO NOTHING").await?;
     Ok(())
   }
 
