@@ -1678,8 +1678,8 @@ impl Vermilion {
   }
 
   async fn bulk_insert_metadata(tx: &deadpool_postgres::Transaction<'_>, data: Vec<Metadata>) -> anyhow::Result<()> {
-    tx.simple_query("CREATE TEMP TABLE inserts_ordinals ON COMMIT DROP AS TABLE ordinals WITH NO DATA").await?;
-    let copy_stm = r#"COPY inserts_ordinals (
+    //tx.simple_query("CREATE TEMP TABLE inserts_ordinals ON COMMIT DROP AS TABLE ordinals WITH NO DATA").await?;
+    let copy_stm = r#"COPY ordinals (
       sequence_number, 
       id, 
       content_length, 
@@ -1731,6 +1731,7 @@ impl Vermilion {
     let sink = tx.copy_in(copy_stm).await?;
     let writer = BinaryCopyInWriter::new(sink, &col_types);
     pin_mut!(writer);
+    println!("Writing metadata: {:?}", data.len());
     for m in data {
       let mut row: Vec<&'_ (dyn ToSql + Sync)> = Vec::new();
       row.push(&m.sequence_number);
@@ -1760,8 +1761,9 @@ impl Vermilion {
       writer.as_mut().write(&row).await?;
     }
   
-    writer.finish().await?;
-    tx.simple_query("INSERT INTO ordinals SELECT * FROM inserts_ordinals ON CONFLICT DO NOTHING").await?;
+    let x = writer.finish().await?;
+    println!("Finished writing metadata: {:?}", x);
+    //tx.simple_query("INSERT INTO ordinals SELECT * FROM inserts_ordinals ON CONFLICT DO NOTHING").await?;
     Ok(())
   }
 
@@ -3599,7 +3601,7 @@ impl Vermilion {
         -- RAISE NOTICE 'insert_metadata: waiting for lock';
         LOCK TABLE ordinals IN EXCLUSIVE MODE;
         -- RAISE NOTICE 'insert_metadata: lock acquired';
-        RETURN NULL;
+        RETURN NEW;
       END;
       $$ LANGUAGE plpgsql;").await?;
     conn.simple_query(
@@ -3628,7 +3630,7 @@ impl Vermilion {
         INSERT INTO editions_total (sha256, total) VALUES (NEW.sha256, new_total)
         ON CONFLICT (sha256) DO UPDATE SET total = EXCLUDED.total;
       
-        RETURN NULL;
+        RETURN NEW;
       END;
       $$ LANGUAGE plpgsql;"#).await?;
     conn.simple_query(
