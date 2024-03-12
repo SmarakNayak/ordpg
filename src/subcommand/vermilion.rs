@@ -141,6 +141,7 @@ pub struct Metadata {
   metaprotocol: Option<String>,
   embedded_metadata: Option<String>,
   sat: Option<i64>,
+  satributes: Vec<String>,
   charms: Option<i16>,
   timestamp: i64,
   sha256: Option<String>,
@@ -154,6 +155,7 @@ pub struct Metadata {
 #[derive(Clone, Serialize)]
 pub struct SatMetadata {
   sat: i64,
+  satributes: Vec<String>,
   decimal: String,
   degree: String,
   name: String,
@@ -676,7 +678,12 @@ impl Vermilion {
               content_vec.push(content_blob);
             }
           }
-          let content_result = Self::bulk_insert_content(&tx, content_vec).await;
+          let numbers_content = needed_numbers.clone()
+            .into_iter()
+            .zip(content_vec.into_iter())
+            .map(|(x, y)| (x as i64, y))
+            .collect::<Vec<_>>();
+          let content_result = Self::bulk_insert_content(&tx, numbers_content).await;
           let commit_result = tx.commit().await;
           //4.3 Update status
           let t52 = Instant::now();
@@ -1307,6 +1314,16 @@ impl Vermilion {
         None
       }
     };
+    let satributes = match entry.sat {
+      Some(sat) => {
+        let mut satributes = sat.block_rarities().iter().map(|x| x.to_string()).collect::<Vec<String>>();
+        if !sat.common() {
+          satributes.push(sat.rarity().to_string()); 
+        }
+        satributes
+      },
+      None => Vec::new()
+    };
     let parent = entry.parent.map_or(None, |parent| Some(parent.to_string()));
     let mut metaprotocol = inscription.metaprotocol().map_or(None, |str| Some(str.to_string()));
     if let Some(mut metaprotocol_inner) = metaprotocol.clone() {
@@ -1378,6 +1395,7 @@ impl Vermilion {
       metaprotocol: metaprotocol,
       embedded_metadata: embedded_metadata,
       sat: sat,
+      satributes: satributes.clone(),
       charms: Some(entry.charms.try_into().unwrap()),
       timestamp: entry.timestamp.try_into().unwrap(),
       sha256: sha256.clone(),
@@ -1393,6 +1411,7 @@ impl Vermilion {
         let sat_blocktime = index.block_time(sat.height())?;
         let sat_metadata = SatMetadata {
           sat: sat.0 as i64,
+          satributes: satributes,
           decimal: sat.decimal().to_string(),
           degree: sat.degree().to_string(),
           name: sat.name(),
@@ -1449,6 +1468,7 @@ impl Vermilion {
         metaprotocol text,
         embedded_metadata text,
         sat bigint,
+        satributes varchar(30)[],
         charms smallint,
         timestamp bigint,
         sha256 varchar(64),
@@ -1481,6 +1501,7 @@ impl Vermilion {
     conn.simple_query(r"
       CREATE TABLE IF NOT EXISTS sat (
       sat bigint not null primary key,
+      satributes varchar(30)[],
       sat_decimal text,
       degree text,
       name text,
@@ -1504,7 +1525,7 @@ impl Vermilion {
     let conn = pool.get().await?;
     conn.simple_query(
       r"CREATE TABLE IF NOT EXISTS content (
-        content_id SERIAL,
+        content_id bigint,
         sha256 varchar(64) NOT NULL PRIMARY KEY,
         content bytea,
         content_type text
@@ -1694,7 +1715,8 @@ impl Vermilion {
       delegate, 
       metaprotocol, 
       embedded_metadata, 
-      sat, 
+      sat,
+      satributes,
       charms, 
       timestamp, 
       sha256, 
@@ -1719,6 +1741,7 @@ impl Vermilion {
       Type::TEXT,
       Type::TEXT,
       Type::INT8,
+      Type::VARCHAR_ARRAY,
       Type::INT2,
       Type::INT8,
       Type::VARCHAR,
@@ -1731,7 +1754,6 @@ impl Vermilion {
     let sink = tx.copy_in(copy_stm).await?;
     let writer = BinaryCopyInWriter::new(sink, &col_types);
     pin_mut!(writer);
-    println!("Writing metadata: {:?}", data.len());
     for m in data {
       let mut row: Vec<&'_ (dyn ToSql + Sync)> = Vec::new();
       row.push(&m.sequence_number);
@@ -1749,6 +1771,7 @@ impl Vermilion {
       row.push(&m.metaprotocol);
       row.push(&m.embedded_metadata);
       row.push(&m.sat);
+      row.push(&m.satributes);
       row.push(&m.charms);
       row.push(&m.timestamp);
       row.push(&m.sha256);
@@ -1762,7 +1785,7 @@ impl Vermilion {
     }
   
     let x = writer.finish().await?;
-    println!("Finished writing metadata: {:?}", x);
+    //println!("Finished writing metadata: {:?}", x);
     //tx.simple_query("INSERT INTO ordinals SELECT * FROM inserts_ordinals ON CONFLICT DO NOTHING").await?;
     Ok(())
   }
@@ -1813,6 +1836,7 @@ impl Vermilion {
     tx.simple_query("CREATE TEMP TABLE inserts_sat ON COMMIT DROP AS TABLE sat WITH NO DATA").await?;
     let copy_stm = r#"COPY inserts_sat (
       sat,
+      satributes,
       sat_decimal,
       degree,
       name,
@@ -1826,6 +1850,7 @@ impl Vermilion {
       timestamp) FROM STDIN BINARY"#;
     let col_types = vec![
       Type::INT8,
+      Type::VARCHAR_ARRAY,
       Type::TEXT,
       Type::TEXT,
       Type::TEXT,
@@ -1844,6 +1869,7 @@ impl Vermilion {
     for m in data {
       let mut row: Vec<&'_ (dyn ToSql + Sync)> = Vec::new();
       row.push(&m.sat);
+      row.push(&m.satributes);
       row.push(&m.decimal);
       row.push(&m.degree);
       row.push(&m.name);
@@ -1888,13 +1914,15 @@ impl Vermilion {
     Ok(())
   }
 
-  async fn bulk_insert_content(tx: &deadpool_postgres::Transaction<'_>, data: Vec<ContentBlob>) -> anyhow::Result<()> {
+  async fn bulk_insert_content(tx: &deadpool_postgres::Transaction<'_>, data: Vec<(i64, ContentBlob)>) -> anyhow::Result<()> {
     tx.simple_query("CREATE TEMP TABLE inserts_content ON COMMIT DROP AS TABLE content WITH NO DATA").await?;
     let copy_stm = r#"COPY inserts_content (
+      content_id,
       sha256, 
       content, 
       content_type) FROM STDIN BINARY"#;
     let col_types = vec![
+      Type::INT8,
       Type::VARCHAR,
       Type::BYTEA,
       Type::TEXT
@@ -1902,15 +1930,16 @@ impl Vermilion {
     let sink = tx.copy_in(copy_stm).await?;
     let writer = BinaryCopyInWriter::new(sink, &col_types);
     pin_mut!(writer);
-    for m in data {
+    for (sequence_number, content) in data {
       let mut row: Vec<&'_ (dyn ToSql + Sync)> = Vec::new();
-      row.push(&m.sha256);
-      row.push(&m.content);
-      row.push(&m.content_type);
+      row.push(&sequence_number);
+      row.push(&content.sha256);
+      row.push(&content.content);
+      row.push(&content.content_type);
       writer.as_mut().write(&row).await?;
     }
     writer.finish().await?;
-    tx.simple_query("INSERT INTO content SELECT nextval('content_content_id_seq'), sha256, content, content_type FROM inserts_content ON CONFLICT DO NOTHING").await?;
+    tx.simple_query("INSERT INTO content SELECT content_id, sha256, content, content_type FROM inserts_content ON CONFLICT DO NOTHING").await?;
     Ok(())
   }
 
@@ -2763,7 +2792,7 @@ impl Vermilion {
         format!("Invalid sort_by: {}", params.sort_by),
       ).into_response();
     }
-    let inscriptions = match Self::get_inscriptions(server_config.pool, params).await {
+    let inscriptions = match Self::get_inscriptions(server_config.deadpool, params).await {
       Ok(inscriptions) => inscriptions,
       Err(error) => {
         log::warn!("Error getting /inscriptions: {}", error);
@@ -3087,6 +3116,7 @@ impl Vermilion {
       metaprotocol: row.take("metaprotocol").unwrap(),
       embedded_metadata: row.take("embedded_metadata").unwrap(),
       sat: row.take("sat").unwrap(),
+      satributes: Vec::new(),
       charms: row.take("charms").unwrap(),
       timestamp: row.get("timestamp").unwrap(),
       sha256: row.take("sha256").unwrap(),
@@ -3115,6 +3145,7 @@ impl Vermilion {
       metaprotocol: row.get("metaprotocol"),
       embedded_metadata: row.get("embedded_metadata"),
       sat: row.get("sat"),
+      satributes: row.get("satributes"),
       charms: row.get("charms"),
       timestamp: row.get("timestamp"),
       sha256: row.get("sha256"),
@@ -3274,15 +3305,15 @@ impl Vermilion {
     Ok(inscriptions)
   }
 
-  async fn get_inscriptions(pool: mysql_async::Pool, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<Metadata>> {
-    let mut conn = Self::get_conn(pool).await?;
+  async fn get_inscriptions(pool: deadpool, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<Metadata>> {
+    let conn = pool.get().await?;
     //1. build query
     let mut query = "SELECT o.* FROM ordinals o WHERE 1=1".to_string();
     if params.content_types.len() > 0 {
       query.push_str(" AND (");
       for (i, content_type) in params.content_types.iter().enumerate() {
         if content_type == "text" {
-          query.push_str("(o.content_type IN ('text/plain;charset=utf-8', 'text/plain','text/markdown', 'text/javascript', 'text/plain;charset=us-ascii', 'text/rtf') AND o.is_json=0 AND o.is_maybe_json=0 AND o.is_bitmap_style=0)");
+          query.push_str("(o.content_type IN ('text/plain;charset=utf-8', 'text/plain','text/markdown', 'text/javascript', 'text/plain;charset=us-ascii', 'text/rtf') AND o.is_json=false AND o.is_maybe_json=false AND o.is_bitmap_style=false)");
         } else if content_type == "image" {
           query.push_str("o.content_type IN ('image/jpeg', 'image/png', 'image/svg+xml', 'image/webp', 'image/avif', 'image/tiff', 'image/heic', 'image/jp2')");
         } else if content_type == "gif" {
@@ -3294,9 +3325,9 @@ impl Vermilion {
         } else if content_type == "html" {
           query.push_str("o.content_type IN ('text/html;charset=utf-8', 'text/html')");
         } else if content_type == "json" {
-          query.push_str("o.is_json=1");
+          query.push_str("o.is_json=true");
         } else if content_type == "namespace" {
-          query.push_str("o.is_bitmap_style=1");
+          query.push_str("o.is_bitmap_style=true");
         }
         if i < params.content_types.len() - 1 {
           query.push_str(" OR ");
@@ -3305,7 +3336,7 @@ impl Vermilion {
       query.push_str(")");
     }
     if params.satributes.len() > 0 {
-      query.push_str(format!(" AND (o.sat in (SELECT sat FROM satributes WHERE satribute IN ('{}')))", params.satributes.join("','")).as_str());
+      query.push_str(format!(" AND (o.satributes && array['{}'::varchar])", params.satributes.join("'::varchar,'")).as_str());
     }
     if params.sort_by == "newest" {
       query.push_str(" ORDER BY o.sequence_number DESC");
@@ -3334,10 +3365,15 @@ impl Vermilion {
     if params.page_number > 0 {
       query.push_str(format!(" OFFSET {}", params.page_number * params.page_size).as_str());
     }
-    let inscriptions = conn.query_map(
-      query,
-      Self::map_row_to_metadata
+    println!("Query: {}", query);
+    let result = conn.query(
+      query.as_str(), 
+      &[]
     ).await?;
+    let mut inscriptions = Vec::new();
+    for row in result {
+      inscriptions.push(Self::map_row_to_metadata2(row));
+    }
     Ok(inscriptions)
   }
 
@@ -3524,6 +3560,7 @@ impl Vermilion {
       Ok(result) => {
         SatMetadata {
           sat: result.get("sat"),
+          satributes: result.get("satributes"),
           decimal: result.get("sat_decimal"),
           degree: result.get("degree"),
           name: result.get("name"),
@@ -3539,8 +3576,13 @@ impl Vermilion {
       },
       Err(_) => {
         let parsed_sat = Sat(sat as u64);
+        let mut satributes = parsed_sat.block_rarities().iter().map(|x| x.to_string()).collect::<Vec<String>>();
+        if !parsed_sat.common() {
+          satributes.push(parsed_sat.rarity().to_string()); 
+        }
         let mut metadata = SatMetadata {
           sat: sat.try_into().unwrap(),
+          satributes: satributes,
           decimal: parsed_sat.decimal().to_string(),
           degree: parsed_sat.degree().to_string(),
           name: parsed_sat.name(),
