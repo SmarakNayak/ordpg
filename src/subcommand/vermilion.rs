@@ -3764,7 +3764,7 @@ impl Vermilion {
           where coalesce(human_override_moderation_flag, automated_moderation_flag) = 'SAFE_MANUAL' 
           or coalesce(human_override_moderation_flag, automated_moderation_flag) = 'SAFE_AUTOMATED')
         group by sha256;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_1', now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_1', now(), NULL);
       INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_2', now());
         CREATE TABLE weights_2 AS
         SELECT w.*,
@@ -3775,7 +3775,7 @@ impl Vermilion {
               END AS CLASS
         FROM weights_1 w
         LEFT JOIN dbscan db ON w.sha256=db.sha256;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_2', now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_2', now(), NULL);
       INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_3', now());
         CREATE TABLE weights_3 AS
         SELECT sha256, 
@@ -3784,30 +3784,30 @@ impl Vermilion {
               sum(total_fee) AS total_fee
         FROM weights_2
         GROUP BY sha256;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_3', now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_3', now(), NULL);
       INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_4', now());
         CREATE TABLE weights_4 AS
         SELECT *,
               (10-log(10,first_number+1))*total_fee AS weight
         FROM weights_3;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_4', now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_4', now(), NULL);
       INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_5', now());
         CREATE TABLE weights_5 AS
         SELECT *,
               sum(weight) OVER(ORDER BY class, first_number)/sum(weight) OVER() AS band_end, 
               coalesce(sum(weight) OVER(ORDER BY class, first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS band_start
         FROM weights_4;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_5', now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_5', now(), NULL);
       INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_6', now());
       CREATE TABLE weights AS
       SELECT *,
             min(band_start) OVER(PARTITION BY class) AS class_band_start,
             max(band_end) OVER(PARTITION BY class) AS class_band_end
       FROM weights_5;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_6', now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_6', now(), NULL);
         CREATE INDEX idx_band_start ON weights (band_start);
         CREATE INDEX idx_band_end ON weights (band_end);
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_INDEX', now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_INDEX', now(), NULL);
       
       ELSE
       
@@ -3826,7 +3826,7 @@ impl Vermilion {
           where coalesce(human_override_moderation_flag, automated_moderation_flag) = 'SAFE_MANUAL' 
           or coalesce(human_override_moderation_flag, automated_moderation_flag) = 'SAFE_AUTOMATED')
         group by sha256;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_NEW_1', now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_NEW_1', now(), NULL);
       INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_NEW_2', now());
         CREATE TABLE weights_2 AS
         SELECT w.*,
@@ -3837,7 +3837,7 @@ impl Vermilion {
               END AS CLASS
         FROM weights_1 w
         LEFT JOIN dbscan db ON w.sha256=db.sha256;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_NEW_2', now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_NEW_2', now(), NULL);
       INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_NEW_3', now());
         CREATE TABLE weights_3 AS
         SELECT sha256, 
@@ -3846,33 +3846,33 @@ impl Vermilion {
               sum(total_fee) AS total_fee
         FROM weights_2
         GROUP BY sha256;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_NEW_3', now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_NEW_3', now(), NULL);
       INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_NEW_4', now());
         CREATE TABLE weights_4 AS
         SELECT *,
               (10-log(10,first_number+1))*total_fee AS weight
         FROM weights_3;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_NEW_4', now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_NEW_4', now(), NULL);
       INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_NEW_5', now());
         CREATE TABLE weights_5 AS
         SELECT *,
               sum(weight) OVER(ORDER BY class, first_number)/sum(weight) OVER() AS band_end, 
               coalesce(sum(weight) OVER(ORDER BY class, first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS band_start
         FROM weights_4;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_NEW_5', now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_NEW_5', now(), NULL);
       INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_NEW_6', now());
       CREATE TABLE weights_new AS
       SELECT *,
             min(band_start) OVER(PARTITION BY class) AS class_band_start,
             max(band_end) OVER(PARTITION BY class) AS class_band_end
       FROM weights_5;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_NEW_6', now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_NEW_6', now(), NULL);
         CREATE INDEX idx_band_start ON weights_new (band_start);
         CREATE INDEX idx_band_end ON weights_new (band_end);
         ALTER TABLE weights RENAME to weights_old;
         ALTER TABLE weights_new RENAME to weights;
         DROP TABLE IF EXISTS weights_old;
-      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_INDEX_NEW', now(), found_rows());
+      INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_INDEX_NEW', now(), NULL);
       END IF;      
       DROP TABLE IF EXISTS weights_1;
       DROP TABLE IF EXISTS weights_2;
