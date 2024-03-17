@@ -3758,7 +3758,7 @@ impl Vermilion {
                max(content_length) as content_length, 
                count(*) as count
         from ordinals 
-        where is_json=0 and is_bitmap_style=0 and is_maybe_json=0 and sha256 in (
+        where is_json=false and is_bitmap_style=false and is_maybe_json=false and sha256 in (
           select sha256 
           from content_moderation 
           where coalesce(human_override_moderation_flag, automated_moderation_flag) = 'SAFE_MANUAL' 
@@ -3820,7 +3820,7 @@ impl Vermilion {
                max(content_length) as content_length, 
                count(*) as count
         from ordinals 
-        where is_json=0 and is_bitmap_style=0 and is_maybe_json=0 and sha256 in (
+        where is_json=false and is_bitmap_style=false and is_maybe_json=false and sha256 in (
           select sha256 
           from content_moderation 
           where coalesce(human_override_moderation_flag, automated_moderation_flag) = 'SAFE_MANUAL' 
