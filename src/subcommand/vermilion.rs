@@ -3432,7 +3432,7 @@ impl Vermilion {
       satpoint: result.get("satpoint"),
       transaction: result.get("transaction"),
       vout: result.get("vout"),
-      offset: result.get("offset"),
+      offset: result.get("satpoint_offset"),
       address: result.get("address"),
       is_genesis: result.get("is_genesis")
     };
@@ -3454,7 +3454,7 @@ impl Vermilion {
         satpoint: row.get("satpoint"),
         transaction: row.get("transaction"),
         vout: row.get("vout"),
-        offset: row.get("offset"),
+        offset: row.get("satpoint_offset"),
         address: row.get("address"),
         is_genesis: row.get("is_genesis")
       });
@@ -3574,7 +3574,7 @@ impl Vermilion {
           cycle: result.get("cycle"),
           epoch: result.get("epoch"),
           period: result.get("period"),
-          third: result.get("offset"),
+          third: result.get("third"),
           rarity: result.get("rarity"),
           percentile: result.get("percentile"),
           timestamp: result.get("timestamp")
