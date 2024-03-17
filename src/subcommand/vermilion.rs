@@ -1484,6 +1484,7 @@ impl Vermilion {
       CREATE INDEX IF NOT EXISTS index_metadata_block ON ordinals (genesis_height);
       CREATE INDEX IF NOT EXISTS index_metadata_sha256 ON ordinals (sha256);
       CREATE INDEX IF NOT EXISTS index_metadata_sat ON ordinals (sat);
+      CREATE INDEX IF NOT EXISTS index_metadata_satributes on ordinals USING GIN (satributes);
       CREATE INDEX IF NOT EXISTS index_metadata_parent ON ordinals (parent);
       CREATE INDEX IF NOT EXISTS index_metadata_delegate ON ordinals (delegate);
       CREATE INDEX IF NOT EXISTS index_metadata_fee ON ordinals (genesis_fee);
