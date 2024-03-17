@@ -350,7 +350,7 @@ pub struct ApiServerConfig {
   bucket_name: String
 }
 
-const INDEX_BATCH_SIZE: usize = 10000;
+const INDEX_BATCH_SIZE: usize = 1;
 
 impl Vermilion {
   pub(crate) fn run(self, options: Options) -> SubcommandResult {
@@ -1776,7 +1776,9 @@ impl Vermilion {
       row.push(&m.charms);
       row.push(&m.timestamp);
       row.push(&m.sha256);
+      println!("text: {:?}", &m.text);
       let clean_text = &m.text.map(|s| s.replace("\0", ""));
+      println!("clean_text: {:?}", clean_text);
       row.push(clean_text);
       row.push(&m.is_json);
       row.push(&m.is_maybe_json);
