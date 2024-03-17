@@ -1761,6 +1761,7 @@ impl Vermilion {
       row.push(&m.id);
       row.push(&m.content_length);
       let clean_type = &m.content_type.map(|s| s.replace("\0", ""));
+      println!("clean_type: {:?}", clean_type);
       row.push(clean_type);
       let clean_encoding = &m.content_encoding.map(|s| s.replace("\0", ""));
       row.push(clean_encoding);
