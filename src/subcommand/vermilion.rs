@@ -1760,7 +1760,9 @@ impl Vermilion {
       row.push(&m.sequence_number);
       row.push(&m.id);
       row.push(&m.content_length);
+      println!("content_type: {:?}", &m.content_type);
       row.push(&m.content_type);
+      println!("content_encoding: {:?}", &m.content_encoding);
       row.push(&m.content_encoding);
       row.push(&m.genesis_fee);
       row.push(&m.genesis_height);
@@ -1769,7 +1771,9 @@ impl Vermilion {
       row.push(&m.number);
       row.push(&m.parent);
       row.push(&m.delegate);
+      println!("metaprotocol: {:?}", &m.metaprotocol);
       row.push(&m.metaprotocol);
+      println!("embedded_metadata: {:?}", &m.embedded_metadata);
       row.push(&m.embedded_metadata);
       row.push(&m.sat);
       row.push(&m.satributes);
