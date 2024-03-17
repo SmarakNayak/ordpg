@@ -1761,7 +1761,6 @@ impl Vermilion {
       row.push(&m.id);
       row.push(&m.content_length);
       let clean_type = &m.content_type.map(|s| s.replace("\0", ""));
-      println!("clean_type: {:?}", clean_type);
       row.push(clean_type);
       let clean_encoding = &m.content_encoding.map(|s| s.replace("\0", ""));
       row.push(clean_encoding);
@@ -1941,7 +1940,8 @@ impl Vermilion {
       row.push(&sequence_number);
       row.push(&content.sha256);
       row.push(&content.content);
-      row.push(&content.content_type);
+      let clean_type = &content.content_type.replace("\0", "");
+      row.push(clean_type);
       writer.as_mut().write(&row).await?;
     }
     writer.finish().await?;
