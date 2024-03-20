@@ -3872,6 +3872,8 @@ impl Vermilion {
         ALTER TABLE weights RENAME to weights_old;
         ALTER TABLE weights_new RENAME to weights;
         DROP TABLE IF EXISTS weights_old;
+        ALTER INDEX new_idx_band_start RENAME TO idx_band_start;
+        ALTER INDEX new_idx_band_end RENAME TO idx_band_end;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_INDEX_NEW', now(), NULL);
       END IF;      
       DROP TABLE IF EXISTS weights_1;
