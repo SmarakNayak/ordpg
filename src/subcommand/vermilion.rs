@@ -3220,7 +3220,7 @@ impl Vermilion {
   async fn get_matching_inscriptions_by_sha256(pool: deadpool, sha256: String) -> anyhow::Result<Vec<InscriptionNumberEdition>> {
     let conn = pool.get().await?;
     let result = conn.query(
-      "select id, number, edition, t.total from (select * from editions where sha256=:sha256) e inner join editions_total t on t.sha256=e.sha256 order by edition asc limit 100",
+      "select id, number, edition, t.total from (select * from editions where sha256=$1) e inner join editions_total t on t.sha256=e.sha256 order by edition asc limit 100",
       &[&sha256]
     ).await?;
     let mut editions = Vec::new();
