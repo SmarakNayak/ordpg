@@ -3867,8 +3867,8 @@ impl Vermilion {
             max(band_end) OVER(PARTITION BY class) AS class_band_end
       FROM weights_5;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_NEW_6', now(), NULL);
-        CREATE INDEX idx_band_start ON weights_new (band_start);
-        CREATE INDEX idx_band_end ON weights_new (band_end);
+        CREATE INDEX new_idx_band_start ON weights_new (band_start);
+        CREATE INDEX new_idx_band_end ON weights_new (band_end);
         ALTER TABLE weights RENAME to weights_old;
         ALTER TABLE weights_new RENAME to weights;
         DROP TABLE IF EXISTS weights_old;
