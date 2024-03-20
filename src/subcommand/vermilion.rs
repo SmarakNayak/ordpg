@@ -1491,7 +1491,7 @@ impl Vermilion {
       CREATE INDEX IF NOT EXISTS index_metadata_size ON ordinals (content_length);
       CREATE INDEX IF NOT EXISTS index_metadata_type ON ordinals (content_type);
       CREATE INDEX IF NOT EXISTS index_metadata_metaprotocol ON ordinals (metaprotocol);
-      CREATE INDEX IF NOT EXISTS index_metadata_text ON ordinals USING GIN (to_tsvector('english', text));
+      CREATE INDEX IF NOT EXISTS index_metadata_text ON ordinals USING GIN (to_tsvector('english', left(text, 1048575)));
     ").await?;
   
     Ok(())
