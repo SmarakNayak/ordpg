@@ -3800,9 +3800,15 @@ impl Vermilion {
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_5', now(), NULL);
       INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_6', now());
       CREATE TABLE weights AS
-      SELECT *,
-            min(band_start) OVER(PARTITION BY class) AS class_band_start,
-            max(band_end) OVER(PARTITION BY class) AS class_band_end
+      SELECT sha256,
+            class,
+            first_number,
+            CAST(total_fee AS real),
+            CAST(weight AS real),
+            CAST(band_start AS real),
+            CAST(band_end AS real),
+            CAST(min(band_start) OVER(PARTITION BY class) AS real) AS class_band_start,
+            CAST(max(band_end) OVER(PARTITION BY class) AS real) AS class_band_end
       FROM weights_5;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_6', now(), NULL);
         CREATE INDEX idx_band_start ON weights (band_start);
@@ -3862,9 +3868,15 @@ impl Vermilion {
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_NEW_5', now(), NULL);
       INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_NEW_6', now());
       CREATE TABLE weights_new AS
-      SELECT *,
-            min(band_start) OVER(PARTITION BY class) AS class_band_start,
-            max(band_end) OVER(PARTITION BY class) AS class_band_end
+      SELECT sha256,
+            class,
+            first_number,
+            CAST(total_fee AS real),
+            CAST(weight AS real),
+            CAST(band_start AS real),
+            CAST(band_end AS real),
+            CAST(min(band_start) OVER(PARTITION BY class) AS real) AS class_band_start,
+            CAST(max(band_end) OVER(PARTITION BY class) AS real) AS class_band_end
       FROM weights_5;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_NEW_6', now(), NULL);
         CREATE INDEX new_idx_band_start ON weights_new (band_start);
