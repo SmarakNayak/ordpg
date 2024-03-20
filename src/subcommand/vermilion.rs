@@ -3803,16 +3803,17 @@ impl Vermilion {
       SELECT sha256,
             class,
             first_number,
-            CAST(total_fee AS real),
-            CAST(weight AS real),
-            CAST(band_start AS real),
-            CAST(band_end AS real),
-            CAST(min(band_start) OVER(PARTITION BY class) AS real) AS class_band_start,
-            CAST(max(band_end) OVER(PARTITION BY class) AS real) AS class_band_end
+            CAST(total_fee AS FLOAT8),
+            CAST(weight AS FLOAT8),
+            CAST(band_start AS FLOAT8),
+            CAST(band_end AS FLOAT8),
+            CAST(min(band_start) OVER(PARTITION BY class) AS FLOAT8) AS class_band_start,
+            CAST(max(band_end) OVER(PARTITION BY class) AS FLOAT8) AS class_band_end
       FROM weights_5;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_6', now(), NULL);
         CREATE INDEX idx_band_start ON weights (band_start);
         CREATE INDEX idx_band_end ON weights (band_end);
+        ALTER TABLE weights owner to vermilion_user;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_INDEX', now(), NULL);
       
       ELSE
@@ -3871,18 +3872,19 @@ impl Vermilion {
       SELECT sha256,
             class,
             first_number,
-            CAST(total_fee AS real),
-            CAST(weight AS real),
-            CAST(band_start AS real),
-            CAST(band_end AS real),
-            CAST(min(band_start) OVER(PARTITION BY class) AS real) AS class_band_start,
-            CAST(max(band_end) OVER(PARTITION BY class) AS real) AS class_band_end
+            CAST(total_fee AS FLOAT8),
+            CAST(weight AS FLOAT8),
+            CAST(band_start AS FLOAT8),
+            CAST(band_end AS FLOAT8),
+            CAST(min(band_start) OVER(PARTITION BY class) AS FLOAT8) AS class_band_start,
+            CAST(max(band_end) OVER(PARTITION BY class) AS FLOAT8) AS class_band_end
       FROM weights_5;
       INSERT into proc_log(proc_name, step_name, ts, rows_returned) values ('WEIGHTS', 'FINISH_CREATE_NEW_6', now(), NULL);
         CREATE INDEX new_idx_band_start ON weights_new (band_start);
         CREATE INDEX new_idx_band_end ON weights_new (band_end);
         ALTER TABLE weights RENAME to weights_old;
         ALTER TABLE weights_new RENAME to weights;
+        ALTER TABLE weights owner to vermilion_user;
         DROP TABLE IF EXISTS weights_old;
         ALTER INDEX new_idx_band_start RENAME TO idx_band_start;
         ALTER INDEX new_idx_band_end RENAME TO idx_band_end;
