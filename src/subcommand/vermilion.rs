@@ -3749,7 +3749,7 @@ impl Vermilion {
       DROP TABLE IF EXISTS weights_3;
       DROP TABLE IF EXISTS weights_4;
       DROP TABLE IF EXISTS weights_5;
-      IF 'weights' NOT IN (SELECT table_name FROM information_schema.tables) THEN
+      IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'weights') THEN
       INSERT into proc_log(proc_name, step_name, ts) values ('WEIGHTS', 'START_CREATE_1', now());
         CREATE TABLE weights_1 as
         select sha256, 
