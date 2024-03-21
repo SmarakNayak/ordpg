@@ -3251,7 +3251,7 @@ impl Vermilion {
   async fn get_random_inscription(pool: deadpool, random_float: f64) -> anyhow::Result<(Metadata, (f64, f64))> {
     let conn = pool.get().await?;
     let random_inscription_band = conn.query_one(
-      "SELECT first_number, class_band_start, class_band_end FROM weights where band_end>$1 limit 1",
+      "SELECT first_number, class_band_start, class_band_end FROM weights where band_end>$1 order by band_end limit 1",
       &[&random_float]
     ).await?;
     let random_inscription_band = RandomInscriptionBand {
