@@ -1493,6 +1493,11 @@ impl Vermilion {
       CREATE INDEX IF NOT EXISTS index_metadata_metaprotocol ON ordinals (metaprotocol);
       CREATE INDEX IF NOT EXISTS index_metadata_text ON ordinals USING GIN (to_tsvector('english', left(text, 1048575)));
     ").await?;
+    conn.simple_query(r"
+      CREATE EXTENSION btree_gin;
+      CREATE INDEX IF NOT EXISTS index_metadata_type_satribute on ordinals USING GIN(content_type, satributes);
+      CREATE INDEX IF NOT EXISTS index_metadata_json on ordinals(is_json, is_maybe_json, is_bitmap_style);
+    ").await?;
   
     Ok(())
   }
