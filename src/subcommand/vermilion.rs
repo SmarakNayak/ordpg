@@ -61,6 +61,8 @@ use tokio_postgres::binary_copy::BinaryCopyInWriter;
 use tokio_postgres::types::{ToSql, Type};
 use futures::pin_mut;
 
+use bitcoincore_rpc::json::GetBlockStatsResultPartial;
+
 #[derive(Debug, Parser, Clone)]
 pub(crate) struct Vermilion {
   #[arg(
@@ -231,9 +233,15 @@ pub struct TransferWithMetadata {
 }
 
 #[derive(Clone, Serialize)]
-pub struct BlockHeight {
+pub struct BlockStats {
   block_number: i64,
-  block_timestamp: i64
+  block_timestamp: Option<i64>,
+  block_tx_count: Option<i64>,
+  block_size: Option<i64>,
+  block_fees: Option<i64>,
+  min_fee: Option<i64>,
+  max_fee: Option<i64>,
+  average_fee: Option<i64>
 }
 
 #[derive(Clone, Serialize)]
@@ -789,7 +797,7 @@ impl Vermilion {
         };
         let create_tranfer_result = Self::create_transfers_table(deadpool.clone()).await;
         let create_address_result = Self::create_address_table(deadpool.clone()).await;
-        let create_blockheight_result = Self::create_blockheight_table(deadpool.clone()).await;
+        let create_blockstats_result = Self::create_blockstats_table(deadpool.clone()).await;
         if create_tranfer_result.is_err() {
           println!("Error creating db tables: {:?}", create_tranfer_result.unwrap_err());
           return;            
@@ -798,8 +806,8 @@ impl Vermilion {
           println!("Error creating db tables: {:?}", create_address_result.unwrap_err());
           return;
         }
-        if create_blockheight_result.is_err() {
-          println!("Error creating db tables: {:?}", create_blockheight_result.unwrap_err());
+        if create_blockstats_result.is_err() {
+          println!("Error creating db tables: {:?}", create_blockstats_result.unwrap_err());
           return;
         }
 
@@ -813,7 +821,7 @@ impl Vermilion {
           }
         };
         log::info!("Address indexing block start height: {:?}", height);
-        let mut blockheights = Vec::new();
+        let mut blockstats = Vec::new();
         loop {
           let t0 = Instant::now();
           // break if ctrl-c is received
@@ -829,11 +837,25 @@ impl Vermilion {
             continue;
           }
 
-          let blockheight = BlockHeight {
-            block_number: height as i64,
-            block_timestamp: index.block_time(Height(height)).unwrap().timestamp().timestamp_millis()
+          let blockstat_result = match index.get_block_stats(height as u64) {
+            Ok(blockstats) => blockstats,
+            Err(err) => {
+              log::info!("Error getting block stats for block height: {:?} - {:?}, waiting a minute", height, err);
+              tokio::time::sleep(Duration::from_secs(60)).await;
+              continue;
+            }
           };
-          blockheights.push(blockheight);
+          let blockstat = BlockStats {
+            block_number: height as i64,
+            block_timestamp: blockstat_result.clone().map(|x| x.time.map(|y| 1000*y as i64)).flatten(), //Convert to millis
+            block_tx_count: blockstat_result.clone().map(|x| x.txs.map(|y| y as i64)).flatten(),
+            block_size: blockstat_result.clone().map(|x| x.total_size.map(|y| y as i64)).flatten(),
+            block_fees: blockstat_result.clone().map(|x| x.total_fee.map(|y| y.to_sat() as i64)).flatten(),
+            min_fee: blockstat_result.clone().map(|x| x.min_fee_rate.map(|y| y.to_sat() as i64)).flatten(),
+            max_fee: blockstat_result.clone().map(|x| x.max_fee_rate.map(|y| y.to_sat() as i64)).flatten(),
+            average_fee: blockstat_result.clone().map(|x| x.avg_fee_rate.map(|y| y.to_sat() as i64)).flatten()
+          };
+          blockstats.push(blockstat);
 
           let mut conn = match deadpool.get().await {
             Ok(conn) => conn,
@@ -854,32 +876,32 @@ impl Vermilion {
 
           if height < first_inscription_height {
             if height % 100000 == 0 {
-              log::info!("Inserting blockheights @ {}", height);
-              let insert = Self::bulk_insert_blockheights(&deadpool_tx, blockheights.clone()).await;
+              log::info!("Inserting blockstats @ {}", height);
+              let insert = Self::bulk_insert_blockstats(&deadpool_tx, blockstats.clone()).await;
               let commit = deadpool_tx.commit().await;
               if insert.is_err() || commit.is_err() {
                 if insert.is_err() {
-                  log::info!("Error inserting blockheights into db: {:?}, waiting a minute", insert.unwrap_err());
+                  log::info!("Error inserting blockstats into db: {:?}, waiting a minute", insert.unwrap_err());
                 }
                 if commit.is_err() {
-                  log::info!("Error committing blockheights into db: {:?}, waiting a minute", commit.unwrap_err());
+                  log::info!("Error committing blockstats into db: {:?}, waiting a minute", commit.unwrap_err());
                 }
                 tokio::time::sleep(Duration::from_secs(60)).await;
                 continue;
               } else {
-                blockheights = Vec::new();
+                blockstats = Vec::new();
               }
             }
             height += 1;
             continue;
           } else {
-            match Self::bulk_insert_blockheights(&deadpool_tx, blockheights.clone()).await {
+            match Self::bulk_insert_blockstats(&deadpool_tx, blockstats.clone()).await {
               Ok(_) => {
-                log::debug!("Inserted blockheights @ {}", height);
-                blockheights = Vec::new();
+                log::debug!("Inserted blockstats @ {}", height);
+                blockstats = Vec::new();
               },
               Err(err) => {
-                log::info!("Error inserting blockheights into db: {:?}, waiting a minute", err);
+                log::info!("Error inserting blockstats into db: {:?}, waiting a minute", err);
                 tokio::time::sleep(Duration::from_secs(60)).await;
                 continue;
               }
@@ -2453,7 +2475,7 @@ impl Vermilion {
 
   pub(crate) async fn get_start_block(pool: deadpool) -> Result<u32, Box<dyn std::error::Error>> {
     let conn = pool.get().await?;
-    let row = conn.query_one("SELECT max(block_number) from blockheights", &[]).await;
+    let row = conn.query_one("SELECT max(block_number) from blockstats", &[]).await;
     let last_block = match row {
       Ok(row) => {
         let last_block: Option<i64> = row.get(0);
@@ -2464,58 +2486,58 @@ impl Vermilion {
     Ok((last_block + 1) as u32)
   }
 
-  pub(crate) async fn bulk_insert_blockheights(tx: &deadpool_postgres::Transaction<'_>, blockheights: Vec<BlockHeight>) -> Result<(), Box<dyn std::error::Error>> {
-    let copy_stm = r#"COPY blockheights (
+  pub(crate) async fn bulk_insert_blockstats(tx: &deadpool_postgres::Transaction<'_>, blockstats: Vec<BlockStats>) -> Result<(), Box<dyn std::error::Error>> {
+    let copy_stm = r#"COPY blockstats (
       block_number,
-      block_timestamp) FROM STDIN BINARY"#;
+      block_timestamp,
+      block_tx_count,
+      block_size,
+      block_fees,
+      min_fee,
+      max_fee,
+      average_fee
+    ) FROM STDIN BINARY"#;
     let col_types = vec![
+      Type::INT8,
+      Type::INT8,
+      Type::INT8,
+      Type::INT8,
+      Type::INT8,
+      Type::INT8,
       Type::INT8,
       Type::INT8
     ];
     let sink = tx.copy_in(copy_stm).await?;
     let writer = BinaryCopyInWriter::new(sink, &col_types);
     pin_mut!(writer);
-    for m in blockheights {
+    for m in blockstats {
       let mut row: Vec<&'_ (dyn ToSql + Sync)> = Vec::new();
       row.push(&m.block_number);
       row.push(&m.block_timestamp);
+      row.push(&m.block_tx_count);
+      row.push(&m.block_size);
+      row.push(&m.block_fees);
+      row.push(&m.min_fee);
+      row.push(&m.max_fee);
+      row.push(&m.average_fee);
       writer.as_mut().write(&row).await?;
     }
     writer.finish().await?;
     Ok(())
   }
 
-  pub(crate) async fn mass_insert_blockheights(pool: mysql_async::Pool, blockheights: Vec<BlockHeight>) -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = Self::get_conn(pool).await?;
-    let mut wtr = WriterBuilder::new()
-      .has_headers(false)
-      .from_writer(vec![]);
-    for blockheight in blockheights.iter() {
-      wtr.serialize(blockheight).unwrap();
-    }
-    let inner = wtr.into_inner().unwrap();
-    let bytes = Bytes::from(inner);
-    // We are going to call `LOAD DATA LOCAL` so let's setup a one-time handler.
-    conn.set_infile_handler(async move {
-      // We need to return a stream of `io::Result<Bytes>`
-      Ok(futures::stream::iter([bytes]).map(Ok).boxed())
-    });
-  
-    let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
-      REPLACE INTO TABLE `blockheights`
-      FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '\"'
-      LINES TERMINATED BY '\n'
-      (block_number, block_timestamp)
-      "#).await?;
-    Ok(())
-  }
-
-  pub(crate) async fn create_blockheight_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+  pub(crate) async fn create_blockstats_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
     conn.simple_query(
-      r"CREATE TABLE IF NOT EXISTS blockheights (
+      r"CREATE TABLE IF NOT EXISTS blockstats (
         block_number bigint not null primary key,
-        block_timestamp bigint not null
+        block_timestamp bigint not null,
+        block_tx_count bigint,
+        block_size bigint,
+        block_fees bigint,
+        min_fee bigint,
+        max_fee bigint,
+        average_fee bigint
       )").await?;
     Ok(())
   }
@@ -3606,15 +3628,11 @@ impl Vermilion {
           percentile: parsed_sat.percentile(),
           timestamp: 0
         };
-        let blockheight_result = conn.query_one(
-          "Select * from blockheights where block_number=$1 limit 1", 
+        let blockstats_result = conn.query_one(
+          "Select * from blockstats where block_number=$1 limit 1", 
           &[&metadata.block]
         ).await?;
-        let blockheight = BlockHeight {
-          block_number: blockheight_result.get("block_number"),
-          block_timestamp: blockheight_result.get("block_timestamp")
-        };
-        metadata.timestamp = blockheight.block_timestamp;
+        metadata.timestamp = blockstats_result.get("block_timestamp");
         metadata
       }
     };

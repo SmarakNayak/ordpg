@@ -14,7 +14,7 @@ use {
     templates::StatusHtml,
   },
   bitcoin::block::Header,
-  bitcoincore_rpc::{json::GetBlockHeaderResult, Client},
+  bitcoincore_rpc::{json::GetBlockHeaderResult, Client, json::GetBlockStatsResultPartial, json::BlockStatsFields},
   chrono::SubsecRound,
   indicatif::{ProgressBar, ProgressStyle},
   log::log_enabled,
@@ -976,6 +976,11 @@ impl Index {
 
   pub(crate) fn get_block_by_hash(&self, hash: BlockHash) -> Result<Option<Block>> {
     self.client.get_block(&hash).into_option()
+  }
+
+  pub(crate) fn get_block_stats(&self, height: u64) -> Result<Option<GetBlockStatsResultPartial>> {
+    let fields: [BlockStatsFields; 7] = [BlockStatsFields::Time, BlockStatsFields::Txs, BlockStatsFields::TotalSize, BlockStatsFields::TotalFee, BlockStatsFields::MinFeeRate, BlockStatsFields::MaxFeeRate, BlockStatsFields::AverageFeeRate];
+    self.client.get_block_stats_fields(height, &fields).into_option()
   }
 
   pub(crate) fn get_collections_paginated(
