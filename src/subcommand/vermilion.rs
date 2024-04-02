@@ -5,6 +5,9 @@ use aws_config::imds::client;
 use axum_server::Handle;
 use mysql_async::Params;
 use serde_json::to_string;
+use serde_aux::prelude::*;
+use tokio::io::BufReader;
+use tokio::io::AsyncReadExt;
 use crate::subcommand::server;
 use crate::index::fetcher;
 
@@ -325,6 +328,55 @@ pub struct SatributeCriteria {
   block_range_end: Option<u32>,
 }
 
+fn deserialize_date<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+  D: serde::Deserializer<'de>,
+{
+  let s = String::deserialize(deserializer)?;
+  let datetime = DateTime::parse_from_rfc2822(&s.as_str());
+  match datetime {
+      Ok(datetime) => Ok(datetime.timestamp_millis()),
+      Err(_) => Err(serde::de::Error::custom("invalid date")),
+  }
+}
+
+#[derive(Deserialize)]
+pub struct CollectionList {
+  #[serde(rename = "symbol")]
+  collection_symbol: String,
+  name: Option<String>,
+  #[serde(rename = "imageURI")]
+  image_uri: Option<String>,
+  #[serde(rename = "inscriptionIcon")]
+  inscription_icon: Option<String>,
+  description: Option<String>,
+  #[serde(deserialize_with = "deserialize_option_number_from_string")]
+  supply: Option<i64>,
+  #[serde(rename = "twitterLink")]
+  twitter: Option<String>,
+  #[serde(rename = "discordLink")]
+  discord: Option<String>,
+  #[serde(rename = "websiteLink")]
+  website: Option<String>,
+  #[serde(deserialize_with = "deserialize_option_number_from_string")]
+  min_inscription_number: Option<i64>,
+  #[serde(deserialize_with = "deserialize_option_number_from_string")]
+  max_inscription_number: Option<i64>,
+  #[serde(rename = "createdAt", deserialize_with = "deserialize_date")]
+  date_created: i64
+}
+
+#[derive(Deserialize)]
+pub struct Collection {
+  id: String,
+  #[serde(rename = "inscriptionNumber")]
+  number: i64,
+  #[serde(rename = "collectionSymbol")]
+  collection_symbol: String,
+  #[serde(rename = "meta")]
+  off_chain_metadata: serde_json::Value
+}
+
 #[derive(Clone,PartialEq, PartialOrd, Ord, Eq)]
 pub struct IndexerTimings {
   inscription_start: u64,
@@ -450,6 +502,16 @@ impl Vermilion {
       let init_result = Self::initialize_db_tables(deadpool.clone()).await;
       if init_result.is_err() {
         println!("Error initializing db tables: {:?}", init_result.unwrap_err());
+        return;
+      }
+      let collection_list_insert_result = Self::insert_collection_list(deadpool.clone()).await;
+      let collection_insert_result = Self::insert_collections(deadpool.clone()).await;
+      if collection_list_insert_result.is_err() {
+        println!("Error inserting collection list: {:?}", collection_list_insert_result.unwrap_err());
+        return;
+      }
+      if collection_insert_result.is_err() {
+        println!("Error inserting collection: {:?}", collection_insert_result.unwrap_err());
         return;
       }
 
@@ -1468,6 +1530,8 @@ impl Vermilion {
     Self::create_weights_procedure(pool.clone()).await.context("Failed to create weights proc")?;
     Self::create_edition_insert_trigger(pool.clone()).await.context("Failed to create edition trigger")?;
     Self::create_metadata_insert_trigger(pool.clone()).await.context("Failed to create metadata trigger")?;
+    Self::create_collection_list_table(pool.clone()).await.context("Failed to create collection list table")?;
+    Self::create_collections_table(pool.clone()).await.context("Failed to create collections table")?;
     Ok(())
   }
 
@@ -1516,7 +1580,7 @@ impl Vermilion {
       CREATE INDEX IF NOT EXISTS index_metadata_text ON ordinals USING GIN (to_tsvector('english', left(text, 1048575)));
     ").await?;
     conn.simple_query(r"
-      CREATE EXTENSION btree_gin;
+      CREATE EXTENSION IF NOT EXISTS btree_gin;
       CREATE INDEX IF NOT EXISTS index_metadata_type_satribute on ordinals USING GIN(content_type, satributes);
       CREATE INDEX IF NOT EXISTS index_metadata_json on ordinals(is_json, is_maybe_json, is_bitmap_style);
     ").await?;
@@ -1602,6 +1666,51 @@ impl Vermilion {
     conn.simple_query(r"
       CREATE INDEX IF NOT EXISTS index_satributes_sat ON satributes (sat);
       CREATE INDEX IF NOT EXISTS index_satributes_satribute ON satributes (satribute);
+    ").await?;
+    Ok(())
+  }
+
+  pub(crate) async fn create_collections_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
+      r"CREATE TABLE IF NOT EXISTS collections (
+        id varchar(80) not null,
+        number bigint,
+        collection_symbol varchar(50) not null,
+        off_chain_metadata jsonb,
+        CONSTRAINT collection_key PRIMARY KEY (id, collection_symbol)
+      )").await?;
+    conn.simple_query(r"
+      CREATE INDEX IF NOT EXISTS index_collections_id ON collections (id);
+      CREATE INDEX IF NOT EXISTS index_collections_number ON collections (number);
+      CREATE INDEX IF NOT EXISTS index_collections_collection_symbol ON collections (collection_symbol);
+      CREATE INDEX IF NOT EXISTS index_collections_metadata ON collections USING GIN (off_chain_metadata);
+    ").await?;
+    Ok(())
+  }
+
+  pub(crate) async fn create_collection_list_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
+      r"CREATE TABLE IF NOT EXISTS collection_list (
+        collection_symbol varchar(50) not null primary key,
+        name text,
+        image_uri text,
+        inscription_icon varchar(80),
+        description text,
+        supply bigint,
+        twitter text,
+        discord text,
+        website text,
+        min_inscription_number bigint,
+        max_inscription_number bigint,
+        date_created bigint
+      )").await?;
+    conn.simple_query(r"
+      CREATE INDEX IF NOT EXISTS index_collection_list_name ON collection_list USING GIN (to_tsvector('english', left(name, 1048575)));
+      CREATE INDEX IF NOT EXISTS index_collection_list_description ON collection_list USING GIN (to_tsvector('english', left(description, 1048575)));
+      CREATE INDEX IF NOT EXISTS index_min_inscription_number ON collection_list (min_inscription_number);
+      CREATE INDEX IF NOT EXISTS index_date_created ON collection_list (date_created);
     ").await?;
     Ok(())
   }
@@ -3044,6 +3153,107 @@ impl Vermilion {
         }
       };
     }
+    Ok(())
+  }
+
+  async fn insert_collection_list(pool: deadpool) -> anyhow::Result<()> {
+    let mut conn = pool.get().await?;
+    let tx = conn.transaction().await?;
+    let file = tokio::fs::File::open("collection_list.json").await?;
+    let mut rdr = tokio::io::BufReader::new(file);
+    let mut content = String::new();
+    rdr.read_to_string(&mut content).await?;
+    let collection_list: Vec<CollectionList> = serde_json::from_str(&mut content)?;
+    tx.simple_query("CREATE TEMP TABLE inserts_collection_list ON COMMIT DROP AS TABLE collection_list WITH NO DATA").await?;
+    let copy_stm = r#"COPY inserts_collection_list (
+      collection_symbol,
+      name,
+      image_uri,
+      inscription_icon,
+      description,
+      supply,
+      twitter,
+      discord,
+      website,
+      min_inscription_number,
+      max_inscription_number,
+      date_created
+    ) FROM STDIN BINARY"#;
+    let col_types = vec![
+      Type::VARCHAR,
+      Type::TEXT,
+      Type::TEXT,
+      Type::VARCHAR,
+      Type::TEXT,
+      Type::INT8,
+      Type::TEXT,
+      Type::TEXT,
+      Type::TEXT,
+      Type::INT8,
+      Type::INT8,
+      Type::INT8
+    ];
+    let sink = tx.copy_in(copy_stm).await?;
+    let writer = BinaryCopyInWriter::new(sink, &col_types);
+    pin_mut!(writer);
+    for m in collection_list {
+      let mut row: Vec<&'_ (dyn ToSql + Sync)> = Vec::new();
+      row.push(&m.collection_symbol);
+      row.push(&m.name);
+      row.push(&m.image_uri);
+      let icon_short = &m.inscription_icon.map(|s| s.chars().take(80).collect::<String>());
+      row.push(icon_short);
+      row.push(&m.description);
+      row.push(&m.supply);
+      row.push(&m.twitter);
+      row.push(&m.discord);
+      row.push(&m.website);
+      row.push(&m.min_inscription_number);
+      row.push(&m.max_inscription_number);
+      row.push(&m.date_created);
+      writer.as_mut().write(&row).await?;
+    }  
+    writer.finish().await?;
+    tx.simple_query("INSERT INTO collection_list SELECT * FROM inserts_collection_list ON CONFLICT DO NOTHING").await?;
+    tx.commit().await?;
+    Ok(())
+  }
+
+  async fn insert_collections(pool: deadpool) -> anyhow::Result<()> {
+    let mut conn = pool.get().await?;
+    let tx = conn.transaction().await?;
+    let file = tokio::fs::File::open("collections.json").await?;
+    let mut rdr = tokio::io::BufReader::new(file);
+    let mut content = String::new();
+    rdr.read_to_string(&mut content).await?;
+    let collections: Vec<Collection> = serde_json::from_str(&mut content)?;
+    tx.simple_query("CREATE TEMP TABLE inserts_collections ON COMMIT DROP AS TABLE collections WITH NO DATA").await?;
+    let copy_stm = r#"COPY inserts_collections (
+      id,
+      number,
+      collection_symbol,
+      off_chain_metadata
+    ) FROM STDIN BINARY"#;
+    let col_types = vec![
+      Type::VARCHAR,
+      Type::INT8,
+      Type::VARCHAR,
+      Type::JSONB
+    ];
+    let sink = tx.copy_in(copy_stm).await?;
+    let writer = BinaryCopyInWriter::new(sink, &col_types);
+    pin_mut!(writer);
+    for m in collections {
+      let mut row: Vec<&'_ (dyn ToSql + Sync)> = Vec::new();
+      row.push(&m.id);
+      row.push(&m.number);
+      row.push(&m.collection_symbol);
+      row.push(&m.off_chain_metadata);
+      writer.as_mut().write(&row).await?;
+    }
+    writer.finish().await?;
+    tx.simple_query("INSERT INTO collections SELECT * FROM inserts_collections ON CONFLICT DO NOTHING").await?;
+    tx.commit().await?;
     Ok(())
   }
 
