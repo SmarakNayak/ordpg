@@ -682,11 +682,13 @@ impl Vermilion {
               };
               satributes_vec.push(satribute);
             }
-            let rarity = Satribute {
-              sat: sat_metadata.sat,
-              satribute: sat.rarity().to_string()
-            };
-            satributes_vec.push(rarity);
+            if !sat.common() {
+              let rarity = Satribute {
+                sat: sat_metadata.sat,
+                satribute: sat.rarity().to_string()
+              };
+              satributes_vec.push(rarity);
+            }
           }
           let satribute_insert_result = Self::bulk_insert_satributes(&tx, satributes_vec).await;
           let t51c = Instant::now();
