@@ -3159,7 +3159,7 @@ impl Vermilion {
   async fn insert_collection_list(pool: deadpool) -> anyhow::Result<()> {
     let mut conn = pool.get().await?;
     let tx = conn.transaction().await?;
-    let file = tokio::fs::File::open("collection_list.json").await?;
+    let file = tokio::fs::File::open(std::path::Path::new("../ordinal-collections/collection_list.json")).await?;
     let mut rdr = tokio::io::BufReader::new(file);
     let mut content = String::new();
     rdr.read_to_string(&mut content).await?;
@@ -3222,7 +3222,7 @@ impl Vermilion {
   async fn insert_collections(pool: deadpool) -> anyhow::Result<()> {
     let mut conn = pool.get().await?;
     let tx = conn.transaction().await?;
-    let file = tokio::fs::File::open("collections.json").await?;
+    let file = tokio::fs::File::open(std::path::Path::new("../ordinal-collections/collections.json")).await?;
     let mut rdr = tokio::io::BufReader::new(file);
     let mut content = String::new();
     rdr.read_to_string(&mut content).await?;
