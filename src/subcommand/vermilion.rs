@@ -1,28 +1,18 @@
 use self::migrate::Migrator;
 
 use super::*;
-use aws_config::imds::client;
 use axum_server::Handle;
-use mysql_async::Params;
-use serde_json::to_string;
 use serde_aux::prelude::*;
-use tokio::io::BufReader;
 use tokio::io::AsyncReadExt;
 use crate::subcommand::server;
 use crate::index::fetcher;
 
-use mysql_async::TxOpts;
-use mysql_async::Pool;
-use mysql_async::prelude::Queryable;
-use mysql_async::params;
-use mysql_async::Row;
 use tokio::sync::Semaphore;
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 use serde::Serialize;
 use sha256::digest;
 
-use s3::operation::get_object::GetObjectOutput;
 use aws_sdk_s3 as s3;	
 use s3::primitives::ByteStream;	
 use s3::error::ProvideErrorMetadata;
@@ -53,13 +43,9 @@ use rand::SeedableRng;
 
 use serde_json::{Value as JsonValue, value::Number as JsonNumber};
 use ciborium::value::Value as CborValue;
-use bytes::Bytes;
-use futures::StreamExt;
-use csv::Writer;
-use csv::WriterBuilder;
 
-use deadpool_postgres::{Config as deadpoolConfig, Manager, ManagerConfig, Pool as deadpool, RecyclingMethod};
-use tokio_postgres::{NoTls, Error};
+use deadpool_postgres::{ManagerConfig, Pool as deadpool, RecyclingMethod};
+use tokio_postgres::NoTls;
 use tokio_postgres::binary_copy::BinaryCopyInWriter;
 use tokio_postgres::types::{ToSql, Type};
 use futures::pin_mut;
@@ -317,17 +303,6 @@ pub struct SequenceNumberStatus {
   status: String
 }
 
-#[derive(Clone, Deserialize)]
-pub struct SatributeCriteria {
-  satribute: String,
-  sat: Option<u64>,
-  sat_range_start: Option<u64>,
-  sat_range_end: Option<u64>,
-  block: Option<u32>,
-  block_range_start: Option<u32>,
-  block_range_end: Option<u32>,
-}
-
 fn deserialize_date<'de, D>(deserializer: D) -> Result<i64, D::Error>
 where
   D: serde::Deserializer<'de>,
@@ -404,7 +379,6 @@ pub struct IndexerTimings {
 
 #[derive(Clone)]
 pub struct ApiServerConfig {
-  pool: mysql_async::Pool,
   deadpool: deadpool,
   s3client: s3::Client,
   bucket_name: String
@@ -417,7 +391,7 @@ impl Vermilion {
     //1. Run Vermilion Server
     println!("Vermilion Server Starting");
     let vermilion_server_clone = self.clone();
-    let vermilion_server_thread = vermilion_server_clone.run_vermilion_server(options.clone());
+    let _vermilion_server_thread = vermilion_server_clone.run_vermilion_server(options.clone());
 
     if self.run_api_server_only {//If only running api server, block here, early return on ctrl-c
       let rt = Runtime::new().unwrap();
@@ -480,8 +454,6 @@ impl Vermilion {
     rt.block_on(async {
       let config = options.load_config().unwrap();
       let cloned_config = options.clone().load_config().unwrap();
-      let url = config.db_connection_string.unwrap();
-      let pool = Pool::new(url.as_str());
       let deadpool = match Self::get_deadpool(cloned_config).await {
         Ok(deadpool) => deadpool,
         Err(err) => {
@@ -546,7 +518,6 @@ impl Vermilion {
         }
         let permit = Arc::clone(&sem).acquire_owned().await;
         let cloned_index = index.clone();
-        let cloned_pool = pool.clone();
         let cloned_deadpool = deadpool.clone();
         let cloned_s3client = s3client.clone();
         let cloned_bucket_name = s3_bucket_name.clone();
@@ -847,10 +818,7 @@ impl Vermilion {
         .unwrap();
       rt.block_on(async move {
         let config = options.load_config().unwrap();
-        let cloned_config = options.clone().load_config().unwrap();
-        let url = config.db_connection_string.unwrap();
-        let pool = Pool::new(url.as_str());
-        let deadpool = match Self::get_deadpool(cloned_config).await {
+        let deadpool = match Self::get_deadpool(config).await {
           Ok(deadpool) => deadpool,
           Err(err) => {
             println!("Error creating deadpool: {:?}", err);
@@ -1112,8 +1080,6 @@ impl Vermilion {
       rt.block_on(async move {
         let config = options.load_config().unwrap();
         let config_clone = options.clone().load_config().unwrap();
-        let url = config.db_connection_string.unwrap();
-        let pool = mysql_async::Pool::new(url.as_str());
         let deadpool = match Self::get_deadpool(config_clone).await {
           Ok(deadpool) => deadpool,
           Err(err) => {
@@ -1126,7 +1092,6 @@ impl Vermilion {
         let s3client = s3::Client::new(&s3_config);
         
         let server_config = ApiServerConfig {
-          pool: pool,
           deadpool: deadpool,
           s3client: s3client,
           bucket_name: bucket_name
@@ -1409,8 +1374,8 @@ impl Vermilion {
       None => Vec::new()
     };
     let parent = entry.parent.map_or(None, |parent| Some(parent.to_string()));
-    let mut metaprotocol = inscription.metaprotocol().map_or(None, |str| Some(str.to_string()));
-    if let Some(mut metaprotocol_inner) = metaprotocol.clone() {
+    let metaprotocol = inscription.metaprotocol().map_or(None, |str| Some(str.to_string()));
+    if let Some(metaprotocol_inner) = metaprotocol.clone() {
       if metaprotocol_inner.len() > 100 {
         log::warn!("Metaprotocol too long: {} - {}, truncating", inscription_id, metaprotocol_inner);
         //metaprotocol_inner.truncate(100);
@@ -1714,126 +1679,6 @@ impl Vermilion {
     ").await?;
     Ok(())
   }
-  
-  pub(crate) async fn bulk_insert<F, P, T>(
-    pool: mysql_async::Pool,
-    table: String,
-    cols: Vec<String>,
-    objects: Vec<T>,
-    fun: F,
-  ) -> mysql_async::Result<()>
-  where
-    F: Fn(&T) -> P,
-    P: Into<Params>,
-  {
-    if objects.len() == 0 {
-      return Ok(());
-    }
-    let mut stmt = format!("INSERT IGNORE INTO {} ({}) VALUES ", table, cols.join(","));
-    let row = format!(
-        "({}),",
-        cols.iter()
-            .map(|_| "?".to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-    );
-    stmt.reserve(objects.len() * (cols.len() * 2 + 2));
-    for _ in 0..objects.len() {
-        stmt.push_str(&row);
-    }
-  
-    // remove the trailing comma
-    stmt.pop();
-  
-    let mut params = Vec::new();
-  
-    let bytes: Vec<Vec<u8>> = cols.iter().map(|s| s.clone().into_bytes()).collect();
-    for o in objects.iter() {
-        let named_params: mysql_async::Params = fun(o).into();
-        let positional_params = named_params.into_positional(bytes.as_slice())?;
-        if let mysql_async::Params::Positional(new_params) = positional_params {
-            for param in new_params {
-                params.push(param);
-            }
-        }
-    }
-  
-    let mut conn = pool.get_conn().await?;
-    let mut tx = conn.start_transaction(TxOpts::default()).await.unwrap();
-    let result = tx.exec_drop(stmt, params).await;
-    tx.commit().await?;
-    result
-  }
-
-  pub(crate) async fn bulk_insert_update<F, P, T>(
-    pool: mysql_async::Pool,
-    table: String,
-    cols: Vec<String>,
-    update_cols: Vec<String>,
-    objects: Vec<T>,
-    fun: F,
-  ) -> mysql_async::Result<()>
-  where
-    F: Fn(&T) -> P,
-    P: Into<Params>,
-  {
-    if objects.len() == 0 {
-      return Ok(());
-    }
-    
-    let mut stmt = format!("INSERT INTO {} ({}) VALUES ", table, cols.join(","));
-    let row = format!(
-        "({}),",
-        cols.iter()
-            .map(|_| "?".to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-    );
-    stmt.reserve(objects.len() * (cols.len() * 2 + 2));
-    for _ in 0..objects.len() {
-        stmt.push_str(&row);
-    }
-  
-    // remove the trailing comma
-    stmt.pop();
-  
-    // ON DUPLICATE KEY UPDATE
-    let formatted_string = update_cols
-      .iter()
-      .map(|field| {
-        format!("{}=VALUES({})", field, field)
-      })
-      .collect::<Vec<_>>()
-      .join(",");
-    let duplicate_key_stmt = format!(" ON DUPLICATE KEY UPDATE {}", formatted_string);
-    stmt.push_str(&duplicate_key_stmt);
-  
-    let mut params = Vec::new();
-  
-    let bytes: Vec<Vec<u8>> = cols.iter().map(|s| s.clone().into_bytes()).collect();
-    for o in objects.iter() {
-        let named_params: mysql_async::Params = fun(o).into();
-        let positional_params = named_params.into_positional(bytes.as_slice())?;
-        if let mysql_async::Params::Positional(new_params) = positional_params {
-            for param in new_params {
-                params.push(param);
-            }
-        }
-    }
-    let mut conn = pool.get_conn().await?;
-    let result = conn.exec_drop(stmt, params).await;
-    result
-  }
-
-  pub(crate) async fn mass_insert_metadata_and_editions(pool: mysql_async::Pool, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut conn = Self::get_conn(pool.clone()).await?;
-    conn.query_drop("SET SQL_LOG_BIN = 0").await?;
-    conn.query_drop("START TRANSACTION").await?;
-    Self::mass_insert_metadata(&mut conn, metadata_vec.clone()).await?;
-    Self::mass_insert_editions(&mut conn, metadata_vec).await?;
-    conn.query_drop("COMMIT").await?;
-    Ok(())
-  }
 
   async fn bulk_insert_metadata(tx: &deadpool_postgres::Transaction<'_>, data: Vec<Metadata>) -> anyhow::Result<()> {
     //tx.simple_query("CREATE TEMP TABLE inserts_ordinals ON COMMIT DROP AS TABLE ordinals WITH NO DATA").await?;
@@ -1925,51 +1770,9 @@ impl Vermilion {
       writer.as_mut().write(&row).await?;
     }
   
-    let x = writer.finish().await?;
+    //let x = writer.finish().await?;
     //println!("Finished writing metadata: {:?}", x);
     //tx.simple_query("INSERT INTO ordinals SELECT * FROM inserts_ordinals ON CONFLICT DO NOTHING").await?;
-    Ok(())
-  }
-
-  pub(crate) async fn mass_insert_metadata(conn: &mut mysql_async::Conn, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut wtr = WriterBuilder::new()
-      .has_headers(false)
-      .from_writer(vec![]);
-    for metadata in metadata_vec.iter() {
-      wtr.serialize(metadata).unwrap();
-    }
-    let inner = wtr.into_inner().unwrap();
-    //println!("{:?}", String::from_utf8(inner.clone()));
-    let bytes = Bytes::from(inner);
-    // We are going to call `LOAD DATA LOCAL` so let's setup a one-time handler.
-    conn.set_infile_handler(async move {
-      // We need to return a stream of `io::Result<Bytes>`
-      Ok(futures::stream::iter([bytes]).map(Ok).boxed())
-    });
-  
-    let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
-      REPLACE INTO TABLE `ordinals`
-      FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '\"'
-      LINES TERMINATED BY '\n'
-      (sequence_number, id, @vcontent_length, @vcontent_type, @vcontent_encoding, genesis_fee, genesis_height, genesis_transaction, @vpointer, number, @vparent, @vdelegate, @vmetaprotocol, @vembedded_metadata, @vsat, @vcharms, timestamp, @vsha256, text, @vis_json, @vis_maybe_json, @vis_bitmap_style, @vis_recursive)
-      SET
-      content_length = nullif(@vcontent_length, ''),
-      content_type = nullif(@vcontent_type, ''),
-      content_encoding = nullif(@vcontent_encoding, ''),
-      pointer = nullif(@vpointer, ''),
-      parent = nullif(@vparent, ''),
-      delegate = nullif(@vdelegate, ''),
-      metaprotocol = nullif(@vmetaprotocol, ''),
-      embedded_metadata = nullif(@vembedded_metadata, ''),
-      sat = nullif(@vsat, ''),
-      charms = nullif(@vcharms, ''),
-      sha256 = nullif(@vsha256, ''),
-      is_json = (@vis_json = 'true'),
-      is_maybe_json = (@vis_maybe_json = 'true'),
-      is_bitmap_style = (@vis_bitmap_style = 'true'),
-      is_recursive = (@vis_recursive = 'true')
-      "#).await?;
-    
     Ok(())
   }
 
@@ -2029,32 +1832,6 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn mass_insert_sat_metadata(pool: mysql_async::Pool, metadata_vec: Vec<SatMetadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut conn = Self::get_conn(pool).await?;
-    conn.query_drop("SET SQL_LOG_BIN = 0").await?;
-
-    let mut wtr = WriterBuilder::new()
-      .has_headers(false)
-      .from_writer(vec![]);
-    for metadata in metadata_vec.iter() {
-      wtr.serialize(metadata).unwrap();
-    }
-    let bytes = Bytes::from(wtr.into_inner().unwrap());
-    // We are going to call `LOAD DATA LOCAL` so let's setup a one-time handler.
-    conn.set_infile_handler(async move {
-      // We need to return a stream of `io::Result<Bytes>`
-      Ok(futures::stream::iter([bytes]).map(Ok).boxed())
-    });
-  
-    let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
-      REPLACE INTO TABLE `sat`
-      FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '\"'
-      LINES TERMINATED BY '\n'
-      (sat, sat_decimal, degree, name, block, cycle, epoch, period, offset, rarity, percentile, timestamp)
-      "#).await?;
-    Ok(())
-  }
-
   async fn bulk_insert_content(tx: &deadpool_postgres::Transaction<'_>, data: Vec<(i64, ContentBlob)>) -> anyhow::Result<()> {
     tx.simple_query("CREATE TEMP TABLE inserts_content ON COMMIT DROP AS TABLE content WITH NO DATA").await?;
     let copy_stm = r#"COPY inserts_content (
@@ -2082,37 +1859,6 @@ impl Vermilion {
     }
     writer.finish().await?;
     tx.simple_query("INSERT INTO content SELECT content_id, sha256, content, content_type FROM inserts_content ON CONFLICT DO NOTHING").await?;
-    Ok(())
-  }
-
-  pub(crate) async fn mass_insert_content(pool: mysql_async::Pool, content_vec: Vec<ContentBlob>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut conn = Self::get_conn(pool).await?;
-    conn.query_drop("SET SQL_LOG_BIN = 0").await?;
-    let mut wtr = WriterBuilder::new()
-      .has_headers(false)
-      .from_writer(vec![]);
-
-    for content in content_vec.iter() {
-      wtr.write_field(content.sha256.clone())?;
-      wtr.write_field(hex::encode(&content.content))?;
-      wtr.write_field(content.content_type.clone())?;
-      wtr.write_record(None::<&[u8]>)?;
-    }
-    let bytes = Bytes::from(wtr.into_inner().unwrap());
-    // We are going to call `LOAD DATA LOCAL` so let's setup a one-time handler.
-    conn.set_infile_handler(async move {
-      // We need to return a stream of `io::Result<Bytes>`
-      Ok(futures::stream::iter([bytes]).map(Ok).boxed())
-    });
-  
-    let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
-      REPLACE INTO TABLE `content`
-      FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '\"'
-      LINES TERMINATED BY '\n'
-      (sha256, @vcontent, content_type)
-      SET
-      content = UNHEX(@vcontent)
-      "#).await?;
     Ok(())
   }
 
@@ -2149,39 +1895,6 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn mass_insert_editions(conn: &mut mysql_async::Conn, metadata_vec: Vec<Metadata>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut wtr = WriterBuilder::new()
-      .has_headers(false)
-      .from_writer(vec![]);
-    for metadata in metadata_vec.iter() {
-      wtr.write_field(metadata.id.clone())?;
-      wtr.write_field(metadata.number.to_string())?;
-      wtr.write_field(metadata.sequence_number.to_string())?;
-      wtr.write_field(metadata.sha256.clone().unwrap_or_else(|| "".to_string()))?;
-      wtr.write_record(None::<&[u8]>)?;
-    }
-    let inner = wtr.into_inner().unwrap();
-    //println!("{:?}", String::from_utf8(inner.clone()));
-    let bytes = Bytes::from(inner);
-    // We are going to call `LOAD DATA LOCAL` so let's setup a one-time handler.
-    conn.set_infile_handler(async move {
-      // We need to return a stream of `io::Result<Bytes>`
-      Ok(futures::stream::iter([bytes]).map(Ok).boxed())
-    });
-  
-    let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
-      REPLACE INTO TABLE `editions`
-      FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '\"'
-      LINES TERMINATED BY '\n'
-      (id, number, sequence_number, @vsha256)
-      SET
-      sha256 = nullif(@vsha256, ''),
-      edition = 0
-      "#).await?;
-    
-    Ok(())
-  }
-
   async fn bulk_insert_satributes(tx: &deadpool_postgres::Transaction<'_>, data: Vec<Satribute>) -> anyhow::Result<()> {
     tx.simple_query("CREATE TEMP TABLE inserts_satributes ON COMMIT DROP AS TABLE satributes WITH NO DATA").await?;
     let copy_stm = r#"COPY inserts_satributes (
@@ -2202,31 +1915,6 @@ impl Vermilion {
     }  
     writer.finish().await?;
     tx.simple_query("INSERT INTO satributes SELECT * FROM inserts_satributes ON CONFLICT DO NOTHING").await?;
-    Ok(())
-  }
-
-  pub(crate) async fn mass_insert_satributes(pool: mysql_async::Pool, satribute_vec: Vec<Satribute>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut conn = Self::get_conn(pool).await?;
-    conn.query_drop("SET SQL_LOG_BIN = 0").await?;
-    let mut wtr = WriterBuilder::new()
-      .has_headers(false)
-      .from_writer(vec![]);
-    for satribute in satribute_vec.iter() {
-      wtr.serialize(satribute).unwrap();
-    }
-    let bytes = Bytes::from(wtr.into_inner().unwrap());
-    // We are going to call `LOAD DATA LOCAL` so let's setup a one-time handler.
-    conn.set_infile_handler(async move {
-      // We need to return a stream of `io::Result<Bytes>`
-      Ok(futures::stream::iter([bytes]).map(Ok).boxed())
-    });
-  
-    let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
-      REPLACE INTO TABLE `satributes`
-      FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '\"'
-      LINES TERMINATED BY '\n'
-      (sat, satribute)
-      "#).await?;
     Ok(())
   }
 
@@ -2449,35 +2137,6 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn mass_insert_transfers(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    for chunk in transfer_vec.chunks(5000) {
-      let mut conn = Self::get_conn(pool.clone()).await?;  
-      conn.query_drop("SET SQL_LOG_BIN = 0").await?;
-      let mut wtr = WriterBuilder::new()
-        .has_headers(false)
-        .from_writer(vec![]);
-      for transfer in chunk.iter() {
-        wtr.serialize(transfer).unwrap();
-      }
-      let inner = wtr.into_inner().unwrap();
-      let bytes = Bytes::from(inner);
-      // We are going to call `LOAD DATA LOCAL` so let's setup a one-time handler.
-      conn.set_infile_handler(async move {
-        // We need to return a stream of `io::Result<Bytes>`
-        Ok(futures::stream::iter([bytes]).map(Ok).boxed())
-      });
-    
-      let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
-        REPLACE INTO TABLE `transfers`
-        FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '\"'
-        LINES TERMINATED BY '\n'
-        (id, block_number, block_timestamp, satpoint, transaction, vout, offset, address, @vis_genesis)
-        SET is_genesis = (@vis_genesis = 'true')
-        "#).await?;
-    }
-    Ok(())
-  }
-
   pub(crate) async fn create_address_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
     conn.simple_query(
@@ -2550,35 +2209,6 @@ impl Vermilion {
       satpoint_offset = EXCLUDED.satpoint_offset,
       address = EXCLUDED.address,
       is_genesis = EXCLUDED.is_genesis").await?;
-    Ok(())
-  }
-
-  pub(crate) async fn mass_insert_addresses(pool: mysql_async::Pool, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    for chunk in transfer_vec.chunks(5000) {
-      let mut conn = Self::get_conn(pool.clone()).await?;
-      conn.query_drop("SET SQL_LOG_BIN = 0").await?;
-      let mut wtr = WriterBuilder::new()
-        .has_headers(false)
-        .from_writer(vec![]);
-      for transfer in chunk.iter() {
-        wtr.serialize(transfer).unwrap();
-      }
-      let inner = wtr.into_inner().unwrap();
-      let bytes = Bytes::from(inner);
-      // We are going to call `LOAD DATA LOCAL` so let's setup a one-time handler.
-      conn.set_infile_handler(async move {
-        // We need to return a stream of `io::Result<Bytes>`
-        Ok(futures::stream::iter([bytes]).map(Ok).boxed())
-      });
-    
-      let result: Option<mysql_async::Value> = conn.query_first(r#"LOAD DATA LOCAL INFILE 'whatever'
-        REPLACE INTO TABLE `addresses`
-        FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '\"'
-        LINES TERMINATED BY '\n'
-        (id, block_number, block_timestamp, satpoint, transaction, vout, offset, address, @vis_genesis)
-        SET is_genesis = (@vis_genesis = 'true')
-        "#).await?;
-    }    
     Ok(())
   }
 
@@ -2867,7 +2497,7 @@ impl Vermilion {
   }
 
   async fn random_inscriptions(n: Query<QueryNumber>, State(server_config): State<ApiServerConfig>, session: Session<SessionNullPool>) -> impl axum::response::IntoResponse {
-    let mut bands: Vec<(f64, f64)> = session.get("bands_seen").unwrap_or(Vec::new());
+    let bands: Vec<(f64, f64)> = session.get("bands_seen").unwrap_or(Vec::new());
     for band in bands.iter() {
         println!("Band: {:?}", band);
     }
@@ -3110,52 +2740,6 @@ impl Vermilion {
   }
 
   //DB functions
-  async fn insert_satribute_criteria(pool: mysql_async::Pool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut satribute_criteria = Vec::new();
-    let mut rdr = csv::Reader::from_path("satributes.csv")?;
-    for result in rdr.deserialize() {
-      let record: SatributeCriteria = result?;
-      satribute_criteria.push(record);
-    }
-    for chunk in satribute_criteria.chunks(5000) {
-      let insert_result = Self::bulk_insert(pool.clone(), 
-        "satribute_criteria_new".to_string(), 
-        vec![
-          "satribute".to_string(), 
-          "sat".to_string(), 
-          "sat_range_start".to_string(),
-          "sat_range_end".to_string(),
-          "block".to_string(),
-          "block_range_start".to_string(),
-          "block_range_end".to_string()
-        ],
-        chunk.to_vec(), 
-        |object| {
-        params! {
-            "satribute" => &object.satribute,
-            "sat" => object.sat,
-            "sat_range_start" => object.sat_range_start,
-            "sat_range_end" => &object.sat_range_end,
-            "block" => object.block,
-            "block_range_start" => object.block_range_start,
-            "block_range_end" => &object.block_range_end,
-        }
-      }).await;
-      match insert_result {
-        Ok(_) => {
-          let mut conn = Self::get_conn(pool.clone()).await?;
-          conn.query_drop("RENAME TABLE satribute_criteria to satribute_criteria_old, satribute_criteria_new to satribute_criteria").await?;
-          conn.query_drop("DROP TABLE if exists satribute_criteria_old").await?;
-        },
-        Err(error) => {
-          log::warn!("Error bulk inserting satribute criteria: {}", error);
-          return Err(Box::new(error));
-        }
-      };
-    }
-    Ok(())
-  }
-
   async fn insert_collection_list(pool: deadpool) -> anyhow::Result<()> {
     let mut conn = pool.get().await?;
     let tx = conn.transaction().await?;
@@ -3257,18 +2841,6 @@ impl Vermilion {
     Ok(())
   }
 
-  async fn get_ordinal_content_s3(client: &s3::Client, bucket_name: &str, inscription_id: String) -> GetObjectOutput {
-    let key = format!("content/{}", inscription_id);
-    let content = client
-      .get_object()
-      .bucket(bucket_name)
-      .key(key)
-      .send()
-      .await
-      .unwrap();
-    content
-  }
-
   async fn get_ordinal_content(pool: deadpool, inscription_id: String) -> anyhow::Result<ContentBlob> {
     let conn = pool.clone().get().await?;
     let row = conn.query_one(
@@ -3340,35 +2912,6 @@ impl Vermilion {
       content_blob.content_type = content_type;
     }
     Ok(content_blob)
-  }
-
-  fn map_row_to_metadata(mut row: mysql_async::Row) -> Metadata {
-    Metadata {
-      id: row.get("id").unwrap(),
-      content_length: row.take("content_length").unwrap(),
-      content_type: row.take("content_type").unwrap(), 
-      content_encoding: row.take("content_encoding").unwrap(),
-      genesis_fee: row.get("genesis_fee").unwrap(),
-      genesis_height: row.get("genesis_height").unwrap(),
-      genesis_transaction: row.get("genesis_transaction").unwrap(),
-      pointer: row.take("pointer").unwrap(),
-      number: row.get("number").unwrap(),
-      sequence_number: row.take("sequence_number").unwrap(),
-      parent: row.take("parent").unwrap(),
-      delegate: row.take("delegate").unwrap(),
-      metaprotocol: row.take("metaprotocol").unwrap(),
-      embedded_metadata: row.take("embedded_metadata").unwrap(),
-      sat: row.take("sat").unwrap(),
-      satributes: Vec::new(),
-      charms: row.take("charms").unwrap(),
-      timestamp: row.get("timestamp").unwrap(),
-      sha256: row.take("sha256").unwrap(),
-      text: row.take("text").unwrap(),
-      is_json: row.get("is_json").unwrap(),
-      is_maybe_json: row.get("is_maybe_json").unwrap(),
-      is_bitmap_style: row.get("is_bitmap_style").unwrap(),
-      is_recursive: row.get("is_recursive").unwrap()
-    }
   }
 
   fn map_row_to_metadata2(row: tokio_postgres::Row) -> Metadata {
@@ -3618,11 +3161,6 @@ impl Vermilion {
       inscriptions.push(Self::map_row_to_metadata2(row));
     }
     Ok(inscriptions)
-  }
-
-  async fn get_conn(pool: mysql_async::Pool) -> Result<mysql_async::Conn, mysql_async::Error> {
-    let conn = pool.get_conn().await;
-    conn
   }
 
   async fn get_deadpool(config: Config) -> anyhow::Result<deadpool> {
