@@ -285,9 +285,16 @@ impl From<InscriptionQueryParams> for ParsedInscriptionQueryParams {
         satributes: params.satributes.map_or(Vec::new(), |v| v.split(",").map(|s| s.to_string()).collect()),
         sort_by: params.sort_by.map_or("newest".to_string(), |v| v),
         page_number: params.page_number.map_or(0, |v| v),
-        page_size: params.page_size.map_or(10, |v| v),
+        page_size: params.page_size.map_or(10, |v| std::cmp::min(v, 100)),
       }
   }
+}
+
+#[derive(Deserialize, Clone)]
+pub struct CollectionQueryParams {
+  sort_by: Option<String>,
+  page_number: Option<usize>,
+  page_size: Option<usize>
 }
 
 pub struct RandomInscriptionBand {
@@ -313,41 +320,90 @@ where
   }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct CollectionList {
-  #[serde(rename = "symbol")]
+  #[serde(rename(deserialize = "symbol"))]
   collection_symbol: String,
   name: Option<String>,
-  #[serde(rename = "imageURI")]
+  #[serde(rename(deserialize = "imageURI"))]
   image_uri: Option<String>,
-  #[serde(rename = "inscriptionIcon")]
+  #[serde(rename(deserialize = "inscriptionIcon"))]
   inscription_icon: Option<String>,
   description: Option<String>,
   #[serde(deserialize_with = "deserialize_option_number_from_string")]
   supply: Option<i64>,
-  #[serde(rename = "twitterLink")]
+  #[serde(rename(deserialize = "twitterLink"))]
   twitter: Option<String>,
-  #[serde(rename = "discordLink")]
+  #[serde(rename(deserialize = "discordLink"))]
   discord: Option<String>,
-  #[serde(rename = "websiteLink")]
+  #[serde(rename(deserialize = "websiteLink"))]
   website: Option<String>,
   #[serde(deserialize_with = "deserialize_option_number_from_string")]
   min_inscription_number: Option<i64>,
   #[serde(deserialize_with = "deserialize_option_number_from_string")]
   max_inscription_number: Option<i64>,
-  #[serde(rename = "createdAt", deserialize_with = "deserialize_date")]
+  #[serde(rename(deserialize = "createdAt"), deserialize_with = "deserialize_date")]
   date_created: i64
 }
 
 #[derive(Deserialize)]
 pub struct Collection {
   id: String,
-  #[serde(rename = "inscriptionNumber")]
+  #[serde(rename(deserialize = "inscriptionNumber"))]
   number: i64,
-  #[serde(rename = "collectionSymbol")]
+  #[serde(rename(deserialize = "collectionSymbol"))]
   collection_symbol: String,
-  #[serde(rename = "meta")]
+  #[serde(rename(deserialize = "meta"))]
   off_chain_metadata: serde_json::Value
+}
+
+#[derive(Serialize)]
+pub struct InscriptionCollectionData {
+  id: String,
+  number: i64,
+  off_chain_metadata: serde_json::Value,
+  collection_symbol: String,
+  name: Option<String>,
+  image_uri: Option<String>,
+  inscription_icon: Option<String>,
+  description: Option<String>,
+  supply: Option<i64>,
+  twitter: Option<String>,
+  discord: Option<String>,
+  website: Option<String>,
+  min_inscription_number: Option<i64>,
+  max_inscription_number: Option<i64>,
+  date_created: i64
+}
+
+#[derive(Serialize)]
+pub struct MetadataWithCollectionMetadata {  
+  sequence_number: i64,
+  id: String,
+  content_length: Option<i64>,
+  content_type: Option<String>,
+  content_encoding: Option<String>,
+  genesis_fee: i64,
+  genesis_height: i64,
+  genesis_transaction: String,
+  pointer: Option<i64>,
+  number: i64,
+  parent: Option<String>,
+  delegate: Option<String>,
+  metaprotocol: Option<String>,
+  embedded_metadata: Option<String>,
+  sat: Option<i64>,
+  satributes: Vec<String>,
+  charms: Option<i16>,
+  timestamp: i64,
+  sha256: Option<String>,
+  text: Option<String>,
+  is_json: bool,
+  is_maybe_json: bool,
+  is_bitmap_style: bool,
+  is_recursive: bool,
+  collection_symbol: String,
+  off_chain_metadata: serde_json::Value,
 }
 
 #[derive(Clone,PartialEq, PartialOrd, Ord, Eq)]
@@ -1110,6 +1166,11 @@ impl Vermilion {
           .route("/inscriptions_in_sat_block/:block", get(Self::inscriptions_in_sat_block))
           .route("/sat_metadata/:sat", get(Self::sat_metadata))
           .route("/satributes/:sat", get(Self::satributes))
+          .route("/inscription_collection_data/:inscription_id", get(Self::inscription_collection_data))
+          .route("/inscription_collection_data_number/:number", get(Self::inscription_collection_data_number))
+          .route("/block_statistics/:block", get(Self::block_statistics))
+          .route("/collections", get(Self::collections))
+          .route("/inscriptions_in_collection/:collection_symbol", get(Self::inscriptions_in_collection))
           .layer(map_response(Self::set_header))
           .layer(
             TraceLayer::new_for_http()
@@ -2079,6 +2140,7 @@ impl Vermilion {
     ").await?;
     Ok(())
   }
+  
   pub(crate) async fn bulk_insert_transfers(tx: &deadpool_postgres::Transaction<'_>, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let copy_stm = r#"COPY transfers (
       id,
@@ -2717,6 +2779,119 @@ impl Vermilion {
     ).into_response()
   }
 
+  async fn collections(params: Query<CollectionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    //1. parse params
+    let params = params.0;
+    let sort_by = params.clone().sort_by.unwrap_or("oldest".to_string());
+    //2. validate params
+    if !["newest", "oldest"].contains(&sort_by.as_str()) {
+      return (
+        StatusCode::BAD_REQUEST,
+        format!("Invalid sort_by: {}", sort_by),
+      ).into_response();
+    }
+    let collections = match Self::get_collections(server_config.deadpool, params).await {
+      Ok(collections) => collections,
+      Err(error) => {
+        log::warn!("Error getting /collections: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving collections"),
+        ).into_response();
+      }
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(collections),
+    ).into_response()
+  }
+
+  async fn inscription_collection_data(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let collection_data = match Self::get_inscription_collection_data(server_config.deadpool, inscription_id.to_string()).await {
+      Ok(collection_data) => collection_data,
+      Err(error) => {
+        log::warn!("Error getting /collection_data_by_inscription_id: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving collection data for {}", inscription_id.to_string()),
+        ).into_response();
+      }    
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(collection_data),
+    ).into_response()
+  }
+
+  async fn inscription_collection_data_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let collection_data = match Self::get_inscription_collection_data_number(server_config.deadpool, number).await {
+      Ok(collection_data) => collection_data,
+      Err(error) => {
+        log::warn!("Error getting /collection_data_by_inscription_number: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving collection data for {}", number),
+        ).into_response();
+      }    
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(collection_data),
+    ).into_response()
+  }
+
+  async fn inscriptions_in_collection(Path(collection_symbol): Path<String>, params: Query<InscriptionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    //1. parse params
+    let params = ParsedInscriptionQueryParams::from(params.0);
+    //2. validate params
+    for satribute in &params.satributes {
+      if !["vintage", "nakamoto", "firsttransaction", "palindrome", "pizza", "block9", "block9_450", "block78", "alpha", "omega", "uniform_palinception", "perfect_palinception", "block286", "jpeg", 
+           "uncommon", "rare", "epic", "legendary", "mythic", "black_uncommon", "black_rare", "black_epic", "black_legendary"].contains(&satribute.as_str()) {
+        return (
+          StatusCode::BAD_REQUEST,
+          format!("Invalid satribute: {}", satribute),
+        ).into_response();
+      }
+    }
+    if !["newest", "oldest", "newest_sat", "oldest_sat", "rarest_sat", "commonest_sat", "biggest", "smallest", "highest_fee", "lowest_fee"].contains(&params.sort_by.as_str()) {
+      return (
+        StatusCode::BAD_REQUEST,
+        format!("Invalid sort_by: {}", params.sort_by),
+      ).into_response();
+    }
+    let inscriptions = match Self::get_inscriptions_in_collection(server_config.deadpool, collection_symbol, params).await {
+      Ok(inscriptions) => inscriptions,
+      Err(error) => {
+        log::warn!("Error getting /inscriptions_in_collection: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving inscriptions in collection"),
+        ).into_response();
+      }
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(inscriptions),
+    ).into_response()
+  }
+
+  async fn block_statistics(Path(block): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let block_stats = match Self::get_block_statistics(server_config.deadpool, block).await {
+      Ok(block_stats) => block_stats,
+      Err(error) => {
+        log::warn!("Error getting /block_statistics: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving block statistics for {}", block),
+        ).into_response();
+      }    
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(block_stats),
+    ).into_response()
+  }
+
   async fn shutdown_signal() {
     tokio::signal::ctrl_c()
         .await
@@ -2898,7 +3073,7 @@ impl Vermilion {
     Ok(content_blob)
   }
 
-  fn map_row_to_metadata2(row: tokio_postgres::Row) -> Metadata {
+  fn map_row_to_metadata(row: tokio_postgres::Row) -> Metadata {
     Metadata {
       id: row.get("id"),
       content_length: row.get("content_length"),
@@ -2933,7 +3108,7 @@ impl Vermilion {
       "SELECT * FROM ordinals WHERE id=$1 LIMIT 1", 
       &[&inscription_id]
     ).await?;
-    Ok(Self::map_row_to_metadata2(result))
+    Ok(Self::map_row_to_metadata(result))
   }
 
   async fn get_ordinal_metadata_by_number(pool: deadpool, number: i64) -> anyhow::Result<Metadata> {
@@ -2942,7 +3117,7 @@ impl Vermilion {
       "SELECT * FROM ordinals WHERE number=$1 LIMIT 1", 
       &[&number]
     ).await?;
-    Ok(Self::map_row_to_metadata2(result))
+    Ok(Self::map_row_to_metadata(result))
   }
 
   async fn get_matching_inscriptions(pool: deadpool, inscription_id: String) -> anyhow::Result<Vec<InscriptionNumberEdition>> {
@@ -3007,7 +3182,7 @@ impl Vermilion {
     ).await?;
     let mut inscriptions = Vec::new();
     for row in result {
-      inscriptions.push(Self::map_row_to_metadata2(row));
+      inscriptions.push(Self::map_row_to_metadata(row));
     }
     Ok(inscriptions)
   }
@@ -3027,7 +3202,7 @@ impl Vermilion {
       "SELECT * from ordinals where sequence_number=$1 limit 1", 
       &[&random_inscription_band.sequence_number]
     ).await?;
-    let metadata = Self::map_row_to_metadata2(metadata);
+    let metadata = Self::map_row_to_metadata(metadata);
     Ok((metadata,(random_inscription_band.start, random_inscription_band.end)))
   }
 
@@ -3070,7 +3245,7 @@ impl Vermilion {
     ).await?;
     let mut inscriptions = Vec::new();
     for row in result {
-      inscriptions.push(Self::map_row_to_metadata2(row));
+      inscriptions.push(Self::map_row_to_metadata(row));
     }
     Ok(inscriptions)
   }
@@ -3142,7 +3317,7 @@ impl Vermilion {
     ).await?;
     let mut inscriptions = Vec::new();
     for row in result {
-      inscriptions.push(Self::map_row_to_metadata2(row));
+      inscriptions.push(Self::map_row_to_metadata(row));
     }
     Ok(inscriptions)
   }
@@ -3297,7 +3472,7 @@ impl Vermilion {
     ).await?;
     let mut inscriptions = Vec::new();
     for row in result {
-      inscriptions.push(Self::map_row_to_metadata2(row));
+      inscriptions.push(Self::map_row_to_metadata(row));
     }
     Ok(inscriptions)
   }
@@ -3310,7 +3485,7 @@ impl Vermilion {
     ).await?;
     let mut inscriptions = Vec::new();
     for row in result {
-      inscriptions.push(Self::map_row_to_metadata2(row));
+      inscriptions.push(Self::map_row_to_metadata(row));
     }
     Ok(inscriptions)
   }
@@ -3395,6 +3570,201 @@ impl Vermilion {
       }
     }
     Ok(satributes)
+  }
+
+  async fn get_collections(pool: deadpool, params: CollectionQueryParams) -> anyhow::Result<Vec<CollectionList>> {
+    let conn = pool.get().await?;
+    let sort_by = params.sort_by.unwrap_or("oldest".to_string());
+    let page_size = std::cmp::min(params.page_size.unwrap_or(20), 100);
+    let page_number = params.page_number.unwrap_or(0);
+    //1. build query
+    let mut query = "SELECT * FROM collection_list o WHERE 1=1".to_string();
+    if sort_by == "newest" {
+      query.push_str(" ORDER BY date_created DESC");
+    } else if sort_by == "oldest" {
+      query.push_str(" ORDER BY date_created ASC");
+    }
+    if page_size > 0 {
+      query.push_str(format!(" LIMIT {}", page_size).as_str());
+    }
+    if page_number > 0 {
+      query.push_str(format!(" OFFSET {}", page_number * page_size).as_str());
+    }
+    println!("Query: {}", query);
+    let result = conn.query(
+      query.as_str(), 
+      &[]
+    ).await?;
+    let mut collections = Vec::new();
+    for row in result {
+      let collection = CollectionList {
+        collection_symbol: row.get("collection_symbol"),
+        name: row.get("name"),
+        image_uri: row.get("image_uri"),
+        inscription_icon: row.get("inscription_icon"),
+        description: row.get("description"),
+        supply: row.get("supply"),
+        twitter: row.get("twitter"),
+        discord: row.get("discord"),
+        website: row.get("website"),
+        min_inscription_number: row.get("min_inscription_number"),
+        max_inscription_number: row.get("max_inscription_number"),
+        date_created: row.get("date_created")
+      };
+      collections.push(collection);
+    }
+    Ok(collections)
+  }
+
+  async fn get_inscriptions_in_collection(pool: deadpool, collection_symbol: String, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<MetadataWithCollectionMetadata>> {
+    let conn = pool.get().await?;
+    //1. build query
+    let mut query = "SELECT o.*, c.collection_symbol, c.off_chain_metadata from ordinals o left join collections c on o.number=c.number where c.collection_symbol=$1".to_string();
+    if params.satributes.len() > 0 {
+      query.push_str(format!(" AND (o.satributes && array['{}'::varchar])", params.satributes.join("'::varchar,'")).as_str());
+    }
+    if params.sort_by == "newest" {
+      query.push_str(" ORDER BY o.sequence_number DESC");
+    } else if params.sort_by == "oldest" {
+      query.push_str(" ORDER BY o.sequence_number ASC");
+    } else if params.sort_by == "newest_sat" {
+      query.push_str(" ORDER BY o.sat DESC");
+    } else if params.sort_by == "oldest_sat" {
+      query.push_str(" ORDER BY o.sat ASC");
+    } else if params.sort_by == "rarest_sat" {
+      //query.push_str(" ORDER BY o.sat ASC");
+    } else if params.sort_by == "commonest_sat" {
+      //query.push_str(" ORDER BY o.sat DESC");
+    } else if params.sort_by == "biggest" {
+      query.push_str(" ORDER BY o.content_length DESC");
+    } else if params.sort_by == "smallest" {
+      query.push_str(" ORDER BY o.content_length ASC");
+    } else if params.sort_by == "highest_fee" {
+      query.push_str(" ORDER BY o.genesis_fee DESC");
+    } else if params.sort_by == "lowest_fee" {
+      query.push_str(" ORDER BY o.genesis_fee ASC");
+    }
+    if params.page_size > 0 {
+      query.push_str(format!(" LIMIT {}", params.page_size).as_str());
+    }
+    if params.page_number > 0 {
+      query.push_str(format!(" OFFSET {}", params.page_number * params.page_size).as_str());
+    }
+    println!("Query: {}", query);
+    let result = conn.query(
+      query.as_str(), 
+      &[&collection_symbol]
+    ).await?;
+    let mut inscriptions = Vec::new();
+    for row in result {
+      let inscription = MetadataWithCollectionMetadata {
+        id: row.get("id"),
+        content_length: row.get("content_length"),
+        content_type: row.get("content_type"), 
+        content_encoding: row.get("content_encoding"),
+        genesis_fee: row.get("genesis_fee"),
+        genesis_height: row.get("genesis_height"),
+        genesis_transaction: row.get("genesis_transaction"),
+        pointer: row.get("pointer"),
+        number: row.get("number"),
+        sequence_number: row.get("sequence_number"),
+        parent: row.get("parent"),
+        delegate: row.get("delegate"),
+        metaprotocol: row.get("metaprotocol"),
+        embedded_metadata: row.get("embedded_metadata"),
+        sat: row.get("sat"),
+        satributes: row.get("satributes"),
+        charms: row.get("charms"),
+        timestamp: row.get("timestamp"),
+        sha256: row.get("sha256"),
+        text: row.get("text"),
+        is_json: row.get("is_json"),
+        is_maybe_json: row.get("is_maybe_json"),
+        is_bitmap_style: row.get("is_bitmap_style"),
+        is_recursive: row.get("is_recursive"),
+        collection_symbol: row.get("collection_symbol"),
+        off_chain_metadata: row.get("off_chain_metadata")
+      };
+      inscriptions.push(inscription);
+    }
+    Ok(inscriptions)
+  }
+
+  async fn get_inscription_collection_data(pool: deadpool, inscription_id: String) -> anyhow::Result<Vec<InscriptionCollectionData>> {
+    let conn = pool.get().await?;
+    let result = conn.query(
+      "select c.id, c.number, c.off_chain_metadata, l.* from collections c left join collection_list l on c.collection_symbol=l.collection_symbol where c.id=$1", 
+      &[&inscription_id]
+    ).await?;
+    let mut collection_data = Vec::new();
+    for row in result {
+      collection_data.push(InscriptionCollectionData {
+        id: row.get("id"),
+        number: row.get("number"),
+        off_chain_metadata: row.get("off_chain_metadata"),
+        collection_symbol: row.get("collection_symbol"),
+        name: row.get("name"),
+        image_uri: row.get("image_uri"),
+        inscription_icon: row.get("inscription_icon"),
+        description: row.get("description"),
+        supply: row.get("supply"),
+        twitter: row.get("twitter"),
+        discord: row.get("discord"),
+        website: row.get("website"),
+        min_inscription_number: row.get("min_inscription_number"),
+        max_inscription_number: row.get("max_inscription_number"),
+        date_created: row.get("date_created")
+      });
+    }
+    Ok(collection_data)
+  }
+
+  async fn get_inscription_collection_data_number(pool: deadpool, number: i64) -> anyhow::Result<Vec<InscriptionCollectionData>> {
+    let conn = pool.get().await?;
+    let result = conn.query(
+      "select c.id, c.number, c.off_chain_metadata, l.* from collections c left join collection_list l on c.collection_symbol=l.collection_symbol where c.number=$1", 
+      &[&number]
+    ).await?;
+    let mut collection_data = Vec::new();
+    for row in result {
+      collection_data.push(InscriptionCollectionData {
+        id: row.get("id"),
+        number: row.get("number"),
+        off_chain_metadata: row.get("off_chain_metadata"),
+        collection_symbol: row.get("collection_symbol"),
+        name: row.get("name"),
+        image_uri: row.get("image_uri"),
+        inscription_icon: row.get("inscription_icon"),
+        description: row.get("description"),
+        supply: row.get("supply"),
+        twitter: row.get("twitter"),
+        discord: row.get("discord"),
+        website: row.get("website"),
+        min_inscription_number: row.get("min_inscription_number"),
+        max_inscription_number: row.get("max_inscription_number"),
+        date_created: row.get("date_created")
+      });
+    }
+    Ok(collection_data)
+  }
+
+  async fn get_block_statistics(pool: deadpool, block: i64) -> anyhow::Result<BlockStats> {
+    let conn = pool.get().await?;
+    let result = conn.query_one(
+      "SELECT * FROM blockstats WHERE block_number=$1", 
+      &[&block]
+    ).await?;
+    let block_stats = BlockStats {
+      block_number: result.get("block_number"),
+      block_timestamp: result.get("block_timestamp"),
+      block_tx_count: result.get("block_tx_count"),
+      block_size: result.get("block_size"),
+      block_fees: result.get("block_fees"),
+      min_fee: result.get("min_fee"),
+      max_fee: result.get("max_fee"),
+      average_fee: result.get("average_fee")
+    };
+    Ok(block_stats)
   }
 
   async fn create_metadata_insert_trigger(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
