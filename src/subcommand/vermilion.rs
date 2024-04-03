@@ -3619,7 +3619,7 @@ impl Vermilion {
   async fn get_inscriptions_in_collection(pool: deadpool, collection_symbol: String, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<MetadataWithCollectionMetadata>> {
     let conn = pool.get().await?;
     //1. build query
-    let mut query = "SELECT o.*, c.collection_symbol, c.off_chain_metadata from ordinals o left join collections c on o.number=c.number where c.collection_symbol=$1".to_string();
+    let mut query = "with m as MATERIALIZED (SELECT o.*, c.collection_symbol, c.off_chain_metadata from ordinals o left join collections c on o.number=c.number where c.collection_symbol=$1".to_string();
     if params.satributes.len() > 0 {
       query.push_str(format!(" AND (o.satributes && array['{}'::varchar])", params.satributes.join("'::varchar,'")).as_str());
     }
@@ -3644,6 +3644,7 @@ impl Vermilion {
     } else if params.sort_by == "lowest_fee" {
       query.push_str(" ORDER BY o.genesis_fee ASC");
     }
+    query.push_str(") SELECT * from m");
     if params.page_size > 0 {
       query.push_str(format!(" LIMIT {}", params.page_size).as_str());
     }
