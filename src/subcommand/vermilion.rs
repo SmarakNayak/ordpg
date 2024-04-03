@@ -50,8 +50,6 @@ use tokio_postgres::binary_copy::BinaryCopyInWriter;
 use tokio_postgres::types::{ToSql, Type};
 use futures::pin_mut;
 
-use bitcoincore_rpc::json::GetBlockStatsResultPartial;
-
 #[derive(Debug, Parser, Clone)]
 pub(crate) struct Vermilion {
   #[arg(
@@ -379,9 +377,7 @@ pub struct IndexerTimings {
 
 #[derive(Clone)]
 pub struct ApiServerConfig {
-  deadpool: deadpool,
-  s3client: s3::Client,
-  bucket_name: String
+  deadpool: deadpool
 }
 
 const INDEX_BATCH_SIZE: usize = 10000;
@@ -523,14 +519,6 @@ impl Vermilion {
         let cloned_bucket_name = s3_bucket_name.clone();
         let cloned_status_vector = status_vector.clone();
         let cloned_timing_vector = timing_vector.clone();
-        let fetcher =  match fetcher::Fetcher::new(&options) {
-          Ok(fetcher) => fetcher,
-          Err(e) => {
-            println!("Error creating fetcher: {:?}, waiting a minute", e);
-            tokio::time::sleep(Duration::from_secs(60)).await;
-            continue;
-          }
-        };//Need a new fetcher for each thread
         tokio::task::spawn(async move {
           let t1 = Instant::now();
           let _permit = permit;
@@ -1079,22 +1067,16 @@ impl Vermilion {
       let rt = Runtime::new().unwrap();
       rt.block_on(async move {
         let config = options.load_config().unwrap();
-        let config_clone = options.clone().load_config().unwrap();
-        let deadpool = match Self::get_deadpool(config_clone).await {
+        let deadpool = match Self::get_deadpool(config).await {
           Ok(deadpool) => deadpool,
           Err(err) => {
             println!("Error creating deadpool: {:?}", err);
             return;
           }
         };
-        let bucket_name = config.s3_bucket_name.unwrap();
-        let s3_config = aws_config::from_env().load().await;
-        let s3client = s3::Client::new(&s3_config);
         
         let server_config = ApiServerConfig {
-          deadpool: deadpool,
-          s3client: s3client,
-          bucket_name: bucket_name
+          deadpool: deadpool
         };
 
         let session_config = SessionConfig::default()
