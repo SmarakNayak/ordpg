@@ -1770,7 +1770,7 @@ impl Vermilion {
       writer.as_mut().write(&row).await?;
     }
   
-    //let x = writer.finish().await?;
+    let _x = writer.finish().await?;
     //println!("Finished writing metadata: {:?}", x);
     //tx.simple_query("INSERT INTO ordinals SELECT * FROM inserts_ordinals ON CONFLICT DO NOTHING").await?;
     Ok(())
@@ -3668,15 +3668,6 @@ impl Vermilion {
       DROP TABLE IF EXISTS weights_5;
       END;
       $$;"#).await?;
-    // conn.simple_query(r"DROP EVENT IF EXISTS weights_event").await?;
-    // conn.simple_query(r"CREATE EVENT weights_event 
-    //                       ON SCHEDULE EVERY 24 HOUR STARTS FROM_UNIXTIME(CEILING(UNIX_TIMESTAMP(CURTIME())/86400)*86400 - 43200) 
-    //                       DO
-    //                       BEGIN
-    //                         SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;
-    //                         CALL update_weights();
-    //                         SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
-    //                       END;").await?;
     Ok(())
   }
   

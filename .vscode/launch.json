@@ -12,15 +12,17 @@
       "program": "${workspaceFolder}/target/debug/ord",
       "args": [
         "--config=/home/miltu/ord.yaml",
+        "--index=/home/miltu/.local/share/ord/index_vermilion_with_sats.redb",
+        "--index-transactions",
         "--index-sats",
         "vermilion",
         "--http-port=1080",
         "--api-http-port=2081",
-        "--n-threads=10"
+        "--n-threads=1"
       ],
       "cwd": "${workspaceFolder}",
       "exitCommands": ["process signal SIGINT"],
-      "env": {"RUST_LOG": "warn"}
+      "env": {"RUST_LOG": "info,ord::options=warn"}
     },
     {
       "type": "lldb",
