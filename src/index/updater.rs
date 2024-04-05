@@ -9,6 +9,8 @@ use {
 mod inscription_updater;
 mod rune_updater;
 
+use bitcoin::consensus::encode::VarInt;
+
 pub(crate) struct BlockData {
   pub(crate) header: Header,
   pub(crate) txdata: Vec<(Transaction, Txid)>,
@@ -394,6 +396,8 @@ impl<'index> Updater<'_> {
     let mut sequence_number_to_satpoint = wtx.open_table(SEQUENCE_NUMBER_TO_SATPOINT)?;
     let mut statistic_to_count = wtx.open_table(STATISTIC_TO_COUNT)?;
     let mut transaction_id_to_transaction = wtx.open_table(TRANSACTION_ID_TO_TRANSACTION)?;
+    let mut transaction_id_to_fee = wtx.open_table(TRANSACTION_ID_TO_FEE)?;
+    let mut height_to_block_size = wtx.open_table(HEIGHT_TO_BLOCK_SIZE)?;
 
     let mut lost_sats = statistic_to_count
       .get(&Statistic::LostSats.key())?
@@ -451,6 +455,7 @@ impl<'index> Updater<'_> {
       value_cache,
       value_receiver,
       height_to_transfers: &mut height_to_transfers,
+      transaction_id_to_fee: &mut transaction_id_to_fee
     };
 
     if self.index.index_sats {
@@ -633,6 +638,10 @@ impl<'index> Updater<'_> {
     }
 
     height_to_block_header.insert(&self.height, &block.header.store())?;
+    let base_size: usize = 80 + VarInt(block.txdata.len() as u64).len();
+    let txs_size: usize = block.txdata.iter().map(|(tx, _)| tx.size()).sum();
+    let block_size = (base_size + txs_size) as u32;
+    height_to_block_size.insert(&self.height, block_size)?;
 
     self.height += 1;
     self.outputs_traversed += outputs_in_block;

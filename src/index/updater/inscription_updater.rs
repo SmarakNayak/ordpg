@@ -65,7 +65,8 @@ pub(super) struct InscriptionUpdater<'a, 'db, 'tx> {
   pub(super) unbound_inscriptions: u64,
   pub(super) value_cache: &'a mut HashMap<OutPoint, u64>,
   pub(super) value_receiver: &'a mut Receiver<u64>,
-  pub(super) height_to_transfers: &'a mut MultimapTable<'db, 'tx, u32, &'static [u8; 48]>,
+  pub(super) height_to_transfers: &'a mut MultimapTable<'db, 'tx, u32, &'static [u8; 92]>,
+  pub(super) transaction_id_to_fee: &'a mut Table<'db, 'tx, &'static TxidValue, u64>,
 }
 
 impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
@@ -231,6 +232,13 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
         .insert(&txid.store(), self.transaction_buffer.as_slice())?;
 
       self.transaction_buffer.clear();
+    }
+
+    if self.index_transactions && !floating_inscriptions.is_empty() {
+      let fee = total_input_value - total_output_value;
+      self
+        .transaction_id_to_fee
+        .insert(&txid.store(), fee)?;
     }
 
     let potential_parents = floating_inscriptions
@@ -547,11 +555,17 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
     self
       .sequence_number_to_satpoint
       .insert(sequence_number, &satpoint)?;
-    let transfer: [u8; 48] = {
-      let mut transfer: [u8; 48] = [0; 48];
-      let (one, two) = transfer.split_at_mut(4);
+    let old_satpoint = match flotsam.origin {
+      Origin::New { .. } => SatPoint{outpoint: OutPoint::null(), offset: 0},
+      Origin::Old { old_satpoint } => old_satpoint,
+    };
+    let transfer: [u8; 92] = {
+      let mut transfer: [u8; 92] = [0; 92];
+      let (one, rest) = transfer.split_at_mut(4);
+      let (two, three) = rest.split_at_mut(44);
       one.copy_from_slice(&sequence_number.to_ne_bytes());
-      two.copy_from_slice(&satpoint);
+      two.copy_from_slice(&old_satpoint.store());
+      three.copy_from_slice(&satpoint);
       transfer
     };
     self.height_to_transfers.insert(&self.height, &transfer)?;

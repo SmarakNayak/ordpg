@@ -181,6 +181,9 @@ pub struct Transfer {
   vout: i32,
   offset: i64,
   address: String,
+  price: i64,
+  tx_fee: i64,
+  tx_size: i64,
   is_genesis: bool
 }
 
@@ -876,7 +879,7 @@ impl Vermilion {
         let create_blockstats_result = Self::create_blockstats_table(deadpool.clone()).await;
         if create_tranfer_result.is_err() {
           println!("Error creating db tables: {:?}", create_tranfer_result.unwrap_err());
-          return;            
+          return;
         }
         if create_address_result.is_err() {
           println!("Error creating db tables: {:?}", create_address_result.unwrap_err());
@@ -921,11 +924,20 @@ impl Vermilion {
               continue;
             }
           };
+
+          let block_size_result = match index.get_block_size(height) {
+            Ok(block_size) => block_size,
+            Err(err) => {
+              log::info!("Error getting block size for block height: {:?} - {:?}, waiting a minute", height, err);
+              tokio::time::sleep(Duration::from_secs(60)).await;
+              continue;
+            }
+          };
           let blockstat = BlockStats {
             block_number: height as i64,
             block_timestamp: blockstat_result.clone().map(|x| x.time.map(|y| 1000*y as i64)).flatten(), //Convert to millis
             block_tx_count: blockstat_result.clone().map(|x| x.txs.map(|y| y as i64)).flatten(),
-            block_size: blockstat_result.clone().map(|x| x.total_size.map(|y| y as i64)).flatten(),
+            block_size: Some(block_size_result as i64),
             block_fees: blockstat_result.clone().map(|x| x.total_fee.map(|y| y.to_sat() as i64)).flatten(),
             min_fee: blockstat_result.clone().map(|x| x.min_fee_rate.map(|y| y.to_sat() as i64)).flatten(),
             max_fee: blockstat_result.clone().map(|x| x.max_fee_rate.map(|y| y.to_sat() as i64)).flatten(),
@@ -1000,10 +1012,9 @@ impl Vermilion {
             continue;
           }
           let t2 = Instant::now();
-          let mut tx_id_list = transfers.clone().into_iter().map(|(_id, satpoint)| satpoint.outpoint.txid).collect::<Vec<_>>();
-          //log::info!("Predupe: {:?}", tx_id_list.len());
+          let mut tx_id_list = transfers.clone().into_iter().map(|(_id, _,satpoint)| satpoint.outpoint.txid).collect::<Vec<_>>();
           tx_id_list.dedup();
-          //log::info!("Postdupe: {:?}", tx_id_list.len());
+          
           let txs = match fetcher.get_transactions(tx_id_list).await {
             Ok(txs) => {
               txs.into_iter().map(|tx| Some(tx)).collect::<Vec<_>>()
@@ -1013,7 +1024,7 @@ impl Vermilion {
               if e.to_string().contains("No such mempool or blockchain transaction") || e.to_string().contains("Broken pipe") || e.to_string().contains("end of file") || e.to_string().contains("EOF while parsing") {
                 log::info!("Attempting 1 at a time");
                 let mut txs = Vec::new();
-                for (id, satpoint) in transfers.clone() {
+                for (id, _, satpoint) in transfers.clone() {
                   let tx = match fetcher.get_transactions(vec![satpoint.outpoint.txid]).await {
                     Ok(mut tx) => Some(tx.pop().unwrap()),
                     Err(e) => {                      
@@ -1050,12 +1061,16 @@ impl Vermilion {
           }
 
           let t3 = Instant::now();          
-          let mut seq_point_address = Vec::new();
-          for (sequence_number, satpoint) in transfers {
-            let address = if satpoint.outpoint == unbound_outpoint() {
-              "unbound".to_string()
+          let mut seq_point_transfer_details = Vec::new();
+          let mut error_in_loop = false;
+          for (sequence_number, old_satpoint, satpoint) in transfers {
+            //1. Get ordinal receive address
+            let (address, price, tx_fee, tx_size) = if satpoint.outpoint == unbound_outpoint() {
+              ("unbound".to_string(), 0, 0, 0)
             } else {
               let tx = tx_map.get(&satpoint.outpoint.txid).unwrap();
+              
+              //1. Get address
               let output = tx
                 .clone()
                 .output
@@ -1067,14 +1082,70 @@ impl Vermilion {
                 .address_from_script(&output.script_pubkey)
                 .map(|address| address.to_string())
                 .unwrap_or_else(|e| e.to_string());
-              address
+              
+              //2. Get price
+              let mut price = 0;
+              for (input_index, txin) in tx.input.iter().enumerate() {
+                if txin.previous_output == old_satpoint.outpoint {
+                  let script_sig = txin.script_sig.clone().into_bytes();
+                  let last_sig_byte = match script_sig.last() {
+                    Some(last_script_sig_byte) => Some(last_script_sig_byte),
+                    None => {
+                      match txin.witness.nth(0) {
+                        Some(witness_element_bytes) => witness_element_bytes.last(),
+                        None => None
+                      }
+                    }
+                  };
+                  price = match last_sig_byte {
+                    Some(last_sig_byte) => {                      
+                      // IF SIG_SINGLE|ANYONECANPAY (0x83), Then price is on same output index as the ordinal's input index
+                      if last_sig_byte == &0x83 {
+                        price = match tx.output.clone().into_iter().nth(input_index) {
+                          Some(output) => output.value,
+                          None => 0
+                        };
+                      // IF SIG_ALL (0x01), Then price is on second output index
+                      } else if last_sig_byte == &0x01 {
+                        price = match tx.output.clone().into_iter().nth(1) {
+                          Some(output) => output.value,
+                          None => 0
+                        };
+                      }
+                      price
+                    },
+                    None => 0
+                  };
+                }
+              }
+              
+              //3. Get fee
+              let tx_fee = match index.get_tx_fee(satpoint.outpoint.txid) {
+                Ok(tx_fee) => tx_fee,
+                Err(e) => {
+                  log::info!("Error getting tx fee for {:?} - {:?} breaking and waiting a minute", satpoint.outpoint.txid, e);
+                  error_in_loop = true;
+                  break;
+                }
+              };
+
+              //4. Get size
+              let tx_size = tx.vsize();
+
+              (address, price, tx_fee, tx_size)
             };
-            seq_point_address.push((sequence_number, satpoint, address));
+            seq_point_transfer_details.push((sequence_number, satpoint, address, price, tx_fee, tx_size));
           }
+          if error_in_loop {
+            log::info!("Error detected tx loop for block {:?}, breaking and waiting a minute", height);
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            continue;
+          }
+
           let t4 = Instant::now();
           let block_time = index.block_time(Height(height)).unwrap();
           let mut transfer_vec = Vec::new();
-          for (sequence_number, point, address) in seq_point_address {
+          for (sequence_number, point, address, price, tx_fee, tx_size) in seq_point_transfer_details {
             let entry = index.get_inscription_entry_by_sequence_number(sequence_number).unwrap();
             let id = entry.unwrap().id;
             let transfer = Transfer {
@@ -1086,7 +1157,10 @@ impl Vermilion {
               vout: point.outpoint.vout as i32,
               offset: point.offset as i64,
               address: address,
-              is_genesis: point.outpoint.txid == id.txid && point.outpoint.vout == id.index
+              price: price as i64,
+              tx_fee: tx_fee as i64,
+              tx_size: tx_size as i64,
+              is_genesis: point.outpoint.txid == id.txid
             };
             transfer_vec.push(transfer);
           }
@@ -1169,6 +1243,7 @@ impl Vermilion {
           .route("/inscription_collection_data/:inscription_id", get(Self::inscription_collection_data))
           .route("/inscription_collection_data_number/:number", get(Self::inscription_collection_data_number))
           .route("/block_statistics/:block", get(Self::block_statistics))
+          .route("/blocks", get(Self::blocks))
           .route("/collections", get(Self::collections))
           .route("/inscriptions_in_collection/:collection_symbol", get(Self::inscriptions_in_collection))
           .layer(map_response(Self::set_header))
@@ -2130,7 +2205,10 @@ impl Vermilion {
         transaction text,
         vout int,
         satpoint_offset bigint,
-        address text,
+        address varchar(100),
+        price bigint,
+        tx_fee bigint,
+        tx_size bigint,
         is_genesis boolean,
         PRIMARY KEY (id, block_number, satpoint)
       )").await?;
@@ -2151,6 +2229,9 @@ impl Vermilion {
       vout,
       satpoint_offset,
       address,
+      price,
+      tx_fee,
+      tx_size,
       is_genesis) FROM STDIN BINARY"#;
     let col_types = vec![
       Type::VARCHAR,
@@ -2160,7 +2241,10 @@ impl Vermilion {
       Type::TEXT,
       Type::INT4,
       Type::INT8,
-      Type::TEXT,
+      Type::VARCHAR,
+      Type::INT8,
+      Type::INT8,
+      Type::INT8,
       Type::BOOL
     ];
     let sink = tx.copy_in(copy_stm).await?;
@@ -2176,6 +2260,9 @@ impl Vermilion {
       row.push(&m.vout);
       row.push(&m.offset);
       row.push(&m.address);
+      row.push(&m.price);
+      row.push(&m.tx_fee);
+      row.push(&m.tx_size);
       row.push(&m.is_genesis);
       writer.as_mut().write(&row).await?;
     }
@@ -2195,6 +2282,9 @@ impl Vermilion {
         vout int,
         satpoint_offset bigint,
         address varchar(100),
+        price bigint,
+        tx_fee bigint,
+        tx_size bigint,
         is_genesis boolean
       )").await?;
     conn.simple_query(r"
@@ -2217,6 +2307,9 @@ impl Vermilion {
       vout,
       satpoint_offset,
       address,
+      price,
+      tx_fee,
+      tx_size,
       is_genesis) FROM STDIN BINARY"#;
     let col_types = vec![
       Type::VARCHAR,
@@ -2227,6 +2320,9 @@ impl Vermilion {
       Type::INT4,
       Type::INT8,
       Type::VARCHAR,
+      Type::INT8,
+      Type::INT8,
+      Type::INT8,
       Type::BOOL
     ];
     let sink = tx.copy_in(copy_stm).await?;
@@ -2242,6 +2338,9 @@ impl Vermilion {
       row.push(&m.vout);
       row.push(&m.offset);
       row.push(&m.address);
+      row.push(&m.price);
+      row.push(&m.tx_fee);
+      row.push(&m.tx_size);
       row.push(&m.is_genesis);
       writer.as_mut().write(&row).await?;
     }
@@ -2892,6 +2991,33 @@ impl Vermilion {
     ).into_response()
   }
 
+  async fn blocks(params: Query<InscriptionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    //1. parse params
+    let params = ParsedInscriptionQueryParams::from(params.0);
+    //2. validate params
+    if !["newest", "oldest", "newest_sat", "oldest_sat", "rarest_sat", "commonest_sat", "biggest", "smallest", "highest_fee", "lowest_fee"].contains(&params.sort_by.as_str()) {
+      return (
+        StatusCode::BAD_REQUEST,
+        format!("Invalid sort_by: {}", params.sort_by),
+      ).into_response();
+    }
+    let inscriptions = match Self::get_inscriptions(server_config.deadpool, params).await {
+      Ok(inscriptions) => inscriptions,
+      Err(error) => {
+        log::warn!("Error getting /inscriptions: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving inscriptions"),
+        ).into_response();
+      }
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(inscriptions),
+    ).into_response()
+  }
+
+
   async fn shutdown_signal() {
     tokio::signal::ctrl_c()
         .await
@@ -3348,6 +3474,9 @@ impl Vermilion {
       vout: result.get("vout"),
       offset: result.get("offset"),
       address: result.get("address"),
+      price: result.get("price"),
+      tx_fee: result.get("tx_fee"),
+      tx_size: result.get("tx_size"),
       is_genesis: result.get("is_genesis")
     };
     Ok(transfer)
@@ -3368,6 +3497,9 @@ impl Vermilion {
       vout: result.get("vout"),
       offset: result.get("satpoint_offset"),
       address: result.get("address"),
+      price: result.get("price"),
+      tx_fee: result.get("tx_fee"),
+      tx_size: result.get("tx_size"),
       is_genesis: result.get("is_genesis")
     };
     Ok(transfer)
@@ -3390,6 +3522,9 @@ impl Vermilion {
         vout: row.get("vout"),
         offset: row.get("satpoint_offset"),
         address: row.get("address"),
+        price: row.get("price"),
+        tx_fee: row.get("tx_fee"),
+        tx_size: row.get("tx_size"),
         is_genesis: row.get("is_genesis")
       });
     }
@@ -3413,6 +3548,9 @@ impl Vermilion {
         vout: row.get("vout"),
         offset: row.get("offset"),
         address: row.get("address"),
+        price: row.get("price"),
+        tx_fee: row.get("tx_fee"),
+        tx_size: row.get("tx_size"),
         is_genesis: row.get("is_genesis")
       });
     }

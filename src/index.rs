@@ -59,9 +59,10 @@ macro_rules! define_multimap_table {
 define_multimap_table! { SATPOINT_TO_SEQUENCE_NUMBER, &SatPointValue, u32 }
 define_multimap_table! { SAT_TO_SEQUENCE_NUMBER, u64, u32 }
 define_multimap_table! { SEQUENCE_NUMBER_TO_CHILDREN, u32, u32 }
-define_multimap_table! { HEIGHT_TO_TRANSFERS, u32, &[u8; 48] }
+define_multimap_table! { HEIGHT_TO_TRANSFERS, u32, &[u8; 92] }
 define_table! { HEIGHT_TO_BLOCK_HEADER, u32, &HeaderValue }
 define_table! { HEIGHT_TO_LAST_SEQUENCE_NUMBER, u32, u32 }
+define_table! { HEIGHT_TO_BLOCK_SIZE, u32, u32 }
 define_table! { HOME_INSCRIPTIONS, u32, InscriptionIdValue }
 define_table! { INSCRIPTION_ID_TO_SEQUENCE_NUMBER, InscriptionIdValue, u32 }
 define_table! { INSCRIPTION_NUMBER_TO_SEQUENCE_NUMBER, i32, u32 }
@@ -77,6 +78,7 @@ define_table! { SEQUENCE_NUMBER_TO_SATPOINT, u32, &SatPointValue }
 define_table! { STATISTIC_TO_COUNT, u64, u64 }
 define_table! { TRANSACTION_ID_TO_RUNE, &TxidValue, u128 }
 define_table! { TRANSACTION_ID_TO_TRANSACTION, &TxidValue, &[u8] }
+define_table! { TRANSACTION_ID_TO_FEE, &TxidValue, u64 }
 define_table! { WRITE_TRANSACTION_STARTING_BLOCK_COUNT_TO_TIMESTAMP, u32, u128 }
 
 #[derive(Copy, Clone)]
@@ -983,6 +985,26 @@ impl Index {
     self.client.get_block_stats_fields(height, &fields).into_option()
   }
 
+  pub(crate) fn get_block_size(&self, height: u32) -> Result<u32> {
+    let rtx = self.database.begin_read()?;
+    let height_to_block_size = rtx.open_table(HEIGHT_TO_BLOCK_SIZE)?;
+    let block_size = height_to_block_size.get(&height)?;
+    match block_size {
+      Some(block_size) => Ok(block_size.value()),
+      None => Err(anyhow!("could not find size for block number {height}")),
+    }
+  }
+
+  pub(crate) fn get_tx_fee(&self, txid: Txid) -> Result<u64> {
+    let rtx = self.database.begin_read()?;
+    let transaction_id_to_fee = rtx.open_table(TRANSACTION_ID_TO_FEE)?;
+    let fee = transaction_id_to_fee.get(&txid.store())?;
+    match fee {
+      Some(fee) => Ok(fee.value()),
+      None => Err(anyhow!("could not find fee for txid {txid}")),
+    }
+  }
+
   pub(crate) fn get_collections_paginated(
     &self,
     page_size: usize,
@@ -1680,7 +1702,7 @@ impl Index {
     )
   }
 
-  pub(crate) fn get_transfers_by_block_height(&self, height: u32) -> Result<Vec<(u32, SatPoint)>>  {
+  pub(crate) fn get_transfers_by_block_height(&self, height: u32) -> Result<Vec<(u32, SatPoint, SatPoint)>>  {
     let mut return_vec = Vec::new();
     let rtx = self
       .database
@@ -1688,12 +1710,14 @@ impl Index {
     let height_to_transfers = rtx.open_multimap_table(HEIGHT_TO_TRANSFERS)?;
     let transfers = height_to_transfers.get(&height)?;
     for transfer in transfers {
-      let result = transfer.unwrap();
+      let result = transfer?;
       let transfer = result.value();
-      let (sequence_number, satpoint) = transfer.split_at(4);
-      let sequence_number = u32::from_ne_bytes(sequence_number.try_into().unwrap());
-      let satpoint: SatPoint = SatPoint::load(satpoint.try_into().unwrap());
-      return_vec.push((sequence_number, satpoint));
+      let (sequence_number, rest) = transfer.split_at(4);
+      let (old_satpoint, new_satpoint) = rest.split_at(44);
+      let sequence_number = u32::from_ne_bytes(sequence_number.try_into()?);
+      let old_satpoint: SatPoint = SatPoint::load(old_satpoint.try_into()?);
+      let new_satpoint: SatPoint = SatPoint::load(new_satpoint.try_into()?);
+      return_vec.push((sequence_number, old_satpoint, new_satpoint));
     }
     Ok(return_vec)
   }
