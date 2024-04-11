@@ -249,6 +249,25 @@ pub struct InscriptionBlockStats {
 }
 
 #[derive(Clone, Serialize)]
+pub struct CombinedBlockStats {
+  block_number: i64,
+  block_timestamp: Option<i64>,
+  block_tx_count: Option<i64>,
+  block_size: Option<i64>,
+  block_fees: Option<i64>,
+  min_fee: Option<i64>,
+  max_fee: Option<i64>,
+  average_fee: Option<i64>,
+  block_inscription_count: Option<i64>,
+  block_inscription_size: Option<i64>,
+  block_inscription_fees: Option<i64>,
+  block_transfer_count: Option<i64>,
+  block_transfer_size: Option<i64>,
+  block_transfer_fees: Option<i64>,
+  block_volume: Option<i64>,
+}
+
+#[derive(Clone, Serialize)]
 pub struct Content {
   content: Vec<u8>,
   content_type: Option<String>
@@ -372,6 +391,26 @@ pub struct Collection {
   collection_symbol: String,
   #[serde(rename(deserialize = "meta"))]
   off_chain_metadata: serde_json::Value
+}
+
+#[derive(Serialize)]
+pub struct CollectionSummary {
+  collection_symbol: String, 
+  name: Option<String>,
+  description: Option<String>,
+  twitter: Option<String>, 
+  discord: Option<String>, 
+  website: Option<String>,
+  total_inscription_fees: Option<i64>,
+  total_inscription_size: Option<i64>,
+  first_inscribed_date: Option<i64>,
+  last_inscribed_date: Option<i64>,
+  supply: Option<i64>,
+  range_start: Option<i64>,
+  range_end: Option<i64>,
+  total_volume: Option<i64>,
+  total_fees: Option<i64>,
+  total_on_chain_footprint: Option<i64>
 }
 
 #[derive(Serialize)]
@@ -1823,6 +1862,7 @@ impl Vermilion {
         total_inscription_fees bigint,
         total_inscription_size bigint,
         first_inscribed_date bigint,
+        last_inscribed_date bigint,
         supply bigint,
         range_start bigint,
         range_end bigint,
@@ -2973,9 +3013,17 @@ impl Vermilion {
   async fn collections(params: Query<CollectionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     //1. parse params
     let params = params.0;
-    let sort_by = params.clone().sort_by.unwrap_or("oldest".to_string());
+    let sort_by = params.clone().sort_by.unwrap_or("biggest_on_chain_footprint".to_string());
     //2. validate params
-    if !["newest", "oldest"].contains(&sort_by.as_str()) {
+    if ![
+      "biggest_on_chain_footprint", "smallest_on_chain_footprint",
+      "most_volume", "least_volume",
+      "biggest_file_size", "smallest_file_size",
+      "biggest_creation_fee", "smallest_creation_fee",
+      "earliest_first_inscribed_date", "latest_first_inscribed_date",
+      "earliest_last_inscribed_date", "latest_last_inscribed_date",
+      "biggest_supply", "smallest_supply",
+    ].contains(&sort_by.as_str()) {
       return (
         StatusCode::BAD_REQUEST,
         format!("Invalid sort_by: {}", sort_by),
@@ -3083,32 +3131,40 @@ impl Vermilion {
     ).into_response()
   }
 
-  async fn blocks(params: Query<InscriptionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+  async fn blocks(params: Query<CollectionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     //1. parse params
-    let params = ParsedInscriptionQueryParams::from(params.0);
+    let params = params.0;
+    let sort_by = params.clone().sort_by.unwrap_or("newest".to_string());
     //2. validate params
-    if !["newest", "oldest", "newest_sat", "oldest_sat", "rarest_sat", "commonest_sat", "biggest", "smallest", "highest_fee", "lowest_fee"].contains(&params.sort_by.as_str()) {
+    if ![
+      "newest", "oldest", 
+      "most_txs", "least_txs", 
+      "most_inscriptions", "least_inscriptions",
+      "biggest_block", "smallest_block",
+      "biggest_total_inscriptions_size", "smallest_total_inscriptions_size",
+      "highest_total_fees", "lowest_total_fees",
+      "highest_inscription_fees", "lowest_inscription_fees",
+      "most_volume", "least_volume"].contains(&sort_by.as_str()) {
       return (
         StatusCode::BAD_REQUEST,
-        format!("Invalid sort_by: {}", params.sort_by),
+        format!("Invalid sort_by: {}", sort_by),
       ).into_response();
     }
-    let inscriptions = match Self::get_inscriptions(server_config.deadpool, params).await {
-      Ok(inscriptions) => inscriptions,
+    let blocks = match Self::get_blocks(server_config.deadpool, params).await {
+      Ok(blocks) => blocks,
       Err(error) => {
-        log::warn!("Error getting /inscriptions: {}", error);
+        log::warn!("Error getting /blocks: {}", error);
         return (
           StatusCode::INTERNAL_SERVER_ERROR,
-          format!("Error retrieving inscriptions"),
+          format!("Error retrieving blocks"),
         ).into_response();
       }
     };
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
-      Json(inscriptions),
+      Json(blocks),
     ).into_response()
   }
-
 
   async fn shutdown_signal() {
     tokio::signal::ctrl_c()
@@ -3803,17 +3859,54 @@ impl Vermilion {
     Ok(satributes)
   }
 
-  async fn get_collections(pool: deadpool, params: CollectionQueryParams) -> anyhow::Result<Vec<CollectionList>> {
+  async fn get_collections(pool: deadpool, params: CollectionQueryParams) -> anyhow::Result<Vec<CollectionSummary>> {
     let conn = pool.get().await?;
     let sort_by = params.sort_by.unwrap_or("oldest".to_string());
     let page_size = std::cmp::min(params.page_size.unwrap_or(20), 100);
     let page_number = params.page_number.unwrap_or(0);
     //1. build query
-    let mut query = "SELECT * FROM collection_list o WHERE 1=1".to_string();
-    if sort_by == "newest" {
-      query.push_str(" ORDER BY date_created DESC");
-    } else if sort_by == "oldest" {
-      query.push_str(" ORDER BY date_created ASC");
+    let mut query = r"
+      SELECT 
+        l.collection_symbol, l.name, l.description, l.twitter, l.discord, l.website,
+        s.total_inscription_fees,
+        s.total_inscription_size,
+        s.first_inscribed_date,
+        s.last_inscribed_date,
+        s.supply,
+        s.range_start,
+        s.range_end,
+        s.total_volume,
+        s.total_fees,
+        s.total_on_chain_footprint
+      from collection_list l left join collection_summary s on l.collection_symbol=s.collection_symbol name!=''".to_string();
+    if sort_by == "biggest_on_chain_footprint" {
+      query.push_str(" ORDER BY s.total_on_chain_footprint DESC");
+    } else if sort_by == "smallest_on_chain_footprint" {
+      query.push_str(" ORDER BY s.total_on_chain_footprint ASC");
+    } else if sort_by == "most_volume" {
+      query.push_str(" ORDER BY s.total_volume DESC");
+    } else if sort_by == "least_volume" {
+      query.push_str(" ORDER BY s.total_volume ASC");
+    } else if sort_by == "biggest_file_size" {
+      query.push_str(" ORDER BY s.total_inscription_size DESC");
+    } else if sort_by == "smallest_file_size" {
+      query.push_str(" ORDER BY s.total_inscription_size ASC");
+    } else if sort_by == "biggest_creation_fee" {
+      query.push_str(" ORDER BY s.total_inscription_fees DESC");
+    } else if sort_by == "smallest_creation_fee" {
+      query.push_str(" ORDER BY s.total_inscription_fees ASC");
+    } else if sort_by == "earliest_first_inscribed_date" {
+      query.push_str(" ORDER BY s.first_inscribed_date ASC");
+    } else if sort_by == "latest_first_inscribed_date" {
+      query.push_str(" ORDER BY s.first_inscribed_date DESC");
+    } else if sort_by == "earliest_last_inscribed_date" {
+      query.push_str(" ORDER BY s.last_inscribed_date ASC");
+    } else if sort_by == "latest_last_inscribed_date" {
+      query.push_str(" ORDER BY s.last_inscribed_date DESC");
+    } else if sort_by == "biggest_supply" {
+      query.push_str(" ORDER BY s.supply DESC");
+    } else if sort_by == "smallest_supply" {
+      query.push_str(" ORDER BY s.supply ASC");
     }
     if page_size > 0 {
       query.push_str(format!(" LIMIT {}", page_size).as_str());
@@ -3828,19 +3921,23 @@ impl Vermilion {
     ).await?;
     let mut collections = Vec::new();
     for row in result {
-      let collection = CollectionList {
+      let collection = CollectionSummary {
         collection_symbol: row.get("collection_symbol"),
         name: row.get("name"),
-        image_uri: row.get("image_uri"),
-        inscription_icon: row.get("inscription_icon"),
         description: row.get("description"),
-        supply: row.get("supply"),
         twitter: row.get("twitter"),
         discord: row.get("discord"),
         website: row.get("website"),
-        min_inscription_number: row.get("min_inscription_number"),
-        max_inscription_number: row.get("max_inscription_number"),
-        date_created: row.get("date_created")
+        total_inscription_fees: row.get("total_inscription_fees"),
+        total_inscription_size: row.get("total_inscription_size"),
+        first_inscribed_date: row.get("first_inscribed_date"),
+        last_inscribed_date: row.get("last_inscribed_date"),
+        supply: row.get("supply"),
+        range_start: row.get("range_start"),
+        range_end: row.get("range_end"),
+        total_volume: row.get("total_volume"),
+        total_fees: row.get("total_fees"),
+        total_on_chain_footprint: row.get("total_on_chain_footprint")
       };
       collections.push(collection);
     }
@@ -3980,13 +4077,23 @@ impl Vermilion {
     Ok(collection_data)
   }
 
-  async fn get_block_statistics(pool: deadpool, block: i64) -> anyhow::Result<BlockStats> {
+  async fn get_block_statistics(pool: deadpool, block: i64) -> anyhow::Result<CombinedBlockStats> {
     let conn = pool.get().await?;
     let result = conn.query_one(
-      "SELECT * FROM blockstats WHERE block_number=$1", 
+      r"select b.*, 
+        i.block_inscription_count, 
+        i.block_inscription_size, 
+        i.block_inscription_fees, 
+        i.block_transfer_count, 
+        i.block_transfer_size, 
+        i.block_transfer_fees, 
+        i.block_volume 
+        from blockstats b 
+        left join inscription_blockstats i on b.block_number=i.block_number 
+        where b.block_number=$1",
       &[&block]
     ).await?;
-    let block_stats = BlockStats {
+    let block_stats = CombinedBlockStats {
       block_number: result.get("block_number"),
       block_timestamp: result.get("block_timestamp"),
       block_tx_count: result.get("block_tx_count"),
@@ -3994,9 +4101,102 @@ impl Vermilion {
       block_fees: result.get("block_fees"),
       min_fee: result.get("min_fee"),
       max_fee: result.get("max_fee"),
-      average_fee: result.get("average_fee")
+      average_fee: result.get("average_fee"),
+      block_inscription_count: result.get("block_inscription_count"),
+      block_inscription_size: result.get("block_inscription_size"),
+      block_inscription_fees: result.get("block_inscription_fees"),
+      block_transfer_count: result.get("block_transfer_count"),
+      block_transfer_size: result.get("block_transfer_size"),
+      block_transfer_fees: result.get("block_transfer_fees"),
+      block_volume: result.get("block_volume")
     };
     Ok(block_stats)
+  }
+
+  async fn get_blocks(pool: deadpool, params: CollectionQueryParams) -> anyhow::Result<Vec<CombinedBlockStats>> {
+    let conn = pool.get().await?;
+    let sort_by = params.sort_by.unwrap_or("newest".to_string());
+    let page_size = std::cmp::min(params.page_size.unwrap_or(20), 100);
+    let page_number = params.page_number.unwrap_or(0);
+    //1. build query
+    let mut query = r"
+      select b.*, 
+      i.block_inscription_count, 
+      i.block_inscription_size, 
+      i.block_inscription_fees, 
+      i.block_transfer_count, 
+      i.block_transfer_size, 
+      i.block_transfer_fees, 
+      i.block_volume from blockstats b 
+      left join inscription_blockstats i 
+      on b.block_number=i.block_number".to_string();
+    if sort_by == "newest" {
+      query.push_str(" ORDER BY b.block_number DESC");
+    } else if sort_by == "oldest" {
+      query.push_str(" ORDER BY b.block_number ASC");
+    } else if sort_by == "most_txs" {
+      query.push_str(" ORDER BY b.block_tx_count DESC");
+    } else if sort_by == "least_txs" {
+      query.push_str(" ORDER BY b.block_tx_count ASC");
+    } else if sort_by == "most_inscriptions" {
+      query.push_str(" ORDER BY i.block_inscription_count DESC");
+    } else if sort_by == "least_inscriptions" {
+      query.push_str(" WHERE i.block_inscription_count > 0 ORDER BY i.block_inscription_count ASC");
+    } else if sort_by == "biggest_block" {
+      query.push_str(" ORDER BY b.block_size DESC");
+    } else if sort_by == "smallest_block" {
+      query.push_str(" ORDER BY b.block_size ASC");
+    } else if sort_by == "biggest_total_inscriptions_size" {
+      query.push_str(" ORDER BY i.block_inscription_size DESC");
+    } else if sort_by == "smallest_total_inscriptions_size" {
+      query.push_str(" WHERE i.block_inscription_size > 0 ORDER BY i.block_inscription_size ASC");
+    } else if sort_by == "highest_total_fees" {
+      query.push_str(" ORDER BY b.block_fees DESC");
+    } else if sort_by == "lowest_total_fees" {
+      query.push_str(" ORDER BY b.block_fees ASC");
+    } else if sort_by == "highest_inscription_fees" {
+      query.push_str(" ORDER BY i.block_inscription_fees DESC");
+    } else if sort_by == "lowest_inscription_fees" {
+      query.push_str(" WHERE i.block_inscription_fees > 0 ORDER BY i.block_inscription_fees ASC");
+    } else if sort_by == "most_volume" {
+      query.push_str(" ORDER BY i.block_volume DESC");
+    } else if sort_by == "least_volume" {
+      query.push_str(" WHERE i.block_volume > 0 ORDER BY i.block_volume ASC");
+    }
+
+    if page_size > 0 {
+      query.push_str(format!(" LIMIT {}", page_size).as_str());
+    }
+    if page_number > 0 {
+      query.push_str(format!(" OFFSET {}", page_number * page_size).as_str());
+    }
+    println!("Query: {}", query);
+    let result = conn.query(
+      query.as_str(), 
+      &[]
+    ).await?;
+    let mut blocks = Vec::new();
+    for row in result {
+      let block = CombinedBlockStats {
+        block_number: row.get("block_number"),
+        block_timestamp: row.get("block_timestamp"),
+        block_tx_count: row.get("block_tx_count"),
+        block_size: row.get("block_size"),
+        block_fees: row.get("block_fees"),
+        min_fee: row.get("min_fee"),
+        max_fee: row.get("max_fee"),
+        average_fee: row.get("average_fee"),
+        block_inscription_count: row.get("block_inscription_count"),
+        block_inscription_size: row.get("block_inscription_size"),
+        block_inscription_fees: row.get("block_inscription_fees"),
+        block_transfer_count: row.get("block_transfer_count"),
+        block_transfer_size: row.get("block_transfer_size"),
+        block_transfer_fees: row.get("block_transfer_fees"),
+        block_volume: row.get("block_volume")
+      };
+      blocks.push(block);
+    }
+    Ok(blocks)
   }
 
   async fn create_metadata_insert_trigger(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
@@ -4142,7 +4342,7 @@ impl Vermilion {
                max(content_length) as content_length, 
                count(*) as count
         from ordinals 
-        where is_json=false and is_bitmap_style=false and is_maybe_json=false and sha256 in (
+        where content_type ILIKE 'image%' and sha256 in (
           select sha256 
           from content_moderation 
           where coalesce(human_override_moderation_flag, automated_moderation_flag) = 'SAFE_MANUAL' 
@@ -4211,7 +4411,7 @@ impl Vermilion {
                max(content_length) as content_length, 
                count(*) as count
         from ordinals 
-        where is_json=false and is_bitmap_style=false and is_maybe_json=false and sha256 in (
+        where content_type ILIKE 'image%' and sha256 in (
           select sha256 
           from content_moderation 
           where coalesce(human_override_moderation_flag, automated_moderation_flag) = 'SAFE_MANUAL' 
@@ -4301,6 +4501,7 @@ impl Vermilion {
             sum(o.content_length) as total_inscription_size,
             sum(o.genesis_fee) as total_inscription_fees,
             min(timestamp) as first_inscribed_date,
+            max(timestamp) as last_inscribed_date,
             min(o.number) as range_start, 
             max(o.number) as range_end 
           from collections c 
@@ -4315,7 +4516,7 @@ impl Vermilion {
             from collections c left join transfers t on c.id=t.id 
             group by c.collection_symbol
         ) 
-        INSERT INTO collection_summary (collection_symbol, supply, total_inscription_size, total_inscription_fees, first_inscribed_date, range_start, range_end, total_volume, total_fees, total_on_chain_footprint) 
+        INSERT INTO collection_summary (collection_symbol, supply, total_inscription_size, total_inscription_fees, first_inscribed_date, last_inscribed_date, range_start, range_end, total_volume, total_fees, total_on_chain_footprint) 
         select 
           a.*, 
           b.total_volume, 
@@ -4327,6 +4528,7 @@ impl Vermilion {
         total_inscription_size = EXCLUDED.total_inscription_size,
         total_inscription_fees = EXCLUDED.total_inscription_fees,
         first_inscribed_date = EXCLUDED.first_inscribed_date,
+        last_inscribed_date = EXCLUDED.last_inscribed_date,
         range_start = EXCLUDED.range_start,
         range_end = EXCLUDED.range_end,
         total_volume = EXCLUDED.total_volume,
