@@ -6,6 +6,7 @@ use serde_aux::prelude::*;
 use tokio::io::AsyncReadExt;
 use crate::subcommand::server;
 use crate::index::fetcher;
+use crate::Charm;
 
 use tokio::sync::Semaphore;
 use tokio::sync::Mutex;
@@ -128,10 +129,10 @@ pub struct Metadata {
   parent: Option<String>,
   delegate: Option<String>,
   metaprotocol: Option<String>,
-  embedded_metadata: Option<String>,
+  on_chain_metadata: serde_json::Value,
   sat: Option<i64>,
   satributes: Vec<String>,
-  charms: Option<i16>,
+  charms: Vec<String>,
   timestamp: i64,
   sha256: Option<String>,
   text: Option<String>,
@@ -208,11 +209,12 @@ pub struct TransferWithMetadata {
   number: i64,
   sequence_number: Option<i64>,
   sat: Option<i64>,
-  charms: Option<i16>,
+  satributes: Vec<String>,
+  charms: Vec<String>,
   parent: Option<String>,
   delegate: Option<String>,
   metaprotocol: Option<String>,
-  embedded_metadata: Option<String>,
+  on_chain_metadata: serde_json::Value,
   timestamp: i64,
   sha256: Option<String>,
   text: Option<String>,
@@ -232,6 +234,18 @@ pub struct BlockStats {
   min_fee: Option<i64>,
   max_fee: Option<i64>,
   average_fee: Option<i64>
+}
+
+#[derive(Clone, Serialize)]
+pub struct InscriptionBlockStats {
+  block_number: i64,
+  block_inscription_count: Option<i64>,
+  block_inscription_size: Option<i64>,
+  block_inscription_fees: Option<i64>,
+  block_transfer_count: Option<i64>,
+  block_transfer_size: Option<i64>,
+  block_transfer_fees: Option<i64>,
+  block_volume: Option<i64>,
 }
 
 #[derive(Clone, Serialize)]
@@ -394,10 +408,10 @@ pub struct MetadataWithCollectionMetadata {
   parent: Option<String>,
   delegate: Option<String>,
   metaprotocol: Option<String>,
-  embedded_metadata: Option<String>,
+  on_chain_metadata: serde_json::Value,
   sat: Option<i64>,
   satributes: Vec<String>,
-  charms: Option<i16>,
+  charms: Vec<String>,
   timestamp: i64,
   sha256: Option<String>,
   text: Option<String>,
@@ -487,8 +501,11 @@ impl Vermilion {
     //Wait for other threads to finish before exiting
     // vermilion_server_thread.join().unwrap();
     let server_thread_result = ordinals_server_thread.join();
+    println!("Server thread joined");
     let address_thread_result = address_indexer_thread.join();
+    println!("Address thread joined");
     let migration_thread_result = migration_script_thread.join();
+    println!("Migration thread joined");
     if server_thread_result.is_err() {
       println!("Error joining ordinals server thread: {:?}", server_thread_result.unwrap_err());
     }
@@ -533,12 +550,17 @@ impl Vermilion {
       }
       let collection_list_insert_result = Self::insert_collection_list(deadpool.clone()).await;
       let collection_insert_result = Self::insert_collections(deadpool.clone()).await;
+      let collection_summary_result = Self::update_collection_summary(deadpool.clone()).await;
       if collection_list_insert_result.is_err() {
         println!("Error inserting collection list: {:?}", collection_list_insert_result.unwrap_err());
         return;
       }
       if collection_insert_result.is_err() {
         println!("Error inserting collection: {:?}", collection_insert_result.unwrap_err());
+        return;
+      }
+      if collection_summary_result.is_err() {
+        println!("Error updating collection summary: {:?}", collection_summary_result.unwrap_err());
         return;
       }
 
@@ -877,6 +899,7 @@ impl Vermilion {
         let create_tranfer_result = Self::create_transfers_table(deadpool.clone()).await;
         let create_address_result = Self::create_address_table(deadpool.clone()).await;
         let create_blockstats_result = Self::create_blockstats_table(deadpool.clone()).await;
+        let create_inscription_blockstats_result = Self::create_inscription_blockstats_table(deadpool.clone()).await;
         if create_tranfer_result.is_err() {
           println!("Error creating db tables: {:?}", create_tranfer_result.unwrap_err());
           return;
@@ -887,6 +910,10 @@ impl Vermilion {
         }
         if create_blockstats_result.is_err() {
           println!("Error creating db tables: {:?}", create_blockstats_result.unwrap_err());
+          return;
+        }
+        if create_inscription_blockstats_result.is_err() {
+          println!("Error creating db tables: {:?}", create_inscription_blockstats_result.unwrap_err());
           return;
         }
 
@@ -1168,14 +1195,18 @@ impl Vermilion {
           let insert_transfer_result = Self::bulk_insert_transfers(&deadpool_tx, transfer_vec.clone()).await;
           let t6 = Instant::now();
           let insert_address_result = Self::bulk_insert_addresses(&deadpool_tx, transfer_vec).await;
+          let insert_inscription_blockstats_result = Self::bulk_insert_inscription_blockstats(&deadpool_tx, height as i64).await;
           let commit_result = deadpool_tx.commit().await;
-          if insert_transfer_result.is_err() || insert_address_result.is_err() || commit_result.is_err(){
+          if insert_transfer_result.is_err() || insert_address_result.is_err() || insert_inscription_blockstats_result.is_err() || commit_result.is_err() {
             log::info!("Error bulk inserting addresses into db for block height: {:?}, waiting a minute", height);
             if insert_transfer_result.is_err() {
               log::info!("Transfer Error: {:?}", insert_transfer_result.unwrap_err());
             }
             if insert_address_result.is_err() {
               log::info!("Address Error: {:?}", insert_address_result.unwrap_err());
+            }
+            if insert_inscription_blockstats_result.is_err() {
+              log::info!("Inscription blockstat Error: {:?}", insert_inscription_blockstats_result.unwrap_err());
             }
             if commit_result.is_err() {
               log::info!("Commit Error: {:?}", commit_result.unwrap_err());
@@ -1502,7 +1533,7 @@ impl Vermilion {
         //metaprotocol = Some(metaprotocol_inner);
       }
     }
-    let embedded_metadata = inscription.metadata().map_or(None, |cbor| Some(Self::cbor_to_json(cbor).to_string()));
+    let on_chain_metadata = inscription.metadata().map_or(serde_json::Value::Null, |cbor| Self::cbor_to_json(cbor));
     let sha256 = match inscription.body() {
       Some(body) => {
         let hash = digest(body);
@@ -1548,6 +1579,11 @@ impl Vermilion {
       Some(text) => Self::is_recursive(&text),
       None => false
     };
+    let charms = Charm::ALL
+      .iter()
+      .filter(|charm| charm.is_set(entry.charms))
+      .map(|charm| charm.title().to_string())
+      .collect();
     let metadata = Metadata {
       id: inscription_id.to_string(),
       content_length: content_length,
@@ -1562,10 +1598,10 @@ impl Vermilion {
       parent: parent,
       delegate: inscription.delegate().map(|x| x.to_string()),
       metaprotocol: metaprotocol,
-      embedded_metadata: embedded_metadata,
+      on_chain_metadata: on_chain_metadata,
       sat: sat,
       satributes: satributes.clone(),
-      charms: Some(entry.charms.try_into().unwrap()),
+      charms: charms,
       timestamp: entry.timestamp.try_into().unwrap(),
       sha256: sha256.clone(),
       text: text,
@@ -1610,13 +1646,18 @@ impl Vermilion {
     Self::create_edition_table(pool.clone()).await.context("Failed to create editions table")?;
     Self::create_editions_total_table(pool.clone()).await.context("Failed to create editions total table")?;
     Self::create_satributes_table(pool.clone()).await.context("Failed to create satributes table")?;
-    Self::create_procedure_log(pool.clone()).await.context("Failed to create proc log")?;
-    Self::create_edition_procedure(pool.clone()).await.context("Failed to create edition proc")?;
-    Self::create_weights_procedure(pool.clone()).await.context("Failed to create weights proc")?;
-    Self::create_edition_insert_trigger(pool.clone()).await.context("Failed to create edition trigger")?;
-    Self::create_metadata_insert_trigger(pool.clone()).await.context("Failed to create metadata trigger")?;
     Self::create_collection_list_table(pool.clone()).await.context("Failed to create collection list table")?;
     Self::create_collections_table(pool.clone()).await.context("Failed to create collections table")?;
+    Self::create_collections_summary_table(pool.clone()).await.context("Failed to create collections summary table")?;
+    
+    Self::create_procedure_log(pool.clone()).await.context("Failed to create proc log")?;
+    Self::create_collection_summary_procedure(pool.clone()).await.context("Failed to create collection summary proc")?;
+    Self::create_edition_procedure(pool.clone()).await.context("Failed to create edition proc")?;
+    Self::create_weights_procedure(pool.clone()).await.context("Failed to create weights proc")?;
+
+    Self::create_edition_insert_trigger(pool.clone()).await.context("Failed to create edition trigger")?;
+    Self::create_metadata_insert_trigger(pool.clone()).await.context("Failed to create metadata trigger")?;
+    Self::create_transfer_insert_trigger(pool.clone()).await.context("Failed to create transfer trigger")?;
     Ok(())
   }
 
@@ -1637,10 +1678,10 @@ impl Vermilion {
         parent varchar(80),
         delegate varchar(80),
         metaprotocol text,
-        embedded_metadata text,
+        on_chain_metadata jsonb,
         sat bigint,
         satributes varchar(30)[],
-        charms smallint,
+        charms varchar(15)[],
         timestamp bigint,
         sha256 varchar(64),
         text text,
@@ -1774,6 +1815,24 @@ impl Vermilion {
     Ok(())
   }
 
+  pub(crate) async fn create_collections_summary_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
+      r"CREATE TABLE IF NOT EXISTS collection_summary (
+        collection_symbol varchar(50) not null primary key,
+        total_inscription_fees bigint,
+        total_inscription_size bigint,
+        first_inscribed_date bigint,
+        supply bigint,
+        range_start bigint,
+        range_end bigint,
+        total_volume bigint, 
+        total_fees bigint, 
+        total_on_chain_footprint bigint
+      )").await?;
+    Ok(())
+  }
+
   pub(crate) async fn create_collection_list_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
     conn.simple_query(
@@ -1816,7 +1875,7 @@ impl Vermilion {
       parent, 
       delegate, 
       metaprotocol, 
-      embedded_metadata, 
+      on_chain_metadata, 
       sat,
       satributes,
       charms, 
@@ -1874,8 +1933,8 @@ impl Vermilion {
       row.push(&m.delegate);
       let clean_metaprotocol = &m.metaprotocol.map(|s| s.replace("\0", ""));
       row.push(clean_metaprotocol);
-      let clean_metadata = &m.embedded_metadata.map(|s| s.replace("\0", ""));
-      row.push(clean_metadata);
+      //let clean_metadata = &m.on_chain_metadata.map(|s| s.replace("\0", ""));
+      row.push(&m.on_chain_metadata);
       row.push(&m.sat);
       row.push(&m.satributes);
       row.push(&m.charms);
@@ -2410,6 +2469,23 @@ impl Vermilion {
     Ok(())
   }
 
+  pub(crate) async fn bulk_insert_inscription_blockstats(tx: &deadpool_postgres::Transaction<'_>, block_number: i64) -> Result<(), Box<dyn std::error::Error>> {
+    tx.query(
+      r"INSERT INTO inscription_blockstats VALUES (block_number, block_inscription_count, block_inscription_size, block_inscription_fees) 
+      SELECT min(block_number) as block_number, count(*) as block_inscription_count, sum(tx_fee) as block_inscription_size, sum(tx_fee) as block_inscription_fees from transfers where block_number = $1 and is_genesis"
+    , &[&block_number]).await?;
+    tx.query(
+      r"INSERT INTO inscription_blockstats (block_number, block_transfer_count, block_transfer_size, block_transfer_fees, block_volume) 
+      SELECT min(block_number) as block_number, count(*) as block_transfer_count, sum(tx_fee) as block_transfer_size, sum(tx_fee) as block_transfer_fees, sum(price) as block_volume from transfers where block_number = $1 and NOT is_genesis
+      ON CONFLICT (block_number) DO UPDATE SET
+      block_transfer_count = EXCLUDED.block_transfer_count,
+      block_transfer_size = EXCLUDED.block_transfer_size,
+      block_transfer_fees = EXCLUDED.block_transfer_fees,
+      block_volume = EXCLUDED.block_volume"
+    , &[&block_number]).await?;
+    Ok(())
+  }
+
   pub(crate) async fn create_blockstats_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
     conn.simple_query(
@@ -2422,6 +2498,22 @@ impl Vermilion {
         min_fee bigint,
         max_fee bigint,
         average_fee bigint
+      )").await?;
+    Ok(())
+  }
+
+  pub(crate) async fn create_inscription_blockstats_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
+      r"CREATE TABLE IF NOT EXISTS inscription_blockstats (
+        block_number bigint not null primary key,
+        block_inscription_count bigint,
+        block_inscription_size bigint,
+        block_inscription_fees bigint,
+        block_transfer_count bigint,
+        block_transfer_size bigint,
+        block_transfer_fees bigint,
+        block_volume bigint
       )").await?;
     Ok(())
   }
@@ -3214,7 +3306,7 @@ impl Vermilion {
       parent: row.get("parent"),
       delegate: row.get("delegate"),
       metaprotocol: row.get("metaprotocol"),
-      embedded_metadata: row.get("embedded_metadata"),
+      on_chain_metadata: row.get("on_chain_metadata"),
       sat: row.get("sat"),
       satributes: row.get("satributes"),
       charms: row.get("charms"),
@@ -3587,8 +3679,9 @@ impl Vermilion {
         parent: row.get("parent"),
         delegate: row.get("delegate"),
         metaprotocol: row.get("metaprotocol"),
-        embedded_metadata: row.get("embedded_metadata"),
+        on_chain_metadata: row.get("on_chain_metadata"),
         sat: row.get("sat"),
+        satributes: row.get("satributes"),
         charms: row.get("charms"),
         timestamp: row.get("timestamp"),
         sha256: row.get("sha256"),
@@ -3810,7 +3903,7 @@ impl Vermilion {
         parent: row.get("parent"),
         delegate: row.get("delegate"),
         metaprotocol: row.get("metaprotocol"),
-        embedded_metadata: row.get("embedded_metadata"),
+        on_chain_metadata: row.get("on_chain_metadata"),
         sat: row.get("sat"),
         satributes: row.get("satributes"),
         charms: row.get("charms"),
@@ -3921,6 +4014,33 @@ impl Vermilion {
       BEFORE INSERT ON ordinals
       FOR EACH ROW
       EXECUTE PROCEDURE before_metadata_insert();"#).await?;
+    Ok(())
+  }
+
+  async fn create_transfer_insert_trigger(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(r"CREATE OR REPLACE FUNCTION before_transfer_insert() RETURNS TRIGGER AS $$
+      DECLARE v_collection_symbol TEXT;
+      BEGIN
+        -- RAISE NOTICE 'insert_transfers: waiting for lock';
+        LOCK TABLE transfers IN EXCLUSIVE MODE;
+        -- RAISE NOTICE 'insert_transfers: lock acquired';
+        SELECT collection_symbol INTO v_collection_symbol FROM collections WHERE id = NEW.id;
+        IF EXISTS (SELECT 1 FROM collections WHERE id = NEW.id) THEN
+          UPDATE collection_summary
+          SET total_volume = total_volume + new.price,
+              total_fees = total_fees + NEW.tx_fee,
+              total_footprint = total_footprint + NEW.tx_size
+            WHERE collection_symbol = v_collection_symbol;
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;").await?;
+    conn.simple_query(
+      r#"CREATE OR REPLACE TRIGGER before_transfer_insert
+      BEFORE INSERT ON transfers
+      FOR EACH ROW
+      EXECUTE PROCEDURE before_transfer_insert();"#).await?;
     Ok(())
   }
 
@@ -4164,6 +4284,65 @@ impl Vermilion {
     Ok(())
   }
   
+  async fn create_collection_summary_procedure(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
+      r#"
+      CREATE OR REPLACE PROCEDURE update_collection_summary()
+      LANGUAGE plpgsql
+      AS $$
+      BEGIN
+      LOCK TABLE transfers IN EXCLUSIVE MODE;
+      RAISE NOTICE 'update_collection_summary: lock acquired';
+        with a as (
+          select 
+            c.collection_symbol,             
+            count(*) as supply, 
+            sum(o.content_length) as total_inscription_size,
+            sum(o.genesis_fee) as total_inscription_fees,
+            min(timestamp) as first_inscribed_date,
+            min(o.number) as range_start, 
+            max(o.number) as range_end 
+          from collections c 
+          inner join ordinals o on c.id=o.id 
+          group by c.collection_symbol
+        ), b as (
+          select 
+            c.collection_symbol, 
+            sum(price) as total_volume, 
+            sum(tx_fee) as total_fees, 
+            sum(tx_size) as total_on_chain_footprint 
+            from collections c left join transfers t on c.id=t.id 
+            group by c.collection_symbol
+        ) 
+        INSERT INTO collection_summary (collection_symbol, supply, total_inscription_size, total_inscription_fees, first_inscribed_date, range_start, range_end, total_volume, total_fees, total_on_chain_footprint) 
+        select 
+          a.*, 
+          b.total_volume, 
+          b.total_fees, 
+          b.total_on_chain_footprint 
+        from a left join b on a.collection_symbol=b.collection_symbol
+        ON CONFLICT (collection_symbol) DO UPDATE SET
+        supply = EXCLUDED.supply,
+        total_inscription_size = EXCLUDED.total_inscription_size,
+        total_inscription_fees = EXCLUDED.total_inscription_fees,
+        first_inscribed_date = EXCLUDED.first_inscribed_date,
+        range_start = EXCLUDED.range_start,
+        range_end = EXCLUDED.range_end,
+        total_volume = EXCLUDED.total_volume,
+        total_fees = EXCLUDED.total_fees,
+        total_on_chain_footprint = EXCLUDED.total_on_chain_footprint;
+      END;
+      $$;"#).await?;
+    Ok(())
+  }
+  
+  async fn update_collection_summary(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query("CALL update_collection_summary()").await?;
+    Ok(())
+  }
+
   async fn create_procedure_log(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
     conn.simple_query(
