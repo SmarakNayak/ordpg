@@ -4230,7 +4230,7 @@ impl Vermilion {
           UPDATE collection_summary
           SET total_volume = total_volume + new.price,
               total_fees = total_fees + NEW.tx_fee,
-              total_footprint = total_footprint + NEW.tx_size
+              total_on_chain_footprint = total_on_chain_footprint + NEW.tx_size
             WHERE collection_symbol = v_collection_symbol;
         END IF;
         RETURN NEW;
