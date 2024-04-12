@@ -1177,13 +1177,15 @@ impl Vermilion {
                           Some(output) => output.value,
                           None => 0
                         };
-                      // IF SIG_ALL (0x01), Then price is on second output index
-                      } else if last_sig_byte == &0x01 {
-                        price = match tx.output.clone().into_iter().nth(1) {
-                          Some(output) => output.value,
-                          None => 0
-                        };
                       }
+                      // This gives shoddy data - ignore for now
+                      // IF SIG_ALL (0x01), Then price is on second output index (for offers)
+                      // } else if last_sig_byte == &0x01 {
+                      //   price = match tx.output.clone().into_iter().nth(1) {
+                      //     Some(output) => output.value,
+                      //     None => 0
+                      //   };
+                      // }
                       price
                     },
                     None => 0
