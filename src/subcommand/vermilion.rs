@@ -468,6 +468,15 @@ pub struct MetadataWithCollectionMetadata {
   off_chain_metadata: serde_json::Value,
 }
 
+#[derive(Serialize)]
+pub struct SearchResult {
+  collections: Vec<CollectionSummary>,
+  inscription: Option<Metadata>,
+  address: Option<String>,
+  block: Option<CombinedBlockStats>,
+  sat: Option<SatMetadata>
+}
+
 #[derive(Clone,PartialEq, PartialOrd, Ord, Eq)]
 pub struct IndexerTimings {
   inscription_start: u64,
@@ -1326,6 +1335,7 @@ impl Vermilion {
           .route("/blocks", get(Self::blocks))
           .route("/collections", get(Self::collections))
           .route("/inscriptions_in_collection/:collection_symbol", get(Self::inscriptions_in_collection))
+          .route("/search/:search_by_query", get(Self::search_by_query))
           .layer(map_response(Self::set_header))
           .layer(
             TraceLayer::new_for_http()
@@ -3211,6 +3221,23 @@ impl Vermilion {
     ).into_response()
   }
 
+  async fn search_by_query(Path(search_query): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let search_result = match Self::get_search_result(server_config.deadpool, search_query.clone()).await {
+      Ok(search_result) => search_result,
+      Err(error) => {
+        log::warn!("Error getting /search_by_query: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving search results for {}", search_query),
+        ).into_response();
+      }    
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(search_result),
+    ).into_response()
+  }
+
   async fn shutdown_signal() {
     tokio::signal::ctrl_c()
         .await
@@ -4286,6 +4313,88 @@ impl Vermilion {
       blocks.push(block);
     }
     Ok(blocks)
+  }
+  
+  async fn get_collection_search_result(pool: deadpool, search_query: String) -> anyhow::Result<Vec<CollectionSummary>> {
+    let conn = pool.get().await?;
+    let query = format!(r"
+      select 
+        l.collection_symbol, l.name, l.description, l.twitter, l.discord, l.website,
+        s.total_inscription_fees,
+        s.total_inscription_size,
+        s.first_inscribed_date,
+        s.last_inscribed_date,
+        s.supply,
+        s.range_start,
+        s.range_end,
+        s.total_volume,
+        s.total_fees,
+        s.total_on_chain_footprint
+      from collection_list l 
+      left join collection_summary s 
+      on l.collection_symbol=s.collection_symbol 
+      where l.name ILIKE '%{}%' or l.description ILIKE '%{}%' 
+      order by s.total_inscription_size desc nulls last
+      limit 5", search_query, search_query);
+    let result = conn.query(query.as_str(), &[]).await?;
+    let mut collections = Vec::new();
+    for row in result {
+      let collection = CollectionSummary {
+        collection_symbol: row.get("collection_symbol"),
+        name: row.get("name"),
+        description: row.get("description"),
+        twitter: row.get("twitter"),
+        discord: row.get("discord"),
+        website: row.get("website"),
+        total_inscription_fees: row.get("total_inscription_fees"),
+        total_inscription_size: row.get("total_inscription_size"),
+        first_inscribed_date: row.get("first_inscribed_date"),
+        last_inscribed_date: row.get("last_inscribed_date"),
+        supply: row.get("supply"),
+        range_start: row.get("range_start"),
+        range_end: row.get("range_end"),
+        total_volume: row.get("total_volume"),
+        total_fees: row.get("total_fees"),
+        total_on_chain_footprint: row.get("total_on_chain_footprint")
+      };
+      collections.push(collection);
+    }
+    Ok(collections)
+  }
+
+  async fn get_search_result(pool: deadpool, search_query: String) -> anyhow::Result<SearchResult> {
+    let id: Regex = Regex::new(r"^[[:xdigit:]]{64}i\d+$").unwrap();
+    let address: Regex = Regex::new(r"^(bc1p[a-zA-Z0-9]{58}|bc1q[a-zA-Z0-9]{38}|[13][a-zA-HJ-NP-Z0-9]{25,34})$").unwrap();
+    let number: Regex = Regex::new(r"^-?\d+$").unwrap();
+
+    let search_query = search_query.trim();
+    let mut search_result = SearchResult {
+      collections: Vec::new(),
+      inscription: None,      
+      address: None,
+      block: None,
+      sat: None,
+    };
+    if number.is_match(search_query) {
+      let number = search_query.parse::<i64>().unwrap();
+      let potential_inscription = Self::get_ordinal_metadata_by_number(pool.clone(), number).await;
+      let potential_block = Self::get_block_statistics(pool.clone(), number).await;
+      let potential_sat = Self::get_sat_metadata(pool, number).await;
+      search_result.inscription = potential_inscription.ok();
+      search_result.block = potential_block.ok();
+      search_result.sat = potential_sat.ok();
+    } else {
+      if id.is_match(search_query) {
+        let potential_inscription = Self::get_ordinal_metadata(pool, search_query.to_string()).await;
+        search_result.inscription = potential_inscription.ok();
+      } else if address.is_match(search_query) {
+        search_result.address = Some(search_query.to_string());
+      } else {
+        let potential_collections = Self::get_collection_search_result(pool, search_query.to_string()).await;
+        search_result.collections = potential_collections?;
+      }
+    }
+    Ok(search_result)
   }
 
   async fn create_metadata_insert_trigger(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
