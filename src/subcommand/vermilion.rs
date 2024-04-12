@@ -333,6 +333,12 @@ pub struct CollectionQueryParams {
   page_size: Option<usize>
 }
 
+#[derive(Deserialize, Clone)]
+pub struct PaginationParams {
+  page_number: Option<usize>,
+  page_size: Option<usize>
+}
+
 pub struct RandomInscriptionBand {
   sequence_number: i64,
   start: f64,
@@ -1295,7 +1301,9 @@ impl Vermilion {
           .route("/inscription_metadata_number/:number", get(Self::inscription_metadata_number))
           .route("/inscription_editions/:inscription_id", get(Self::inscription_editions))
           .route("/inscription_editions_number/:number", get(Self::inscription_editions_number))
-          .route("/inscription_editions_sha256/:sha256", get(Self::inscription_editions_sha256))
+          .route("/inscription_editions_sha256/:sha256", get(Self::inscription_editions_sha256))          
+          .route("/inscription_children/:inscription_id", get(Self::inscription_children))
+          .route("/inscription_children_number/:number", get(Self::inscription_children_number))
           .route("/inscriptions_in_block/:block", get(Self::inscriptions_in_block))
           .route("/inscriptions", get(Self::inscriptions))
           .route("/random_inscription", get(Self::random_inscription))
@@ -2736,6 +2744,41 @@ impl Vermilion {
     ).into_response()
   }
 
+  async fn inscription_children(Path(inscription_id): Path<InscriptionId>, params: Query<PaginationParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let editions = match Self::get_inscription_children(server_config.deadpool, inscription_id.to_string(), params.0).await {
+      Ok(editions) => editions,
+      Err(error) => {
+        log::warn!("Error getting /inscription_children: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving children for {}", inscription_id.to_string()),
+        ).into_response();
+      }
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(editions),
+    ).into_response()
+  }
+
+  async fn inscription_children_number(Path(number): Path<i64>, params: Query<PaginationParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let editions = match Self::get_inscription_children_by_number(server_config.deadpool, number, params.0).await {
+      Ok(editions) => editions,
+      Err(error) => {
+        log::warn!("Error getting /inscription_children_number: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving children for {}", number),
+        ).into_response();
+      }
+    
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(editions),
+    ).into_response()
+  }
+
   async fn inscriptions_in_block(Path(block): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     let inscriptions = match Self::get_inscriptions_within_block(server_config.deadpool, block).await {
       Ok(inscriptions) => inscriptions,
@@ -3446,6 +3489,50 @@ impl Vermilion {
       });
     }
     Ok(editions)
+  }
+
+  async fn get_inscription_children(pool: deadpool, inscription_id: String, params: PaginationParams) -> anyhow::Result<Vec<Metadata>> {
+    let conn = pool.get().await?;
+    let page_size = params.page_size.unwrap_or(10);
+    let offset = params.page_number.unwrap_or(0) * page_size;
+    let mut query = "SELECT * FROM ordinals where parent = $1".to_string();
+    if page_size > 0 {
+      query.push_str(format!(" LIMIT {}", page_size).as_str());
+    }
+    if offset > 0 {
+      query.push_str(format!(" OFFSET {}", offset).as_str());
+    }
+    let result = conn.query(
+      query.as_str(), 
+      &[&inscription_id]
+    ).await?;
+    let mut inscriptions = Vec::new();
+    for row in result {
+      inscriptions.push(Self::map_row_to_metadata(row));
+    }
+    Ok(inscriptions)
+  }
+
+  async fn get_inscription_children_by_number(pool: deadpool, number: i64, params: PaginationParams) -> anyhow::Result<Vec<Metadata>> {
+    let conn = pool.get().await?;
+    let page_size = params.page_size.unwrap_or(10);
+    let offset = params.page_number.unwrap_or(0) * page_size;
+    let mut query = "SELECT * from ordinals where parent=(select id from ordinals where number = $1)".to_string();
+    if page_size > 0 {
+      query.push_str(format!(" LIMIT {}", page_size).as_str());
+    }
+    if offset > 0 {
+      query.push_str(format!(" OFFSET {}", offset).as_str());
+    }
+    let result = conn.query(
+      query.as_str(), 
+      &[&number]
+    ).await?;
+    let mut inscriptions = Vec::new();
+    for row in result {
+      inscriptions.push(Self::map_row_to_metadata(row));
+    }
+    Ok(inscriptions)
   }
 
   async fn get_inscriptions_within_block(pool: deadpool, block: i64) -> anyhow::Result<Vec<Metadata>> {
