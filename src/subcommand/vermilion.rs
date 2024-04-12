@@ -2511,12 +2511,12 @@ impl Vermilion {
 
   pub(crate) async fn bulk_insert_inscription_blockstats(tx: &deadpool_postgres::Transaction<'_>, block_number: i64) -> Result<(), Box<dyn std::error::Error>> {
     tx.query(
-      r"INSERT INTO inscription_blockstats VALUES (block_number, block_inscription_count, block_inscription_size, block_inscription_fees) 
-      SELECT min(block_number) as block_number, count(*) as block_inscription_count, sum(tx_fee) as block_inscription_size, sum(tx_fee) as block_inscription_fees from transfers where block_number = $1 and is_genesis"
+      r"INSERT INTO inscription_blockstats (block_number, block_inscription_count, block_inscription_size, block_inscription_fees) 
+      SELECT min(block_number) as block_number, count(*) as block_inscription_count, sum(tx_size) as block_inscription_size, sum(tx_fee) as block_inscription_fees from transfers where block_number = $1 and is_genesis"
     , &[&block_number]).await?;
     tx.query(
       r"INSERT INTO inscription_blockstats (block_number, block_transfer_count, block_transfer_size, block_transfer_fees, block_volume) 
-      SELECT min(block_number) as block_number, count(*) as block_transfer_count, sum(tx_fee) as block_transfer_size, sum(tx_fee) as block_transfer_fees, sum(price) as block_volume from transfers where block_number = $1 and NOT is_genesis
+      SELECT min(block_number) as block_number, count(*) as block_transfer_count, sum(tx_size) as block_transfer_size, sum(tx_fee) as block_transfer_fees, sum(price) as block_volume from transfers where block_number = $1 and NOT is_genesis
       ON CONFLICT (block_number) DO UPDATE SET
       block_transfer_count = EXCLUDED.block_transfer_count,
       block_transfer_size = EXCLUDED.block_transfer_size,
