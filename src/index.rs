@@ -1001,7 +1001,21 @@ impl Index {
     let fee = transaction_id_to_fee.get(&txid.store())?;
     match fee {
       Some(fee) => Ok(fee.value()),
-      None => Err(anyhow!("could not find fee for txid {txid}")),
+      None => {
+        //Check if coinbase tx
+        let is_coinbase = self
+          .get_transaction(txid)?
+          .unwrap()
+          .input
+          .first()
+          .map(|tx_in| tx_in.previous_output.is_null())
+          .unwrap_or_default();
+        if is_coinbase {
+          Ok(0)
+        } else {
+          Err(anyhow!("could not find fee for txid {txid}"))
+        }
+      },
     }
   }
 
