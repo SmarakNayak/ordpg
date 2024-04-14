@@ -1168,12 +1168,20 @@ impl Vermilion {
               let mut price = 0;
               for (input_index, txin) in tx.input.iter().enumerate() {
                 if txin.previous_output == old_satpoint.outpoint {
-                  let script_sig = txin.script_sig.clone().into_bytes();
-                  let last_sig_byte = match script_sig.last() {
-                    Some(last_script_sig_byte) => Some(last_script_sig_byte),
+                  let first_script_instruction = txin.script_sig.instructions().next();
+                  let last_sig_byte = match first_script_instruction {
+                    Some(first_script_instruction) => {
+                      match first_script_instruction.clone() {
+                        Ok(first_script_instruction) => {
+                          let last_sig_byte = first_script_instruction.push_bytes().map(|x| x.as_bytes().last()).flatten().cloned();
+                          last_sig_byte
+                        },
+                        Err(_) => None
+                      }
+                    },
                     None => {
                       match txin.witness.nth(0) {
-                        Some(witness_element_bytes) => witness_element_bytes.last(),
+                        Some(witness_element_bytes) => witness_element_bytes.last().cloned(),
                         None => None
                       }
                     }
@@ -1181,7 +1189,7 @@ impl Vermilion {
                   price = match last_sig_byte {
                     Some(last_sig_byte) => {                      
                       // IF SIG_SINGLE|ANYONECANPAY (0x83), Then price is on same output index as the ordinal's input index
-                      if last_sig_byte == &0x83 {
+                      if last_sig_byte == 0x83 {
                         price = match tx.output.clone().into_iter().nth(input_index) {
                           Some(output) => output.value,
                           None => 0
