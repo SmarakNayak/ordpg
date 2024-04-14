@@ -4434,9 +4434,9 @@ impl Vermilion {
         SELECT collection_symbol INTO v_collection_symbol FROM collections WHERE id = NEW.id;
         IF EXISTS (SELECT 1 FROM collections WHERE id = NEW.id) THEN
           UPDATE collection_summary
-          SET total_volume = total_volume + new.price,
-              total_fees = total_fees + NEW.tx_fee,
-              total_on_chain_footprint = total_on_chain_footprint + NEW.tx_size
+          SET total_volume = coalesce(total_volume, 0) + new.price,
+              total_fees = coalesce(total_fees, 0) + NEW.tx_fee,
+              total_on_chain_footprint = coalesce(total_on_chain_footprint, 0) + NEW.tx_size
             WHERE collection_symbol = v_collection_symbol;
         END IF;
         RETURN NEW;
