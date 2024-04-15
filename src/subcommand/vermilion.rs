@@ -1090,6 +1090,18 @@ impl Vermilion {
           
           if transfers.len() == 0 {
             log::debug!("No transfers found for block height: {:?}, skipping", height);
+            let insert_inscription_blockstats_result = Self::bulk_insert_inscription_blockstats(&deadpool_tx, height as i64).await;
+            let commit_result = deadpool_tx.commit().await;
+            if commit_result.is_err() || insert_inscription_blockstats_result.is_err() {
+              if insert_inscription_blockstats_result.is_err() {
+                log::info!("Error inserting inscription blockstats into db: {:?}, waiting a minute", insert_inscription_blockstats_result.unwrap_err());
+              }
+              if commit_result.is_err() {
+                log::info!("Error committing inscription blockstats into db: {:?}, waiting a minute", commit_result.unwrap_err());
+              }
+              tokio::time::sleep(Duration::from_secs(60)).await;
+              continue;              
+            }
             height += 1;
             continue;
           }
