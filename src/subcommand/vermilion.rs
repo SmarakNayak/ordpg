@@ -1098,6 +1098,7 @@ impl Vermilion {
           let mut prev_tx_id_list = transfers.clone().into_iter().map(|(_id, previous_satpoint,_)| previous_satpoint.outpoint.txid).collect::<Vec<_>>();
           tx_id_list.append(&mut prev_tx_id_list);
           tx_id_list.dedup();
+          tx_id_list.retain(|x| *x != Hash::all_zeros());
           
           let txs = match fetcher.get_transactions(tx_id_list).await {
             Ok(txs) => {
@@ -1149,7 +1150,7 @@ impl Vermilion {
           let mut error_in_loop = false;
           for (sequence_number, old_satpoint, satpoint) in transfers {
             //1. Get ordinal receive address
-            let (address, prev_address, price, tx_fee, tx_size) = if satpoint.outpoint == unbound_outpoint() && old_satpoint.outpoint == unbound_outpoint() {
+            let (address, prev_address, price, tx_fee, tx_size) = if satpoint.outpoint == unbound_outpoint() && (old_satpoint.outpoint == unbound_outpoint() || old_satpoint.outpoint.is_null()) {
               ("unbound".to_string(), "unbound".to_string(), 0, 0, 0)
             } else if satpoint.outpoint == unbound_outpoint() {
               let prev_tx = tx_map.get(&old_satpoint.outpoint.txid).unwrap();
@@ -1165,7 +1166,7 @@ impl Vermilion {
                 .map(|address| address.to_string())
                 .unwrap_or_else(|e| e.to_string());
               ("unbound".to_string(), prev_address, 0, 0, 0)
-            } else if old_satpoint.outpoint == unbound_outpoint() {
+            } else if old_satpoint.outpoint == unbound_outpoint() || old_satpoint.outpoint.is_null() {
               let tx = tx_map.get(&satpoint.outpoint.txid).unwrap();
               //1a. Get address
               let output = tx
