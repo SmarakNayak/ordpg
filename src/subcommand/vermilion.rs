@@ -1168,7 +1168,7 @@ impl Vermilion {
               ("unbound".to_string(), prev_address, 0, 0, 0)
             } else if old_satpoint.outpoint == unbound_outpoint() || old_satpoint.outpoint.is_null() {
               let tx = tx_map.get(&satpoint.outpoint.txid).unwrap();
-              //1a. Get address
+              //1. Get address
               let output = tx
                 .clone()
                 .output
@@ -1180,7 +1180,19 @@ impl Vermilion {
                 .address_from_script(&output.script_pubkey)
                 .map(|address| address.to_string())
                 .unwrap_or_else(|e| e.to_string());
-              (address, "unbound".to_string(), 0, 0, 0)
+              //2. Get fee
+              let tx_fee = match index.get_tx_fee(satpoint.outpoint.txid) {
+                Ok(tx_fee) => tx_fee,
+                Err(e) => {
+                  log::info!("Error getting tx fee for {:?} - {:?} breaking and waiting a minute", satpoint.outpoint.txid, e);
+                  error_in_loop = true;
+                  break;
+                }
+              };
+              //3. Get size
+              let tx_size = tx.vsize();
+
+              (address, "unbound".to_string(), 0, tx_fee, tx_size)
             } else {
               let tx = tx_map.get(&satpoint.outpoint.txid).unwrap();
               let prev_tx = tx_map.get(&old_satpoint.outpoint.txid).unwrap();
