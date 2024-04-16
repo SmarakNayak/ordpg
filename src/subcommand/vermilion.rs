@@ -41,6 +41,7 @@ use std::net::SocketAddr;
 use std::thread::JoinHandle;
 use rand::Rng;
 use rand::SeedableRng;
+use itertools::Itertools;
 
 use serde_json::{Value as JsonValue, value::Number as JsonNumber};
 use ciborium::value::Value as CborValue;
@@ -1109,8 +1110,8 @@ impl Vermilion {
           let mut tx_id_list = transfers.clone().into_iter().map(|(_id, _,satpoint)| satpoint.outpoint.txid).collect::<Vec<_>>();
           let mut prev_tx_id_list = transfers.clone().into_iter().map(|(_id, previous_satpoint,_)| previous_satpoint.outpoint.txid).collect::<Vec<_>>();
           tx_id_list.append(&mut prev_tx_id_list);
-          tx_id_list.dedup();
           tx_id_list.retain(|x| *x != Hash::all_zeros());
+          let tx_id_list: Vec<Txid> = tx_id_list.into_iter().unique().collect();
           
           let txs = match fetcher.get_transactions(tx_id_list.clone()).await {
             Ok(txs) => {
