@@ -1112,7 +1112,7 @@ impl Vermilion {
           tx_id_list.dedup();
           tx_id_list.retain(|x| *x != Hash::all_zeros());
           
-          let txs = match fetcher.get_transactions(tx_id_list).await {
+          let txs = match fetcher.get_transactions(tx_id_list.clone()).await {
             Ok(txs) => {
               txs.into_iter().map(|tx| Some(tx)).collect::<Vec<_>>()
             }
@@ -1121,29 +1121,19 @@ impl Vermilion {
               if e.to_string().contains("No such mempool or blockchain transaction") || e.to_string().contains("Broken pipe") || e.to_string().contains("end of file") || e.to_string().contains("EOF while parsing") {
                 log::info!("Attempting 1 at a time");
                 let mut txs = Vec::new();
-                for (id, previous_satpoint, satpoint) in transfers.clone() {
-                  if satpoint.outpoint.txid != Hash::all_zeros() {
-                    let tx = match fetcher.get_transactions(vec![satpoint.outpoint.txid]).await {
-                      Ok(mut tx) => Some(tx.pop().unwrap()),
-                      Err(e) => {                      
-                        log::error!("ERROR: skipped non-miner transfer: {:?} - {:?} - {:?}, trying again in a minute", satpoint.outpoint.txid, id, e);
-                        tokio::time::sleep(Duration::from_secs(60)).await;
-                        continue;
-                      }
-                    };
-                    txs.push(tx);
-                  }
-                  if previous_satpoint.outpoint.txid != Hash::all_zeros() {
-                    let tx = match fetcher.get_transactions(vec![previous_satpoint.outpoint.txid]).await {
-                      Ok(mut tx) => Some(tx.pop().unwrap()),
-                      Err(e) => {                      
-                        log::error!("ERROR: skipped non-miner previous transfer: {:?} - {:?} - {:?}, trying again in a minute", previous_satpoint.outpoint.txid, id, e);
-                        tokio::time::sleep(Duration::from_secs(60)).await;
-                        continue;
-                      }
-                    };
-                    txs.push(tx);
-                  }
+                for tx_id in tx_id_list {
+                  if tx_id != Hash::all_zeros() {
+                    continue;
+                  };
+                  let tx = match fetcher.get_transactions(vec![tx_id]).await {
+                    Ok(mut tx) => Some(tx.pop().unwrap()),
+                    Err(e) => {                      
+                      log::error!("ERROR: skipped non-miner transfer: {:?} - {:?}, trying again in a minute", tx_id, e);
+                      tokio::time::sleep(Duration::from_secs(60)).await;
+                      continue;
+                    }
+                  };
+                  txs.push(tx);
                 }
                 txs
               } else {
