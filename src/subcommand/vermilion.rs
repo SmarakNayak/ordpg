@@ -1122,7 +1122,7 @@ impl Vermilion {
                 log::info!("Attempting 1 at a time");
                 let mut txs = Vec::new();
                 for tx_id in tx_id_list {
-                  if tx_id != Hash::all_zeros() {
+                  if tx_id == Hash::all_zeros() {
                     continue;
                   };
                   let tx = match fetcher.get_transactions(vec![tx_id]).await {
