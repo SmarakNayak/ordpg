@@ -1121,25 +1121,29 @@ impl Vermilion {
               if e.to_string().contains("No such mempool or blockchain transaction") || e.to_string().contains("Broken pipe") || e.to_string().contains("end of file") || e.to_string().contains("EOF while parsing") {
                 log::info!("Attempting 1 at a time");
                 let mut txs = Vec::new();
-                for (id, _, satpoint) in transfers.clone() {
-                  let tx = match fetcher.get_transactions(vec![satpoint.outpoint.txid]).await {
-                    Ok(mut tx) => Some(tx.pop().unwrap()),
-                    Err(e) => {                      
-                      let miner_outpoint = OutPoint{
-                        txid: Hash::all_zeros(),
-                        vout: 0
-                      };
-                      if satpoint.outpoint != miner_outpoint {
+                for (id, previous_satpoint, satpoint) in transfers.clone() {
+                  if satpoint.outpoint.txid != Hash::all_zeros() {
+                    let tx = match fetcher.get_transactions(vec![satpoint.outpoint.txid]).await {
+                      Ok(mut tx) => Some(tx.pop().unwrap()),
+                      Err(e) => {                      
                         log::error!("ERROR: skipped non-miner transfer: {:?} - {:?} - {:?}, trying again in a minute", satpoint.outpoint.txid, id, e);
                         tokio::time::sleep(Duration::from_secs(60)).await;
                         continue;
-                      } else {
-                        log::debug!("Skipped miner transfer: {:?} for {:?} - {:?}", satpoint.outpoint.txid, id, e);
                       }
-                      None
-                    }
-                  };
-                  txs.push(tx)
+                    };
+                    txs.push(tx);
+                  }
+                  if previous_satpoint.outpoint.txid != Hash::all_zeros() {
+                    let tx = match fetcher.get_transactions(vec![previous_satpoint.outpoint.txid]).await {
+                      Ok(mut tx) => Some(tx.pop().unwrap()),
+                      Err(e) => {                      
+                        log::error!("ERROR: skipped non-miner previous transfer: {:?} - {:?} - {:?}, trying again in a minute", previous_satpoint.outpoint.txid, id, e);
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        continue;
+                      }
+                    };
+                    txs.push(tx);
+                  }
                 }
                 txs
               } else {
@@ -1207,7 +1211,6 @@ impl Vermilion {
               (address, "unbound".to_string(), 0, tx_fee, tx_size)
             } else {
               let tx = tx_map.get(&satpoint.outpoint.txid).unwrap();
-              log::info!("tx: {:?}", &old_satpoint.outpoint.txid);
               let prev_tx = tx_map.get(&old_satpoint.outpoint.txid).unwrap();
               //1a. Get address
               let output = tx
