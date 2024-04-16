@@ -1207,6 +1207,7 @@ impl Vermilion {
               (address, "unbound".to_string(), 0, tx_fee, tx_size)
             } else {
               let tx = tx_map.get(&satpoint.outpoint.txid).unwrap();
+              log::info!("tx: {:?}", &old_satpoint.outpoint.txid);
               let prev_tx = tx_map.get(&old_satpoint.outpoint.txid).unwrap();
               //1a. Get address
               let output = tx
@@ -4432,7 +4433,7 @@ impl Vermilion {
       left join collection_summary s 
       on l.collection_symbol=s.collection_symbol 
       where l.name ILIKE '%{}%' or l.description ILIKE '%{}%' 
-      order by s.total_inscription_size desc nulls last
+      order by s.total_volume desc nulls last
       limit 5", search_query, search_query);
     let result = conn.query(query.as_str(), &[]).await?;
     let mut collections = Vec::new();
