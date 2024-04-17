@@ -2963,7 +2963,7 @@ impl Vermilion {
     let params = ParsedInscriptionQueryParams::from(params.0);
     //2. validate params
     for content_type in &params.content_types {
-      if !["text", "image", "gif", "audio", "video", "html", "json"].contains(&content_type.as_str()) {
+      if !["text", "image", "gif", "audio", "video", "html", "json", "namespace"].contains(&content_type.as_str()) {
         return (
           StatusCode::BAD_REQUEST,
           format!("Invalid content_type: {}", content_type),
@@ -3438,11 +3438,26 @@ impl Vermilion {
   async fn get_ordinal_content(pool: deadpool, inscription_id: String) -> anyhow::Result<ContentBlob> {
     let conn = pool.clone().get().await?;
     let row = conn.query_one(
-      "SELECT sha256, content_type FROM ordinals WHERE id=$1 LIMIT 1",
+      "SELECT sha256, content_type, delegate FROM ordinals WHERE id=$1 LIMIT 1",
       &[&inscription_id]
     ).await?;
-    let sha256: String = row.get(0);
-    let content_type: String = row.get(1);
+    let mut sha256: String = row.get(0);
+    let mut content_type: String = row.get(1);
+    let delegate: Option<String> = row.get(2);
+    match delegate {
+      Some(delegate) => {
+        let id: Regex = Regex::new(r"^[[:xdigit:]]{64}i\d+$").unwrap();
+        if id.is_match(&delegate) {
+          let row = conn.query_one(
+            "SELECT sha256, content_type FROM ordinals WHERE id=$1 LIMIT 1",
+            &[&inscription_id]
+          ).await?;
+          sha256 = row.get(0);
+          content_type = row.get(1);
+        }
+      },
+      None => {}
+    }
     let content = Self::get_ordinal_content_by_sha256(pool, sha256, Some(content_type)).await;
     content
   }
@@ -3450,11 +3465,26 @@ impl Vermilion {
   async fn get_ordinal_content_by_number(pool: deadpool, number: i64) -> anyhow::Result<ContentBlob> {
     let conn = pool.clone().get().await?;
     let row = conn.query_one(
-      "SELECT sha256, content_type FROM ordinals WHERE number=$1 LIMIT 1",
+      "SELECT sha256, content_type, delegate FROM ordinals WHERE number=$1 LIMIT 1",
       &[&number]
     ).await?;
-    let sha256: String = row.get(0);
-    let content_type: String = row.get(1);
+    let mut sha256: String = row.get(0);
+    let mut content_type: String = row.get(1);
+    let delegate: Option<String> = row.get(2);
+    match delegate {
+      Some(delegate) => {
+        let id: Regex = Regex::new(r"^[[:xdigit:]]{64}i\d+$").unwrap();
+        if id.is_match(&delegate) {
+          let row = conn.query_one(
+            "SELECT sha256, content_type FROM ordinals WHERE number=$1 LIMIT 1",
+            &[&number]
+          ).await?;
+          sha256 = row.get(0);
+          content_type = row.get(1);
+        }
+      },
+      None => {}
+    }
     let content = Self::get_ordinal_content_by_sha256(pool, sha256, Some(content_type)).await;
     content
   }
@@ -3745,7 +3775,7 @@ impl Vermilion {
         } else if content_type == "audio" {
           query.push_str("o.content_type IN ('audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/webm', 'audio/flac', 'audio/mod', 'audio/midi', 'audio/x-m4a')");
         } else if content_type == "video" {
-          query.push_str("o.content_type IN ('video/mp4', 'video/ogg', 'video/webm'");
+          query.push_str("o.content_type IN ('video/mp4', 'video/ogg', 'video/webm')");
         } else if content_type == "html" {
           query.push_str("o.content_type IN ('text/html;charset=utf-8', 'text/html')");
         } else if content_type == "json" {
