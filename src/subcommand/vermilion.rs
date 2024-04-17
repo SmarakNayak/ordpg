@@ -303,6 +303,7 @@ pub struct QueryNumber {
 pub struct InscriptionQueryParams {
   content_types: Option<String>,
   satributes: Option<String>,
+  charms: Option<String>,
   sort_by: Option<String>,
   page_number: Option<usize>,
   page_size: Option<usize>
@@ -311,6 +312,7 @@ pub struct InscriptionQueryParams {
 pub struct ParsedInscriptionQueryParams {
   content_types: Vec<String>,
   satributes: Vec<String>,
+  charms: Vec<String>,
   sort_by: String,
   page_number: usize,
   page_size: usize
@@ -321,6 +323,7 @@ impl From<InscriptionQueryParams> for ParsedInscriptionQueryParams {
       Self {
         content_types: params.content_types.map_or(Vec::new(), |v| v.split(",").map(|s| s.to_string()).collect()),
         satributes: params.satributes.map_or(Vec::new(), |v| v.split(",").map(|s| s.to_string()).collect()),
+        charms: params.charms.map_or(Vec::new(), |v| v.split(",").map(|s| s.to_string()).collect()),
         sort_by: params.sort_by.map_or("newest".to_string(), |v| v),
         page_number: params.page_number.map_or(0, |v| v),
         page_size: params.page_size.map_or(10, |v| std::cmp::min(v, 100)),
@@ -1837,6 +1840,7 @@ impl Vermilion {
       CREATE INDEX IF NOT EXISTS index_metadata_sha256 ON ordinals (sha256);
       CREATE INDEX IF NOT EXISTS index_metadata_sat ON ordinals (sat);
       CREATE INDEX IF NOT EXISTS index_metadata_satributes on ordinals USING GIN (satributes);
+      CREATE INDEX IF NOT EXISTS index_metadata_charms on ordinals USING GIN (charms);
       CREATE INDEX IF NOT EXISTS index_metadata_parent ON ordinals (parent);
       CREATE INDEX IF NOT EXISTS index_metadata_delegate ON ordinals (delegate);
       CREATE INDEX IF NOT EXISTS index_metadata_fee ON ordinals (genesis_fee);
@@ -1848,6 +1852,7 @@ impl Vermilion {
     conn.simple_query(r"
       CREATE EXTENSION IF NOT EXISTS btree_gin;
       CREATE INDEX IF NOT EXISTS index_metadata_type_satribute on ordinals USING GIN(content_type, satributes);
+      CREATE INDEX IF NOT EXISTS index_metadata_type_charm on ordinals USING GIN(content_type, charms);
       CREATE INDEX IF NOT EXISTS index_metadata_json on ordinals(is_json, is_maybe_json, is_bitmap_style);
     ").await?;
   
@@ -2979,6 +2984,14 @@ impl Vermilion {
         ).into_response();
       }
     }
+    for charm in &params.charms {
+      if !["coin", "cursed", "epic", "legendary", "lost", "nineball", "rare", "reinscription", "unbound", "uncommon", "vindicated"].contains(&charm.as_str()) {
+        return (
+          StatusCode::BAD_REQUEST,
+          format!("Invalid charm: {}", charm),
+        ).into_response();
+      }
+    }
     if !["newest", "oldest", "newest_sat", "oldest_sat", "rarest_sat", "commonest_sat", "biggest", "smallest", "highest_fee", "lowest_fee"].contains(&params.sort_by.as_str()) {
       return (
         StatusCode::BAD_REQUEST,
@@ -3791,6 +3804,9 @@ impl Vermilion {
     }
     if params.satributes.len() > 0 {
       query.push_str(format!(" AND (o.satributes && array['{}'::varchar])", params.satributes.join("'::varchar,'")).as_str());
+    }
+    if params.charms.len() > 0 {
+      query.push_str(format!(" AND (o.charms && array['{}'::varchar])", params.charms.join("'::varchar,'")).as_str());
     }
     if params.sort_by == "newest" {
       query.push_str(" ORDER BY o.sequence_number DESC");
