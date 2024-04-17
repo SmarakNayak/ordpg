@@ -3450,7 +3450,7 @@ impl Vermilion {
         if id.is_match(&delegate) {
           let row = conn.query_one(
             "SELECT sha256, content_type FROM ordinals WHERE id=$1 LIMIT 1",
-            &[&inscription_id]
+            &[&delegate]
           ).await?;
           sha256 = row.get(0);
           content_type = row.get(1);
@@ -3476,8 +3476,8 @@ impl Vermilion {
         let id: Regex = Regex::new(r"^[[:xdigit:]]{64}i\d+$").unwrap();
         if id.is_match(&delegate) {
           let row = conn.query_one(
-            "SELECT sha256, content_type FROM ordinals WHERE number=$1 LIMIT 1",
-            &[&number]
+            "SELECT sha256, content_type FROM ordinals WHERE id=$1 LIMIT 1",
+            &[&delegate]
           ).await?;
           sha256 = row.get(0);
           content_type = row.get(1);
