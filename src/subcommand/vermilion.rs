@@ -3441,8 +3441,8 @@ impl Vermilion {
       "SELECT sha256, content_type, delegate FROM ordinals WHERE id=$1 LIMIT 1",
       &[&inscription_id]
     ).await?;
-    let mut sha256: String = row.get(0);
-    let mut content_type: String = row.get(1);
+    let mut sha256: Option<String> = row.get(0);
+    let mut content_type: Option<String> = row.get(1);
     let delegate: Option<String> = row.get(2);
     match delegate {
       Some(delegate) => {
@@ -3458,7 +3458,7 @@ impl Vermilion {
       },
       None => {}
     }
-    let content = Self::get_ordinal_content_by_sha256(pool, sha256, Some(content_type)).await;
+    let content = Self::get_ordinal_content_by_sha256(pool, sha256.unwrap(), content_type).await;
     content
   }
 
@@ -3468,8 +3468,8 @@ impl Vermilion {
       "SELECT sha256, content_type, delegate FROM ordinals WHERE number=$1 LIMIT 1",
       &[&number]
     ).await?;
-    let mut sha256: String = row.get(0);
-    let mut content_type: String = row.get(1);
+    let mut sha256: Option<String> = row.get(0);
+    let mut content_type: Option<String> = row.get(1);
     let delegate: Option<String> = row.get(2);
     match delegate {
       Some(delegate) => {
@@ -3485,7 +3485,7 @@ impl Vermilion {
       },
       None => {}
     }
-    let content = Self::get_ordinal_content_by_sha256(pool, sha256, Some(content_type)).await;
+    let content = Self::get_ordinal_content_by_sha256(pool, sha256.unwrap(), content_type).await;
     content
   }
 
