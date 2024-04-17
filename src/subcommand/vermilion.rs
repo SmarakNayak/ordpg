@@ -197,7 +197,7 @@ pub struct TransferWithMetadata {
   block_timestamp: i64,
   satpoint: String,
   transaction: String,
-  vout: i64,
+  vout: i32,
   offset: i64,
   address: String,
   is_genesis: bool,
