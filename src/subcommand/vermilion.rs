@@ -3823,7 +3823,7 @@ impl Vermilion {
     } else if params.sort_by == "biggest" {
       query.push_str(" ORDER BY o.content_length DESC");
     } else if params.sort_by == "smallest" {
-      query.push_str(" ORDER BY o.content_length ASC");
+      query.push_str(" AND o.content_length > 0 ORDER BY o.content_length ASC");
     } else if params.sort_by == "highest_fee" {
       query.push_str(" ORDER BY o.genesis_fee DESC");
     } else if params.sort_by == "lowest_fee" {
