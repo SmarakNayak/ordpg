@@ -4133,7 +4133,7 @@ impl Vermilion {
         s.total_volume,
         s.total_fees,
         s.total_on_chain_footprint
-      from collection_list l left join collection_summary s on l.collection_symbol=s.collection_symbol name!=''".to_string();
+      from collection_list l left join collection_summary s on l.collection_symbol=s.collection_symbol l.name!=''".to_string();
     if sort_by == "biggest_on_chain_footprint" {
       query.push_str(" ORDER BY s.total_on_chain_footprint DESC");
     } else if sort_by == "smallest_on_chain_footprint" {
