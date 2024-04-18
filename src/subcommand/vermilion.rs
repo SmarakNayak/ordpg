@@ -3514,7 +3514,7 @@ impl Vermilion {
     let moderation_flag: Option<String> = moderation_flag.get(0);
 
     if let Some(flag) = moderation_flag {
-        if flag == "SAFE_MANUAL" || flag == "SAFE_AUTOMATED" {
+        if flag == "SAFE_MANUAL" || flag == "SAFE_AUTOMATED" || flag == "UNKNOWN_AUTOMATED" {
             //Proceed as normal
         } else {
           let content = ContentBlob {
