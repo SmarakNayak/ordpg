@@ -4135,31 +4135,31 @@ impl Vermilion {
         s.total_on_chain_footprint
       from collection_list l left join collection_summary s on l.collection_symbol=s.collection_symbol where l.name!=''".to_string();
     if sort_by == "biggest_on_chain_footprint" {
-      query.push_str(" ORDER BY s.total_on_chain_footprint DESC");
+      query.push_str(" ORDER BY s.total_on_chain_footprint DESC NULLS LAST");
     } else if sort_by == "smallest_on_chain_footprint" {
       query.push_str(" ORDER BY s.total_on_chain_footprint ASC");
     } else if sort_by == "most_volume" {
-      query.push_str(" ORDER BY s.total_volume DESC");
+      query.push_str(" ORDER BY s.total_volume DESC NULLS LAST");
     } else if sort_by == "least_volume" {
       query.push_str(" ORDER BY s.total_volume ASC");
     } else if sort_by == "biggest_file_size" {
-      query.push_str(" ORDER BY s.total_inscription_size DESC");
+      query.push_str(" ORDER BY s.total_inscription_size DESC NULLS LAST");
     } else if sort_by == "smallest_file_size" {
       query.push_str(" ORDER BY s.total_inscription_size ASC");
     } else if sort_by == "biggest_creation_fee" {
-      query.push_str(" ORDER BY s.total_inscription_fees DESC");
+      query.push_str(" ORDER BY s.total_inscription_fees DESC NULLS LAST");
     } else if sort_by == "smallest_creation_fee" {
       query.push_str(" ORDER BY s.total_inscription_fees ASC");
     } else if sort_by == "earliest_first_inscribed_date" {
       query.push_str(" ORDER BY s.first_inscribed_date ASC");
     } else if sort_by == "latest_first_inscribed_date" {
-      query.push_str(" ORDER BY s.first_inscribed_date DESC");
+      query.push_str(" ORDER BY s.first_inscribed_date DESC NULLS LAST");
     } else if sort_by == "earliest_last_inscribed_date" {
       query.push_str(" ORDER BY s.last_inscribed_date ASC");
     } else if sort_by == "latest_last_inscribed_date" {
-      query.push_str(" ORDER BY s.last_inscribed_date DESC");
+      query.push_str(" ORDER BY s.last_inscribed_date DESC NULLS LAST");
     } else if sort_by == "biggest_supply" {
-      query.push_str(" ORDER BY s.supply DESC");
+      query.push_str(" ORDER BY s.supply DESC NULLS LAST");
     } else if sort_by == "smallest_supply" {
       query.push_str(" ORDER BY s.supply ASC");
     }
