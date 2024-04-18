@@ -4394,7 +4394,7 @@ impl Vermilion {
     } else if sort_by == "least_txs" {
       query.push_str(" ORDER BY b.block_tx_count ASC");
     } else if sort_by == "most_inscriptions" {
-      query.push_str(" ORDER BY i.block_inscription_count DESC");
+      query.push_str(" ORDER BY i.block_inscription_count DESC NULLS LAST");
     } else if sort_by == "least_inscriptions" {
       query.push_str(" WHERE i.block_inscription_count > 0 ORDER BY i.block_inscription_count ASC");
     } else if sort_by == "biggest_block" {
@@ -4402,7 +4402,7 @@ impl Vermilion {
     } else if sort_by == "smallest_block" {
       query.push_str(" ORDER BY b.block_size ASC");
     } else if sort_by == "biggest_total_inscriptions_size" {
-      query.push_str(" ORDER BY i.block_inscription_size DESC");
+      query.push_str(" ORDER BY i.block_inscription_size DESC NULLS LAST");
     } else if sort_by == "smallest_total_inscriptions_size" {
       query.push_str(" WHERE i.block_inscription_size > 0 ORDER BY i.block_inscription_size ASC");
     } else if sort_by == "highest_total_fees" {
@@ -4410,11 +4410,11 @@ impl Vermilion {
     } else if sort_by == "lowest_total_fees" {
       query.push_str(" ORDER BY b.block_fees ASC");
     } else if sort_by == "highest_inscription_fees" {
-      query.push_str(" ORDER BY i.block_inscription_fees DESC");
+      query.push_str(" ORDER BY i.block_inscription_fees DESC NULLS LAST");
     } else if sort_by == "lowest_inscription_fees" {
       query.push_str(" WHERE i.block_inscription_fees > 0 ORDER BY i.block_inscription_fees ASC");
     } else if sort_by == "most_volume" {
-      query.push_str(" ORDER BY i.block_volume DESC");
+      query.push_str(" ORDER BY i.block_volume DESC NULLS LAST");
     } else if sort_by == "least_volume" {
       query.push_str(" WHERE i.block_volume > 0 ORDER BY i.block_volume ASC");
     }
