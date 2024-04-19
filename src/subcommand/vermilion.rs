@@ -3770,6 +3770,7 @@ impl Vermilion {
     let conn = pool.get().await?;
     let base_query = format!("SELECT * FROM ordinals o WHERE genesis_height={}", block);
     let full_query = Self::create_inscription_query_string(base_query, params);
+    println!("{}", full_query);
     let result = conn.query(
       full_query.as_str(), 
       &[]
