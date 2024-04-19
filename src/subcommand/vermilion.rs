@@ -1418,6 +1418,7 @@ impl Vermilion {
           .route("/inscription_collection_data_number/:number", get(Self::inscription_collection_data_number))
           .route("/block_statistics/:block", get(Self::block_statistics))
           .route("/blocks", get(Self::blocks))
+          .route("/collection_summary/:collection_symbol", get(Self::collection_summary))
           .route("/collections", get(Self::collections))
           .route("/inscriptions_in_collection/:collection_symbol", get(Self::inscriptions_in_collection))
           .route("/search/:search_by_query", get(Self::search_by_query))
@@ -3206,6 +3207,23 @@ impl Vermilion {
     ).into_response()
   }
 
+  async fn collection_summary(Path(collection_symbol): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let collection_summary = match Self::get_collection_summary(server_config.deadpool, collection_symbol.clone()).await {
+      Ok(collection_summary) => collection_summary,
+      Err(error) => {
+        log::warn!("Error getting /collection_summary: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving collection summary for {}", collection_symbol),
+        ).into_response();
+      }    
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(collection_summary),
+    ).into_response()
+  }
+
   async fn collections(params: Query<CollectionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     //1. parse params
     let params = params.0;
@@ -3276,25 +3294,17 @@ impl Vermilion {
   }
 
   async fn inscriptions_in_collection(Path(collection_symbol): Path<String>, params: Query<InscriptionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    //1. parse params
-    let params = ParsedInscriptionQueryParams::from(params.0);
-    //2. validate params
-    for satribute in &params.satributes {
-      if !["vintage", "nakamoto", "firsttransaction", "palindrome", "pizza", "block9", "block9_450", "block78", "alpha", "omega", "uniform_palinception", "perfect_palinception", "block286", "jpeg", 
-           "uncommon", "rare", "epic", "legendary", "mythic", "black_uncommon", "black_rare", "black_epic", "black_legendary"].contains(&satribute.as_str()) {
+    let parsed_params = match Self::parse_and_validate_inscription_params(params.0) {
+      Ok(parsed_params) => parsed_params,
+      Err(error) => {
+        log::warn!("Error getting /inscriptions_in_collection: {}", error);
         return (
           StatusCode::BAD_REQUEST,
-          format!("Invalid satribute: {}", satribute),
+          format!("Error parsing and validating params: {}", error),
         ).into_response();
       }
-    }
-    if !["newest", "oldest", "newest_sat", "oldest_sat", "rarest_sat", "commonest_sat", "biggest", "smallest", "highest_fee", "lowest_fee"].contains(&params.sort_by.as_str()) {
-      return (
-        StatusCode::BAD_REQUEST,
-        format!("Invalid sort_by: {}", params.sort_by),
-      ).into_response();
-    }
-    let inscriptions = match Self::get_inscriptions_in_collection(server_config.deadpool, collection_symbol, params).await {
+    };
+    let inscriptions = match Self::get_inscriptions_in_collection(server_config.deadpool, collection_symbol, parsed_params).await {
       Ok(inscriptions) => inscriptions,
       Err(error) => {
         log::warn!("Error getting /inscriptions_in_collection: {}", error);
@@ -4252,6 +4262,47 @@ impl Vermilion {
     Ok(satributes)
   }
 
+  async fn get_collection_summary(pool: deadpool, collection_symbol: String) -> anyhow::Result<CollectionSummary> {
+    let conn = pool.get().await?;
+    let query = r"
+      SELECT 
+        l.collection_symbol, l.name, l.description, l.twitter, l.discord, l.website,
+        s.total_inscription_fees,
+        s.total_inscription_size,
+        s.first_inscribed_date,
+        s.last_inscribed_date,
+        s.supply,
+        s.range_start,
+        s.range_end,
+        s.total_volume,
+        s.total_fees,
+        s.total_on_chain_footprint
+      from collection_list l left join collection_summary s on l.collection_symbol=s.collection_symbol WHERE s.collection_symbol=$1 LIMIT 1";
+    let result = conn.query_one(
+      query, 
+      &[&collection_symbol]
+    ).await?;
+    let collection = CollectionSummary {
+      collection_symbol: result.get("collection_symbol"),
+      name: result.get("name"),
+      description: result.get("description"),
+      twitter: result.get("twitter"),
+      discord: result.get("discord"),
+      website: result.get("website"),
+      total_inscription_fees: result.get("total_inscription_fees"),
+      total_inscription_size: result.get("total_inscription_size"),
+      first_inscribed_date: result.get("first_inscribed_date"),
+      last_inscribed_date: result.get("last_inscribed_date"),
+      supply: result.get("supply"),
+      range_start: result.get("range_start"),
+      range_end: result.get("range_end"),
+      total_volume: result.get("total_volume"),
+      total_fees: result.get("total_fees"),
+      total_on_chain_footprint: result.get("total_on_chain_footprint")
+    };
+    Ok(collection)
+  }
+
   async fn get_collections(pool: deadpool, params: CollectionQueryParams) -> anyhow::Result<Vec<CollectionSummary>> {
     let conn = pool.get().await?;
     let sort_by = params.sort_by.unwrap_or("oldest".to_string());
@@ -4343,6 +4394,9 @@ impl Vermilion {
     let mut query = "with m as MATERIALIZED (SELECT o.*, c.collection_symbol, c.off_chain_metadata from ordinals o left join collections c on o.number=c.number where c.collection_symbol=$1".to_string();
     if params.satributes.len() > 0 {
       query.push_str(format!(" AND (o.satributes && array['{}'::varchar])", params.satributes.join("'::varchar,'")).as_str());
+    }
+    if params.charms.len() > 0 {
+      query.push_str(format!(" AND (o.charms && array['{}'::varchar])", params.charms.join("'::varchar,'")).as_str());
     }
     if params.sort_by == "newest" {
       query.push_str(" ORDER BY o.sequence_number DESC");
