@@ -2680,6 +2680,32 @@ impl Vermilion {
 "If Bitcoin is to change the culture of money, it needs to be cool. Ordinals was the missing piece. The path to $1m is preordained"
   }
 
+  fn parse_and_validate_inscription_params(params: InscriptionQueryParams) -> anyhow::Result<ParsedInscriptionQueryParams> {
+    //1. parse params
+    let params = ParsedInscriptionQueryParams::from(params);
+    //2. validate params
+    for content_type in &params.content_types {
+      if !["text", "image", "gif", "audio", "video", "html", "json", "namespace"].contains(&content_type.as_str()) {
+        return Err(anyhow!("Invalid content_type: {}", content_type));
+      }
+    }
+    for satribute in &params.satributes {
+      if !["vintage", "nakamoto", "firsttransaction", "palindrome", "pizza", "block9", "block9_450", "block78", "alpha", "omega", "uniform_palinception", "perfect_palinception", "block286", "jpeg", 
+           "uncommon", "rare", "epic", "legendary", "mythic", "black_uncommon", "black_rare", "black_epic", "black_legendary"].contains(&satribute.as_str()) {
+        return Err(anyhow!("Invalid satribute: {}", satribute));
+      }
+    }
+    for charm in &params.charms {
+      if !["coin", "cursed", "epic", "legendary", "lost", "nineball", "rare", "reinscription", "unbound", "uncommon", "vindicated"].contains(&charm.as_str()) {
+        return Err(anyhow!("Invalid charm: {}", charm));
+      }
+    }
+    if !["newest", "oldest", "newest_sat", "oldest_sat", "rarest_sat", "commonest_sat", "biggest", "smallest", "highest_fee", "lowest_fee"].contains(&params.sort_by.as_str()) {
+      return Err(anyhow!("Invalid sort_by: {}", params.sort_by));
+    }
+    Ok(params)
+  }
+
   async fn home(State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     let content_blob = match Self::get_ordinal_content(server_config.deadpool,  "6fb976ab49dcec017f1e201e84395983204ae1a7c2abf7ced0a85d692e442799i0".to_string()).await {
       Ok(content_blob) => content_blob,
@@ -2888,8 +2914,18 @@ impl Vermilion {
     ).into_response()
   }
 
-  async fn inscriptions_in_block(Path(block): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let inscriptions = match Self::get_inscriptions_within_block(server_config.deadpool, block).await {
+  async fn inscriptions_in_block(Path(block): Path<i64>, params: Query<InscriptionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let parsed_params = match Self::parse_and_validate_inscription_params(params.0) {
+      Ok(parsed_params) => parsed_params,
+      Err(error) => {
+        log::warn!("Error getting /inscriptions_in_block: {}", error);
+        return (
+          StatusCode::BAD_REQUEST,
+          format!("Error parsing and validating params: {}", error),
+        ).into_response();
+      }
+    };
+    let inscriptions = match Self::get_inscriptions_within_block(server_config.deadpool, block, parsed_params).await {
       Ok(inscriptions) => inscriptions,
       Err(error) => {
         log::warn!("Error getting /inscriptions_in_block: {}", error);
@@ -3730,11 +3766,13 @@ impl Vermilion {
     Ok(inscriptions)
   }
 
-  async fn get_inscriptions_within_block(pool: deadpool, block: i64) -> anyhow::Result<Vec<Metadata>> {
+  async fn get_inscriptions_within_block(pool: deadpool, block: i64, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<Metadata>> {
     let conn = pool.get().await?;
+    let base_query = format!("SELECT * FROM ordinals o WHERE genesis_height={}", block);
+    let full_query = Self::create_inscription_query_string(base_query, params);
     let result = conn.query(
-      "SELECT * FROM ordinals WHERE genesis_height=$1", 
-      &[&block]
+      full_query.as_str(), 
+      &[]
     ).await?;
     let mut inscriptions = Vec::new();
     for row in result {
@@ -3804,6 +3842,70 @@ impl Vermilion {
       inscriptions.push(Self::map_row_to_metadata(row));
     }
     Ok(inscriptions)
+  }
+
+  fn create_inscription_query_string(base_query: String, params: ParsedInscriptionQueryParams) -> String {
+    let mut query = base_query;
+    if params.content_types.len() > 0 {
+      query.push_str(" AND (");
+      for (i, content_type) in params.content_types.iter().enumerate() {
+        if content_type == "text" {
+          query.push_str("(o.content_type IN ('text/plain;charset=utf-8', 'text/plain','text/markdown', 'text/javascript', 'text/plain;charset=us-ascii', 'text/rtf') AND o.is_json=false AND o.is_maybe_json=false AND o.is_bitmap_style=false)");
+        } else if content_type == "image" {
+          query.push_str("o.content_type IN ('image/jpeg', 'image/png', 'image/svg+xml', 'image/webp', 'image/avif', 'image/tiff', 'image/heic', 'image/jp2')");
+        } else if content_type == "gif" {
+          query.push_str("o.content_type = 'image/gif'");
+        } else if content_type == "audio" {
+          query.push_str("o.content_type IN ('audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/webm', 'audio/flac', 'audio/mod', 'audio/midi', 'audio/x-m4a')");
+        } else if content_type == "video" {
+          query.push_str("o.content_type IN ('video/mp4', 'video/ogg', 'video/webm')");
+        } else if content_type == "html" {
+          query.push_str("o.content_type IN ('text/html;charset=utf-8', 'text/html')");
+        } else if content_type == "json" {
+          query.push_str("o.is_json=true");
+        } else if content_type == "namespace" {
+          query.push_str("o.is_bitmap_style=true");
+        }
+        if i < params.content_types.len() - 1 {
+          query.push_str(" OR ");
+        }
+      }
+      query.push_str(")");
+    }
+    if params.satributes.len() > 0 {
+      query.push_str(format!(" AND (o.satributes && array['{}'::varchar])", params.satributes.join("'::varchar,'")).as_str());
+    }
+    if params.charms.len() > 0 {
+      query.push_str(format!(" AND (o.charms && array['{}'::varchar])", params.charms.join("'::varchar,'")).as_str());
+    }
+    if params.sort_by == "newest" {
+      query.push_str(" ORDER BY o.sequence_number DESC");
+    } else if params.sort_by == "oldest" {
+      query.push_str(" ORDER BY o.sequence_number ASC");
+    } else if params.sort_by == "newest_sat" {
+      query.push_str(" ORDER BY o.sat DESC");
+    } else if params.sort_by == "oldest_sat" {
+      query.push_str(" ORDER BY o.sat ASC");
+    } else if params.sort_by == "rarest_sat" {
+      //query.push_str(" ORDER BY o.sat ASC");
+    } else if params.sort_by == "commonest_sat" {
+      //query.push_str(" ORDER BY o.sat DESC");
+    } else if params.sort_by == "biggest" {
+      query.push_str(" ORDER BY o.content_length DESC");
+    } else if params.sort_by == "smallest" {
+      query.push_str(" ORDER BY o.content_length ASC");
+    } else if params.sort_by == "highest_fee" {
+      query.push_str(" ORDER BY o.genesis_fee DESC");
+    } else if params.sort_by == "lowest_fee" {
+      query.push_str(" ORDER BY o.genesis_fee ASC");
+    }
+    if params.page_size > 0 {
+      query.push_str(format!(" LIMIT {}", params.page_size).as_str());
+    }
+    if params.page_number > 0 {
+      query.push_str(format!(" OFFSET {}", params.page_number * params.page_size).as_str());
+    }
+    query
   }
 
   async fn get_inscriptions(pool: deadpool, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<Metadata>> {
