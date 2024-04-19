@@ -822,10 +822,11 @@ impl Vermilion {
               };
               satributes_vec.push(satribute);
             }
-            if !sat.common() {
+            let sat_rarity = sat.rarity();
+            if sat_rarity != Rarity::Common {
               let rarity = Satribute {
                 sat: sat_metadata.sat,
-                satribute: sat.rarity().to_string()
+                satribute: sat_rarity.to_string()
               };
               satributes_vec.push(rarity);
             }
@@ -1660,8 +1661,9 @@ impl Vermilion {
     let satributes = match entry.sat {
       Some(sat) => {
         let mut satributes = sat.block_rarities().iter().map(|x| x.to_string()).collect::<Vec<String>>();
-        if !sat.common() {
-          satributes.push(sat.rarity().to_string()); 
+        let sat_rarity = sat.rarity();
+        if sat_rarity != Rarity::Common {
+          satributes.push(sat_rarity.to_string()); 
         }
         satributes
       },
@@ -4059,8 +4061,9 @@ impl Vermilion {
       Err(_) => {
         let parsed_sat = Sat(sat as u64);
         let mut satributes = parsed_sat.block_rarities().iter().map(|x| x.to_string()).collect::<Vec<String>>();
-        if !parsed_sat.common() {
-          satributes.push(parsed_sat.rarity().to_string()); 
+        let sat_rarity = parsed_sat.rarity();
+        if sat_rarity != Rarity::Common {
+          satributes.push(sat_rarity.to_string()); 
         }
         let mut metadata = SatMetadata {
           sat: sat.try_into().unwrap(),
