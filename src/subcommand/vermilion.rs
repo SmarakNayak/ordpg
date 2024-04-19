@@ -1421,6 +1421,7 @@ impl Vermilion {
           .route("/collections", get(Self::collections))
           .route("/inscriptions_in_collection/:collection_symbol", get(Self::inscriptions_in_collection))
           .route("/search/:search_by_query", get(Self::search_by_query))
+          .route("/block_icon/:block", get(Self::block_icon))
           .layer(map_response(Self::set_header))
           .layer(
             TraceLayer::new_for_http()
@@ -3342,6 +3343,26 @@ impl Vermilion {
     ).into_response()
   }
 
+  async fn block_icon(Path(block): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let content_blob = match Self::get_block_icon(server_config.deadpool,  block).await {
+      Ok(content_blob) => content_blob,
+      Err(error) => {
+        log::warn!("Error getting /block_icon: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving block icon {}", block.to_string()),
+        ).into_response();
+      }
+    };
+    let bytes = content_blob.content;
+    let content_type = content_blob.content_type;
+    (
+      ([(axum::http::header::CONTENT_TYPE, content_type),
+        (axum::http::header::CACHE_CONTROL, "public, max-age=31536000".to_string())]),
+      bytes,
+    ).into_response()
+  }
+
   async fn shutdown_signal() {
     tokio::signal::ctrl_c()
         .await
@@ -3551,6 +3572,17 @@ impl Vermilion {
       content_blob.content_type = content_type;
     }
     Ok(content_blob)
+  }
+
+  async fn get_block_icon(pool: deadpool, block: i64) -> anyhow::Result<ContentBlob> {
+    let conn = pool.get().await?;
+    let result = conn.query_one(
+      "select id from ordinals where genesis_height=$1 and content_type LIKE 'image%' order by content_length desc nulls last limit 1", 
+      &[&block]
+    ).await?;
+    let id = result.get(0);
+    let content = Self::get_ordinal_content(pool, id).await?;
+    Ok(content)
   }
 
   fn map_row_to_metadata(row: tokio_postgres::Row) -> Metadata {
