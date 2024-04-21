@@ -4650,7 +4650,7 @@ impl Vermilion {
         s.*, 
         b.block_timestamp as sat_block_timestamp 
       from (
-        select $1 as sat_block_number, 
+        select CAST($1 as BIGINT) as sat_block_number,
         count(*), sum(content_length), 
         sum(genesis_fee) 
         from ordinals where sat in (select sat from sat where block=$1)
