@@ -3122,8 +3122,18 @@ impl Vermilion {
     ).into_response()
   }
 
-  async fn inscriptions_in_address(Path(address): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let inscriptions: Vec<TransferWithMetadata> = match Self::get_inscriptions_by_address(server_config.deadpool, address.clone()).await {
+  async fn inscriptions_in_address(Path(address): Path<String>, params: Query<InscriptionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let parsed_params = match Self::parse_and_validate_inscription_params(params.0) {
+      Ok(parsed_params) => parsed_params,
+      Err(error) => {
+        log::warn!("Error getting /inscriptions_in_collection: {}", error);
+        return (
+          StatusCode::BAD_REQUEST,
+          format!("Error parsing and validating params: {}", error),
+        ).into_response();
+      }
+    };
+    let inscriptions: Vec<TransferWithMetadata> = match Self::get_inscriptions_by_address(server_config.deadpool, address.clone(), parsed_params).await {
       Ok(inscriptions) => inscriptions,
       Err(error) => {
         log::warn!("Error getting /inscriptions_in_address: {}", error);
@@ -3156,8 +3166,18 @@ impl Vermilion {
     ).into_response()
   }
 
-  async fn inscriptions_in_sat_block(Path(block): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let inscriptions: Vec<Metadata> = match Self::get_inscriptions_in_sat_block(server_config.deadpool, block).await {
+  async fn inscriptions_in_sat_block(Path(block): Path<i64>, params: Query<InscriptionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let parsed_params = match Self::parse_and_validate_inscription_params(params.0) {
+      Ok(parsed_params) => parsed_params,
+      Err(error) => {
+        log::warn!("Error getting /inscriptions_in_collection: {}", error);
+        return (
+          StatusCode::BAD_REQUEST,
+          format!("Error parsing and validating params: {}", error),
+        ).into_response();
+      }
+    };
+    let inscriptions: Vec<Metadata> = match Self::get_inscriptions_in_sat_block(server_config.deadpool, block, parsed_params).await {
       Ok(inscriptions) => inscriptions,
       Err(error) => {
         log::warn!("Error getting /inscriptions_in_sat_block: {}", error);
@@ -3778,12 +3798,12 @@ impl Vermilion {
 
   async fn get_inscriptions_within_block(pool: deadpool, block: i64, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<Metadata>> {
     let conn = pool.get().await?;
-    let base_query = format!("SELECT * FROM ordinals o WHERE genesis_height={}", block);
+    let base_query = "SELECT * FROM ordinals o WHERE genesis_height=$1".to_string();
     let full_query = Self::create_inscription_query_string(base_query, params);
     println!("{}", full_query);
     let result = conn.query(
       full_query.as_str(), 
-      &[]
+      &[&block]
     ).await?;
     let mut inscriptions = Vec::new();
     for row in result {
@@ -4107,10 +4127,12 @@ impl Vermilion {
     Ok(transfers)
   }
 
-  async fn get_inscriptions_by_address(pool: deadpool, address: String) -> anyhow::Result<Vec<TransferWithMetadata>> {
+  async fn get_inscriptions_by_address(pool: deadpool, address: String, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<TransferWithMetadata>> {
     let conn = pool.get().await?;
+    let base_query = "SELECT a.*, o.* FROM addresses a LEFT JOIN ordinals o ON a.id=o.id WHERE a.address=$1".to_string();
+    let full_query = Self::create_inscription_query_string(base_query, params);
     let result = conn.query(
-      "SELECT a.*, o.* FROM addresses a LEFT JOIN ordinals o ON a.id=o.id WHERE a.address=$1", 
+      full_query.as_str(), 
       &[&address]
     ).await?;
     let mut transfers = Vec::new();
@@ -4166,10 +4188,12 @@ impl Vermilion {
     Ok(inscriptions)
   }
 
-  async fn get_inscriptions_in_sat_block(pool: deadpool, block: i64) -> anyhow::Result<Vec<Metadata>> {
+  async fn get_inscriptions_in_sat_block(pool: deadpool, block: i64, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<Metadata>> {
     let conn = pool.get().await?;
+    let base_query = "SELECT * from ordinals o where sat in (select sat from sat where block=$1)".to_string();
+    let full_query = Self::create_inscription_query_string(base_query, params);
     let result = conn.query(
-      "select * from ordinals where sat in (select sat from sat where block=$1)", 
+      full_query.as_str(), 
       &[&block]
     ).await?;
     let mut inscriptions = Vec::new();
@@ -4664,10 +4688,10 @@ impl Vermilion {
       from collection_list l 
       left join collection_summary s 
       on l.collection_symbol=s.collection_symbol 
-      where l.name ILIKE '%{}%' or l.description ILIKE '%{}%' 
+      where l.name ILIKE $1 or l.description ILIKE $1 
       order by s.total_volume desc nulls last
-      limit 5", search_query, search_query);
-    let result = conn.query(query.as_str(), &[]).await?;
+      limit 5");
+    let result = conn.query(query.as_str(), &[&search_query]).await?;
     let mut collections = Vec::new();
     for row in result {
       let collection = CollectionSummary {
