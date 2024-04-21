@@ -1404,8 +1404,8 @@ impl Vermilion {
           .route("/inscription_sha256/:sha256", get(Self::inscription_sha256))
           .route("/inscription_metadata/:inscription_id", get(Self::inscription_metadata))
           .route("/inscription_metadata_number/:number", get(Self::inscription_metadata_number))
-          .route("/inscription_editions/:inscription_id", get(Self::inscription_editions))
-          .route("/inscription_editions_number/:number", get(Self::inscription_editions_number))
+          .route("/inscription_edition/:inscription_id", get(Self::inscription_edition))
+          .route("/inscription_edition_number/:number", get(Self::inscription_edition_number))
           .route("/inscription_editions_sha256/:sha256", get(Self::inscription_editions_sha256))          
           .route("/inscription_children/:inscription_id", get(Self::inscription_children))
           .route("/inscription_children_number/:number", get(Self::inscription_children_number))
@@ -2839,43 +2839,43 @@ impl Vermilion {
     ).into_response()
   }
 
-  async fn inscription_editions(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let editions = match Self::get_matching_inscriptions(server_config.deadpool, inscription_id.to_string()).await {
-      Ok(editions) => editions,
+  async fn inscription_edition(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let edition = match Self::get_inscription_edition(server_config.deadpool, inscription_id.to_string()).await {
+      Ok(edition) => edition,
       Err(error) => {
-        log::warn!("Error getting /inscription_editions: {}", error);
+        log::warn!("Error getting /inscription_edition: {}", error);
         return (
           StatusCode::INTERNAL_SERVER_ERROR,
-          format!("Error retrieving editions for {}", inscription_id.to_string()),
+          format!("Error retrieving edition for {}", inscription_id.to_string()),
         ).into_response();
       }
     };
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
-      Json(editions),
+      Json(edition),
     ).into_response()
   }
 
-  async fn inscription_editions_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let editions = match Self::get_matching_inscriptions_by_number(server_config.deadpool, number).await {
-      Ok(editions) => editions,
+  async fn inscription_edition_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let edition = match Self::get_inscription_edition_number(server_config.deadpool, number).await {
+      Ok(edition) => edition,
       Err(error) => {
-        log::warn!("Error getting /inscription_editions_number: {}", error);
+        log::warn!("Error getting /inscription_edition_number: {}", error);
         return (
           StatusCode::INTERNAL_SERVER_ERROR,
-          format!("Error retrieving editions for {}", number),
+          format!("Error retrieving edition for {}", number),
         ).into_response();
       }
     
     };
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
-      Json(editions),
+      Json(edition),
     ).into_response()
   }
 
-  async fn inscription_editions_sha256(Path(sha256): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let editions = match Self::get_matching_inscriptions_by_sha256(server_config.deadpool, sha256.clone()).await {
+  async fn inscription_editions_sha256(Path(sha256): Path<String>, params: Query<PaginationParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let editions = match Self::get_matching_inscriptions_by_sha256(server_config.deadpool, sha256.clone(), params.0).await {
       Ok(editions) => editions,
       Err(error) => {
         log::warn!("Error getting /inscription_editions_sha256: {}", error);
@@ -3757,46 +3757,49 @@ impl Vermilion {
     Ok(Self::map_row_to_metadata(result))
   }
 
-  async fn get_matching_inscriptions(pool: deadpool, inscription_id: String) -> anyhow::Result<Vec<InscriptionNumberEdition>> {
+  async fn get_inscription_edition(pool: deadpool, inscription_id: String) -> anyhow::Result<InscriptionNumberEdition> {
     let conn = pool.get().await?;
-    let result = conn.query(
-      "with a as (select sha256 from editions where id = $1) select id, number, edition, t.total from a left join editions e on a.sha256=e.sha256 left join editions_total t on t.sha256=a.sha256 order by edition asc limit 100",
+    let result = conn.query_one(
+      "select e.*, t.total from editions e left join editions_total t on e.sha256=t.sha256 where e.id=$1",
       &[&inscription_id]
     ).await?;
-    let mut editions = Vec::new();
-    for row in result {
-      editions.push(InscriptionNumberEdition {
-        id: row.get("id"),
-        number: row.get("number"),
-        edition: row.get("edition"),
-        total: row.get("total")
-      });
-    }
-    Ok(editions)
+    let edition = InscriptionNumberEdition {
+      id: result.get("id"),
+      number: result.get("number"),
+      edition: result.get("edition"),
+      total: result.get("total")
+    };
+    Ok(edition)
   }
 
-  async fn get_matching_inscriptions_by_number(pool: deadpool, number: i64) -> anyhow::Result<Vec<InscriptionNumberEdition>> {
+  async fn get_inscription_edition_number(pool: deadpool, number: i64) -> anyhow::Result<InscriptionNumberEdition> {
     let conn = pool.get().await?;
-    let result = conn.query(
-      "with a as (select sha256 from editions where number = $1) select id, number, edition, t.total from a left join editions e on a.sha256=e.sha256 left join editions_total t on t.sha256=a.sha256 order by edition asc limit 100",
+    let result = conn.query_one(
+      "select e.*, t.total from editions e left join editions_total t on e.sha256=t.sha256 where e.number=$1",
       &[&number]
     ).await?;
-    let mut editions = Vec::new();
-    for row in result {
-      editions.push(InscriptionNumberEdition {
-        id: row.get("id"),
-        number: row.get("number"),
-        edition: row.get("edition"),
-        total: row.get("total")
-      });
-    }
-    Ok(editions)
+    let edition = InscriptionNumberEdition {
+      id: result.get("id"),
+      number: result.get("number"),
+      edition: result.get("edition"),
+      total: result.get("total")
+    };
+    Ok(edition)
   }
 
-  async fn get_matching_inscriptions_by_sha256(pool: deadpool, sha256: String) -> anyhow::Result<Vec<InscriptionNumberEdition>> {
+  async fn get_matching_inscriptions_by_sha256(pool: deadpool, sha256: String, params: PaginationParams) -> anyhow::Result<Vec<InscriptionNumberEdition>> {
     let conn = pool.get().await?;
+    let page_size = params.page_size.unwrap_or(10);
+    let offset = params.page_number.unwrap_or(0) * page_size;
+    let mut query = "SELECT id, number, edition, t.total from (select * from editions where sha256=$1) e inner join editions_total t on t.sha256=e.sha256 order by edition asc".to_string();
+    if page_size > 0 {
+      query.push_str(format!(" LIMIT {}", page_size).as_str());
+    }
+    if offset > 0 {
+      query.push_str(format!(" OFFSET {}", offset).as_str());
+    }
     let result = conn.query(
-      "select id, number, edition, t.total from (select * from editions where sha256=$1) e inner join editions_total t on t.sha256=e.sha256 order by edition asc limit 100",
+      query.as_str(),
       &[&sha256]
     ).await?;
     let mut editions = Vec::new();
