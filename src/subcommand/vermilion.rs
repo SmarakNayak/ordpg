@@ -272,6 +272,7 @@ pub struct CombinedBlockStats {
 #[derive(Clone, Serialize)]
 pub struct SatBlockStats {
   sat_block_number: i64,
+  sat_block_timestamp: Option<i64>,
   sat_block_inscription_count: Option<i64>,
   sat_block_inscription_size: Option<i64>,
   sat_block_inscription_fees: Option<i64>,
@@ -4645,14 +4646,21 @@ impl Vermilion {
   async fn get_sat_block_statistics(pool: deadpool, block: i64) -> anyhow::Result<SatBlockStats> {
     let conn = pool.get().await?;
     let result = conn.query_one(r"
-      $1 as sat_block_number,
-      select count(*) as sat_block_inscription_count, 
-      sum(content_length) as sat_block_inscription_size, 
-      sum(genesis_fee) as sat_block_inscription_fees from ordinals where sat in (select sat from sat where block=$1)",
+      select 
+        s.*, 
+        b.block_timestamp as sat_block_timestamp 
+      from (
+        select $1 as sat_block_number, 
+        count(*), sum(content_length), 
+        sum(genesis_fee) 
+        from ordinals where sat in (select sat from sat where block=$1)
+      ) s 
+      left join blockstats b on s.sat_block_number = b.block_number",
       &[&block]
     ).await?;
     let sat_block_stats = SatBlockStats {
       sat_block_number: result.get("sat_block_number"),
+      sat_block_timestamp: result.get("sat_block_timestamp"),
       sat_block_inscription_count: result.get("sat_block_inscription_count"),
       sat_block_inscription_size: result.get("sat_block_inscription_size"),
       sat_block_inscription_fees: result.get("sat_block_inscription_fees")
