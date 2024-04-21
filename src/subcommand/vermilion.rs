@@ -270,6 +270,14 @@ pub struct CombinedBlockStats {
 }
 
 #[derive(Clone, Serialize)]
+pub struct SatBlockStats {
+  sat_block_number: i64,
+  sat_block_inscription_count: Option<i64>,
+  sat_block_inscription_size: Option<i64>,
+  sat_block_inscription_fees: Option<i64>,
+}
+
+#[derive(Clone, Serialize)]
 pub struct Content {
   content: Vec<u8>,
   content_type: Option<String>
@@ -1417,6 +1425,7 @@ impl Vermilion {
           .route("/inscription_collection_data/:inscription_id", get(Self::inscription_collection_data))
           .route("/inscription_collection_data_number/:number", get(Self::inscription_collection_data_number))
           .route("/block_statistics/:block", get(Self::block_statistics))
+          .route("/sat_block_statistics/:block", get(Self::sat_block_statistics))
           .route("/blocks", get(Self::blocks))
           .route("/collection_summary/:collection_symbol", get(Self::collection_summary))
           .route("/collections", get(Self::collections))
@@ -3358,6 +3367,23 @@ impl Vermilion {
     ).into_response()
   }
 
+  async fn sat_block_statistics(Path(block): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let block_stats = match Self::get_sat_block_statistics(server_config.deadpool, block).await {
+      Ok(block_stats) => block_stats,
+      Err(error) => {
+        log::warn!("Error getting /sat_block_statistics: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving sat block statistics for {}", block),
+        ).into_response();
+      }    
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(block_stats),
+    ).into_response()
+  }
+
   async fn blocks(params: Query<CollectionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     //1. parse params
     let params = params.0;
@@ -4614,6 +4640,24 @@ impl Vermilion {
       block_volume: result.get("block_volume")
     };
     Ok(block_stats)
+  }
+
+  async fn get_sat_block_statistics(pool: deadpool, block: i64) -> anyhow::Result<SatBlockStats> {
+    let conn = pool.get().await?;
+    let result = conn.query_one(r"
+      $1 as sat_block_number,
+      select count(*) as sat_block_inscription_count, 
+      sum(content_length) as sat_block_inscription_size, 
+      sum(genesis_fee) as sat_block_inscription_fees from ordinals where sat in (select sat from sat where block=$1)",
+      &[&block]
+    ).await?;
+    let sat_block_stats = SatBlockStats {
+      sat_block_number: result.get("sat_block_number"),
+      sat_block_inscription_count: result.get("sat_block_inscription_count"),
+      sat_block_inscription_size: result.get("sat_block_inscription_size"),
+      sat_block_inscription_fees: result.get("sat_block_inscription_fees")
+    };
+    Ok(sat_block_stats)
   }
 
   async fn get_blocks(pool: deadpool, params: CollectionQueryParams) -> anyhow::Result<Vec<CombinedBlockStats>> {
