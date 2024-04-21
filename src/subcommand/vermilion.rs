@@ -4650,9 +4650,11 @@ impl Vermilion {
         s.*, 
         b.block_timestamp as sat_block_timestamp 
       from (
-        select CAST($1 as BIGINT) as sat_block_number,
-        count(*), sum(content_length), 
-        sum(genesis_fee) 
+        SELECT 
+          CAST($1 as BIGINT) as sat_block_number,
+          count(*) as sat_block_inscription_count, 
+          sum(content_length) as sat_block_inscription_size, 
+          sum(genesis_fee) as sat_block_inscription_fees
         from ordinals where sat in (select sat from sat where block=$1)
       ) s 
       left join blockstats b on s.sat_block_number = b.block_number",
