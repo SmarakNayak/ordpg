@@ -4984,7 +4984,7 @@ impl Vermilion {
                max(content_length) as content_length, 
                count(*) as count
         from ordinals 
-        where content_type ILIKE 'image%' and sha256 in (
+        where content_type ILIKE 'image%' and content_type !='image/svg+xml' and sha256 in (
           select sha256 
           from content_moderation 
           where coalesce(human_override_moderation_flag, automated_moderation_flag) = 'SAFE_MANUAL' 
@@ -5053,7 +5053,7 @@ impl Vermilion {
                max(content_length) as content_length, 
                count(*) as count
         from ordinals 
-        where content_type ILIKE 'image%' and sha256 in (
+        where content_type ILIKE 'image%' and content_type !='image/svg+xml' and sha256 in (
           select sha256 
           from content_moderation 
           where coalesce(human_override_moderation_flag, automated_moderation_flag) = 'SAFE_MANUAL' 
