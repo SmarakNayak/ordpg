@@ -1393,6 +1393,7 @@ impl Vermilion {
         };
 
         let session_config = SessionConfig::default()
+          .with_cookie_path("/random_inscriptions")
           .with_table_name("sessions_table");
         let session_store = SessionStore::<SessionNullPool>::new(None, session_config).await.unwrap();
 
