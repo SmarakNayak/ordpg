@@ -2756,9 +2756,14 @@ impl Vermilion {
     };
     let bytes = content_blob.content;
     let content_type = content_blob.content_type;
+    let cache_control = if content_blob.sha256 == "NOT_INDEXED" {
+      "no-cache, must-revalidate, max-age=0"
+    } else {
+      "public, max-age=31536000"
+    };
     (
       ([(axum::http::header::CONTENT_TYPE, content_type),
-        (axum::http::header::CACHE_CONTROL, "public, max-age=31536000".to_string())]),
+        (axum::http::header::CACHE_CONTROL, cache_control.to_string())]),
       bytes,
     ).into_response()
   }
@@ -2776,9 +2781,14 @@ impl Vermilion {
     };
     let bytes = content_blob.content;
     let content_type = content_blob.content_type;
+    let cache_control = if content_blob.sha256 == "NOT_INDEXED" {
+      "no-cache, must-revalidate, max-age=0"
+    } else {
+      "public, max-age=31536000"
+    };
     (
       ([(axum::http::header::CONTENT_TYPE, content_type),
-        (axum::http::header::CACHE_CONTROL, "public, max-age=31536000".to_string())]),
+        (axum::http::header::CACHE_CONTROL, cache_control.to_string())]),
       bytes,
     ).into_response()
   }
@@ -2796,9 +2806,14 @@ impl Vermilion {
     };
     let bytes = content_blob.content;
     let content_type = content_blob.content_type;
+    let cache_control = if content_blob.sha256 == "NOT_INDEXED" {
+      "no-cache, must-revalidate, max-age=0"
+    } else {
+      "public, max-age=31536000"
+    };
     (
       ([(axum::http::header::CONTENT_TYPE, content_type),
-        (axum::http::header::CACHE_CONTROL, "public, max-age=31536000".to_string())]),
+        (axum::http::header::CACHE_CONTROL, cache_control.to_string())]),
       bytes,
     ).into_response()
   }
@@ -3664,7 +3679,7 @@ impl Vermilion {
         }
     } else {
       let content = ContentBlob {
-        sha256: sha256.clone(),
+        sha256: "NOT_INDEXED".to_string(),
         content: "This content hasn't been indexed yet.".as_bytes().to_vec(),
         content_type: "text/plain".to_string(),
       };
