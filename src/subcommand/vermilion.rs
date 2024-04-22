@@ -1398,6 +1398,8 @@ impl Vermilion {
         let session_store = SessionStore::<SessionNullPool>::new(None, session_config).await.unwrap();
 
         let app = Router::new()
+          .route("/random_inscriptions", get(Self::random_inscriptions))          
+          .layer(SessionLayer::new(session_store))
           .route("/", get(Self::root))
           .route("/home", get(Self::home))
           .route("/inscription/:inscription_id", get(Self::inscription))
@@ -1413,7 +1415,6 @@ impl Vermilion {
           .route("/inscriptions_in_block/:block", get(Self::inscriptions_in_block))
           .route("/inscriptions", get(Self::inscriptions))
           .route("/random_inscription", get(Self::random_inscription))
-          .route("/random_inscriptions", get(Self::random_inscriptions))
           .route("/recent_inscriptions", get(Self::recent_inscriptions))
           .route("/inscription_last_transfer/:inscription_id", get(Self::inscription_last_transfer))
           .route("/inscription_last_transfer_number/:number", get(Self::inscription_last_transfer_number))
@@ -1446,8 +1447,7 @@ impl Vermilion {
                 tracing::event!(TraceLevel::INFO, "Finished processing request latency={:?} status={:?}", latency, res.status());
               })
           )
-          .with_state(server_config)
-          .layer(SessionLayer::new(session_store));
+          .with_state(server_config);
 
         let addr = SocketAddr::from(([127, 0, 0, 1], self.api_http_port.unwrap_or(81)));
         //tracing::debug!("listening on {}", addr);
