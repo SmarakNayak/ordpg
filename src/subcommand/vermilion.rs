@@ -32,6 +32,7 @@ use axum_session::{Session, SessionNullPool, SessionConfig, SessionStore, Sessio
 
 use tower_http::trace::TraceLayer;
 use tower_http::trace::DefaultMakeSpan;
+use tower_http::cors::{Any, CorsLayer};
 use tracing::Span;
 use http::{Request, Response};
 use tracing::Level as TraceLevel;
@@ -1446,6 +1447,11 @@ impl Vermilion {
               .on_response(|res: &Response<BoxBody>, latency: Duration, _span: &Span| {
                 tracing::event!(TraceLevel::INFO, "Finished processing request latency={:?} status={:?}", latency, res.status());
               })
+          )
+          .layer(
+            CorsLayer::new()
+              .allow_methods([http::Method::GET])
+              .allow_origin(Any),
           )
           .with_state(server_config);
 
