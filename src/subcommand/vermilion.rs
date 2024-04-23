@@ -4777,6 +4777,7 @@ impl Vermilion {
   
   async fn get_collection_search_result(pool: deadpool, search_query: String) -> anyhow::Result<Vec<CollectionSummary>> {
     let conn = pool.get().await?;
+    let escaped_search_query = format!("%{}%", search_query);
     let query = format!(r"
       select 
         l.collection_symbol, l.name, l.description, l.twitter, l.discord, l.website,
@@ -4796,7 +4797,7 @@ impl Vermilion {
       where l.name ILIKE $1 or l.description ILIKE $1 
       order by s.total_volume desc nulls last
       limit 5");
-    let result = conn.query(query.as_str(), &[&search_query]).await?;
+    let result = conn.query(query.as_str(), &[&escaped_search_query]).await?;
     let mut collections = Vec::new();
     for row in result {
       let collection = CollectionSummary {
