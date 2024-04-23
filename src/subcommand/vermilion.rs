@@ -2748,10 +2748,17 @@ impl Vermilion {
       Ok(content_blob) => content_blob,
       Err(error) => {
         log::warn!("Error getting /inscription: {}", error);
-        return (
-          StatusCode::INTERNAL_SERVER_ERROR,
-          format!("Error retrieving {}", inscription_id.to_string()),
-        ).into_response();
+        if error.to_string().contains("unexpected number of rows"){
+          return (
+            StatusCode::NOT_FOUND,
+            format!("Inscription not found {}", inscription_id.to_string()),
+          ).into_response();
+        } else {
+          return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Error retrieving {}", inscription_id.to_string()),
+          ).into_response();
+        }
       }
     };
     let bytes = content_blob.content;
