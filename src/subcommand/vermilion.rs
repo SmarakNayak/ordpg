@@ -3750,7 +3750,7 @@ impl Vermilion {
   async fn get_block_icon(pool: deadpool, block: i64) -> anyhow::Result<ContentBlob> {
     let conn = pool.get().await?;
     let result = conn.query_one(
-      "select id from ordinals where genesis_height=$1 and content_type LIKE 'image%' order by content_length desc nulls last limit 1", 
+      "select id from ordinals where genesis_height=$1 and content_type LIKE 'image%' or content_type LIKE 'text/html%' order by content_length desc nulls last limit 1", 
       &[&block]
     ).await?;
     let id = result.get(0);
@@ -3761,7 +3761,7 @@ impl Vermilion {
   async fn get_sat_block_icon(pool: deadpool, block: i64) -> anyhow::Result<ContentBlob> {
     let conn = pool.get().await?;
     let result = conn.query_one(
-      "select id from ordinals where sat in (select sat from sat where block=$1) and content_type LIKE 'image%' order by content_length desc nulls last limit 1", 
+      "select id from ordinals where sat in (select sat from sat where block=$1) and content_type LIKE 'image%' or content_type LIKE 'text/html%' order by content_length desc nulls last limit 1", 
       &[&block]
     ).await?;
     let id = result.get(0);
