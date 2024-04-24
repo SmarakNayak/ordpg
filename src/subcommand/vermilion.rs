@@ -4375,6 +4375,7 @@ impl Vermilion {
           &[&metadata.block]
         ).await?;
         metadata.timestamp = blockstats_result.get("block_timestamp");
+        metadata.timestamp = metadata.timestamp/1000; //hack bug fix
         metadata
       }
     };
