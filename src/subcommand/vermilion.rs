@@ -26,6 +26,7 @@ use axum::{
   body::{Body, BoxBody},
   middleware::map_response,
   http::StatusCode,
+  http::HeaderMap,
   response::IntoResponse,
 };
 use axum_session::{Session, SessionNullPool, SessionConfig, SessionStore, SessionLayer};
@@ -171,7 +172,8 @@ pub struct Satribute {
 pub struct ContentBlob {
   sha256: String,
   content: Vec<u8>,
-  content_type: String
+  content_type: String,
+  content_encoding: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -851,11 +853,13 @@ impl Vermilion {
                   Some(content_type) => content_type,
                   None => ""
               };
+              let content_encoding = inscription.content_encoding().map(|x| x.to_str().ok().map(|s| s.to_string())).flatten();
               let sha256 = digest(content);
               let content_blob = ContentBlob {
                 sha256: sha256.to_string(),
                 content: content.to_vec(),
-                content_type: content_type.to_string()
+                content_type: content_type.to_string(),
+                content_encoding: content_encoding
               };
               content_vec.push(content_blob);
             }
@@ -1913,7 +1917,8 @@ impl Vermilion {
         content_id bigint,
         sha256 varchar(64) NOT NULL PRIMARY KEY,
         content bytea,
-        content_type text
+        content_type text,
+        content_encoding text
       )").await?;
     conn.simple_query(r"
       CREATE INDEX IF NOT EXISTS index_content_content_id ON content (content_id);
@@ -2185,11 +2190,14 @@ impl Vermilion {
       content_id,
       sha256, 
       content, 
-      content_type) FROM STDIN BINARY"#;
+      content_type,
+      content_encoding
+    ) FROM STDIN BINARY"#;
     let col_types = vec![
       Type::INT8,
       Type::VARCHAR,
       Type::BYTEA,
+      Type::TEXT,
       Type::TEXT
     ];
     let sink = tx.copy_in(copy_stm).await?;
@@ -2202,10 +2210,12 @@ impl Vermilion {
       row.push(&content.content);
       let clean_type = &content.content_type.replace("\0", "");
       row.push(clean_type);
+      let clean_encoding = &content.content_encoding.map(|s| s.replace("\0", ""));
+      row.push(clean_encoding);
       writer.as_mut().write(&row).await?;
     }
     writer.finish().await?;
-    tx.simple_query("INSERT INTO content SELECT content_id, sha256, content, content_type FROM inserts_content ON CONFLICT DO NOTHING").await?;
+    tx.simple_query("INSERT INTO content SELECT content_id, sha256, content, content_type, content_encoding FROM inserts_content ON CONFLICT DO NOTHING").await?;
     Ok(())
   }
 
@@ -2769,16 +2779,20 @@ impl Vermilion {
     };
     let bytes = content_blob.content;
     let content_type = content_blob.content_type;
+    let content_encoding = content_blob.content_encoding;
     let cache_control = if content_blob.sha256 == "NOT_INDEXED" {
       "no-cache, must-revalidate, max-age=0"
     } else {
       "public, max-age=31536000"
     };
-    (
-      ([(axum::http::header::CONTENT_TYPE, content_type),
-        (axum::http::header::CACHE_CONTROL, cache_control.to_string())]),
-      bytes,
-    ).into_response()
+    let mut header_map = HeaderMap::new();
+    header_map.insert("content-type", content_type.parse().unwrap());
+    header_map.insert("cache-control", cache_control.parse().unwrap());
+    if let Some(encoding) = content_encoding {
+      header_map.insert("content-encoding", encoding.parse().unwrap());
+    }
+
+    (header_map, bytes).into_response()
   }
 
   async fn inscription_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
@@ -2794,20 +2808,24 @@ impl Vermilion {
     };
     let bytes = content_blob.content;
     let content_type = content_blob.content_type;
+    let content_encoding = content_blob.content_encoding;
     let cache_control = if content_blob.sha256 == "NOT_INDEXED" {
       "no-cache, must-revalidate, max-age=0"
     } else {
       "public, max-age=31536000"
     };
-    (
-      ([(axum::http::header::CONTENT_TYPE, content_type),
-        (axum::http::header::CACHE_CONTROL, cache_control.to_string())]),
-      bytes,
-    ).into_response()
+    let mut header_map = HeaderMap::new();
+    header_map.insert("content-type", content_type.parse().unwrap());
+    header_map.insert("cache-control", cache_control.parse().unwrap());
+    if let Some(encoding) = content_encoding {
+      header_map.insert("content-encoding", encoding.parse().unwrap());
+    }
+
+    (header_map, bytes).into_response()
   }
 
   async fn inscription_sha256(Path(sha256): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let content_blob = match Self::get_ordinal_content_by_sha256(server_config.deadpool, sha256.clone(), None).await {
+    let content_blob = match Self::get_ordinal_content_by_sha256(server_config.deadpool, sha256.clone(), None, None).await {
       Ok(content_blob) => content_blob,
       Err(error) => {
         log::warn!("Error getting /inscription_sha256: {}", error);
@@ -2819,16 +2837,20 @@ impl Vermilion {
     };
     let bytes = content_blob.content;
     let content_type = content_blob.content_type;
+    let content_encoding = content_blob.content_encoding;
     let cache_control = if content_blob.sha256 == "NOT_INDEXED" {
       "no-cache, must-revalidate, max-age=0"
     } else {
       "public, max-age=31536000"
     };
-    (
-      ([(axum::http::header::CONTENT_TYPE, content_type),
-        (axum::http::header::CACHE_CONTROL, cache_control.to_string())]),
-      bytes,
-    ).into_response()
+    let mut header_map = HeaderMap::new();
+    header_map.insert("content-type", content_type.parse().unwrap());
+    header_map.insert("cache-control", cache_control.parse().unwrap());
+    if let Some(encoding) = content_encoding {
+      header_map.insert("content-encoding", encoding.parse().unwrap());
+    }
+
+    (header_map, bytes).into_response()
   }
 
   async fn inscription_metadata(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
@@ -3617,58 +3639,62 @@ impl Vermilion {
   async fn get_ordinal_content(pool: deadpool, inscription_id: String) -> anyhow::Result<ContentBlob> {
     let conn = pool.clone().get().await?;
     let row = conn.query_one(
-      "SELECT sha256, content_type, delegate FROM ordinals WHERE id=$1 LIMIT 1",
+      "SELECT sha256, content_type, content_encoding, delegate FROM ordinals WHERE id=$1 LIMIT 1",
       &[&inscription_id]
     ).await?;
     let mut sha256: Option<String> = row.get(0);
     let mut content_type: Option<String> = row.get(1);
-    let delegate: Option<String> = row.get(2);
+    let mut content_encoding: Option<String> = row.get(2);
+    let delegate: Option<String> = row.get(3);
     match delegate {
       Some(delegate) => {
         let id: Regex = Regex::new(r"^[[:xdigit:]]{64}i\d+$").unwrap();
         if id.is_match(&delegate) {
           let row = conn.query_one(
-            "SELECT sha256, content_type FROM ordinals WHERE id=$1 LIMIT 1",
+            "SELECT sha256, content_type, content_encoding FROM ordinals WHERE id=$1 LIMIT 1",
             &[&delegate]
           ).await?;
           sha256 = row.get(0);
           content_type = row.get(1);
+          content_encoding = row.get(2);
         }
       },
       None => {}
     }
-    let content = Self::get_ordinal_content_by_sha256(pool, sha256.unwrap(), content_type).await;
+    let content = Self::get_ordinal_content_by_sha256(pool, sha256.unwrap(), content_type, content_encoding).await;
     content
   }
 
   async fn get_ordinal_content_by_number(pool: deadpool, number: i64) -> anyhow::Result<ContentBlob> {
     let conn = pool.clone().get().await?;
     let row = conn.query_one(
-      "SELECT sha256, content_type, delegate FROM ordinals WHERE number=$1 LIMIT 1",
+      "SELECT sha256, content_type, content_encoding, delegate FROM ordinals WHERE number=$1 LIMIT 1",
       &[&number]
     ).await?;
     let mut sha256: Option<String> = row.get(0);
     let mut content_type: Option<String> = row.get(1);
-    let delegate: Option<String> = row.get(2);
+    let mut content_encoding: Option<String> = row.get(2);
+    let delegate: Option<String> = row.get(3);
     match delegate {
       Some(delegate) => {
         let id: Regex = Regex::new(r"^[[:xdigit:]]{64}i\d+$").unwrap();
         if id.is_match(&delegate) {
           let row = conn.query_one(
-            "SELECT sha256, content_type FROM ordinals WHERE id=$1 LIMIT 1",
+            "SELECT sha256, content_type, content_encoding  FROM ordinals WHERE id=$1 LIMIT 1",
             &[&delegate]
           ).await?;
           sha256 = row.get(0);
           content_type = row.get(1);
+          content_encoding = row.get(2);
         }
       },
       None => {}
     }
-    let content = Self::get_ordinal_content_by_sha256(pool, sha256.unwrap(), content_type).await;
+    let content = Self::get_ordinal_content_by_sha256(pool, sha256.unwrap(), content_type, content_encoding).await;
     content
   }
 
-  async fn get_ordinal_content_by_sha256(pool: deadpool, sha256: String, content_type_override: Option<String>) -> anyhow::Result<ContentBlob> {
+  async fn get_ordinal_content_by_sha256(pool: deadpool, sha256: String, content_type_override: Option<String>, content_encoding_override: Option<String>) -> anyhow::Result<ContentBlob> {
     let conn = pool.get().await?;
     let moderation_flag = conn.query_one(
       r"SELECT coalesce(human_override_moderation_flag, automated_moderation_flag)
@@ -3687,6 +3713,7 @@ impl Vermilion {
               sha256: sha256.clone(),
               content: std::fs::read("blocked.png")?,
               content_type: "image/png".to_string(),
+              content_encoding: None
           };
           return Ok(content);
         }
@@ -3695,6 +3722,7 @@ impl Vermilion {
         sha256: "NOT_INDEXED".to_string(),
         content: "This content hasn't been indexed yet.".as_bytes().to_vec(),
         content_type: "text/plain".to_string(),
+        content_encoding: None
       };
       return Ok(content);
     }
@@ -3710,10 +3738,12 @@ impl Vermilion {
       sha256: row.get("sha256"),
       content: row.get("content"),
       content_type: row.get("content_type"),
+      content_encoding: row.get("content_encoding")
     };
     if let Some(content_type) = content_type_override {
       content_blob.content_type = content_type;
     }
+    content_blob.content_encoding = content_encoding_override;
     Ok(content_blob)
   }
 
