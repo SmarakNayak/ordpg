@@ -3721,7 +3721,7 @@ impl Vermilion {
       let content = ContentBlob {
         sha256: "NOT_INDEXED".to_string(),
         content: "This content hasn't been indexed yet.".as_bytes().to_vec(),
-        content_type: "text/plain".to_string(),
+        content_type: "text/plain;charset=utf-8".to_string(),
         content_encoding: None
       };
       return Ok(content);
