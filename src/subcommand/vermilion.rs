@@ -2781,7 +2781,7 @@ impl Vermilion {
     let content_type = content_blob.content_type;
     let content_encoding = content_blob.content_encoding;
     let cache_control = if content_blob.sha256 == "NOT_INDEXED" {
-      "no-cache, must-revalidate, max-age=0"
+      "no-store, no-cache, must-revalidate, max-age=0"
     } else {
       "public, max-age=31536000"
     };
@@ -2810,7 +2810,7 @@ impl Vermilion {
     let content_type = content_blob.content_type;
     let content_encoding = content_blob.content_encoding;
     let cache_control = if content_blob.sha256 == "NOT_INDEXED" {
-      "no-cache, must-revalidate, max-age=0"
+      "no-store, no-cache, must-revalidate, max-age=0"
     } else {
       "public, max-age=31536000"
     };
@@ -2839,7 +2839,7 @@ impl Vermilion {
     let content_type = content_blob.content_type;
     let content_encoding = content_blob.content_encoding;
     let cache_control = if content_blob.sha256 == "NOT_INDEXED" {
-      "no-cache, must-revalidate, max-age=0"
+      "no-store, no-cache, must-revalidate, max-age=0"
     } else {
       "public, max-age=31536000"
     };
