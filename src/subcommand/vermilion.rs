@@ -3696,36 +3696,38 @@ impl Vermilion {
 
   async fn get_ordinal_content_by_sha256(pool: deadpool, sha256: String, content_type_override: Option<String>, content_encoding_override: Option<String>) -> anyhow::Result<ContentBlob> {
     let conn = pool.get().await?;
-    let moderation_flag = conn.query_one(
+    let moderation_flag = match conn.query_one(
       r"SELECT coalesce(human_override_moderation_flag, automated_moderation_flag)
               FROM content_moderation
               WHERE sha256=$1
               LIMIT 1",
       &[&sha256]
-    ).await?;
+    ).await {
+      Ok(row) => row,
+      Err(_) => {
+        let content = ContentBlob {
+          sha256: "NOT_INDEXED".to_string(),
+          content: "This content hasn't been indexed yet.".as_bytes().to_vec(),
+          content_type: "text/plain;charset=utf-8".to_string(),
+          content_encoding: None
+        };
+        return Ok(content);
+      }
+    };
     let moderation_flag: Option<String> = moderation_flag.get(0);
-
-    if let Some(flag) = moderation_flag {
-        if flag == "SAFE_MANUAL" || flag == "SAFE_AUTOMATED" || flag == "UNKNOWN_AUTOMATED" {
-            //Proceed as normal
-        } else {
-          let content = ContentBlob {
-              sha256: sha256.clone(),
-              content: std::fs::read("blocked.png")?,
-              content_type: "image/png".to_string(),
-              content_encoding: None
-          };
-          return Ok(content);
-        }
+    let flag = moderation_flag.ok_or(anyhow!("No moderation flag found"))?;
+    if flag == "SAFE_MANUAL" || flag == "SAFE_AUTOMATED" || flag == "UNKNOWN_AUTOMATED" {
+        //Proceed as normal
     } else {
       let content = ContentBlob {
-        sha256: "NOT_INDEXED".to_string(),
-        content: "This content hasn't been indexed yet.".as_bytes().to_vec(),
-        content_type: "text/plain;charset=utf-8".to_string(),
-        content_encoding: None
+          sha256: sha256.clone(),
+          content: std::fs::read("blocked.png")?,
+          content_type: "image/png".to_string(),
+          content_encoding: None
       };
       return Ok(content);
     }
+
     //Proceed if safe
     let row = conn.query_one(
       r"SELECT *
