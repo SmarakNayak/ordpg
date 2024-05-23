@@ -47,6 +47,8 @@ use itertools::Itertools;
 
 use serde_json::{Value as JsonValue, value::Number as JsonNumber};
 use ciborium::value::Value as CborValue;
+use base64::engine::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 
 use deadpool_postgres::{ManagerConfig, Pool as deadpool, RecyclingMethod};
 use tokio_postgres::NoTls;
@@ -1648,8 +1650,9 @@ impl Vermilion {
         CborValue::Float(float) => JsonValue::Number(JsonNumber::from_f64(float).unwrap()),
         CborValue::Array(vec) => JsonValue::Array(vec.into_iter().map(Self::cbor_to_json).collect()),
         CborValue::Map(map) => JsonValue::Object(map.into_iter().map(|(k, v)| (Self::cbor_into_string(k).unwrap(), Self::cbor_to_json(v))).collect()),
-        CborValue::Bytes(_) | CborValue::Tag(_, _) => unimplemented!(),
-        _ => unimplemented!(),
+        CborValue::Bytes(bytes) => JsonValue::String(BASE64.encode(bytes)),
+        CborValue::Tag(_tag, _value) => JsonValue::Null,
+        _ => JsonValue::Null,
     }
   }
 
