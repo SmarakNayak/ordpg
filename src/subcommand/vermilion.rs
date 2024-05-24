@@ -3882,7 +3882,7 @@ impl Vermilion {
     let conn = pool.get().await?;
     let page_size = params.page_size.unwrap_or(10);
     let offset = params.page_number.unwrap_or(0) * page_size;
-    let mut query = "SELECT * FROM ordinals where parent = $1".to_string();
+    let mut query = "SELECT * from ordinals where parent=(select CAST(sequence_number as varchar) from ordinals where id = $1)".to_string();
     if page_size > 0 {
       query.push_str(format!(" LIMIT {}", page_size).as_str());
     }
@@ -3904,7 +3904,7 @@ impl Vermilion {
     let conn = pool.get().await?;
     let page_size = params.page_size.unwrap_or(10);
     let offset = params.page_number.unwrap_or(0) * page_size;
-    let mut query = "SELECT * from ordinals where parent=(select id from ordinals where number = $1)".to_string();
+    let mut query = "SELECT * from ordinals where parent=(select CAST(sequence_number as varchar) from ordinals where number = $1)".to_string();
     if page_size > 0 {
       query.push_str(format!(" LIMIT {}", page_size).as_str());
     }
