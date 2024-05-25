@@ -184,6 +184,7 @@ pub struct Transfer {
   block_number: i64,
   block_timestamp: i64,
   satpoint: String,
+  tx_offset: i64,
   transaction: String,
   vout: i32,
   offset: i64,
@@ -201,6 +202,7 @@ pub struct TransferWithMetadata {
   block_number: i64,
   block_timestamp: i64,
   satpoint: String,
+  tx_offset: i64,
   transaction: String,
   vout: i32,
   offset: i64,
@@ -1127,8 +1129,8 @@ impl Vermilion {
             continue;
           }
           let t2 = Instant::now();
-          let mut tx_id_list = transfers.clone().into_iter().map(|(_id, _,satpoint)| satpoint.outpoint.txid).collect::<Vec<_>>();
-          let mut prev_tx_id_list = transfers.clone().into_iter().map(|(_id, previous_satpoint,_)| previous_satpoint.outpoint.txid).collect::<Vec<_>>();
+          let mut tx_id_list = transfers.clone().into_iter().map(|(_id, _tx_offset, _,satpoint)| satpoint.outpoint.txid).collect::<Vec<_>>();
+          let mut prev_tx_id_list = transfers.clone().into_iter().map(|(_id, _tx_offset, previous_satpoint,_)| previous_satpoint.outpoint.txid).collect::<Vec<_>>();
           tx_id_list.append(&mut prev_tx_id_list);
           tx_id_list.retain(|x| *x != Hash::all_zeros());
           let tx_id_list: Vec<Txid> = tx_id_list.into_iter().unique().collect();
@@ -1175,7 +1177,7 @@ impl Vermilion {
           let t3 = Instant::now();          
           let mut seq_point_transfer_details = Vec::new();
           let mut error_in_loop = false;
-          for (sequence_number, old_satpoint, satpoint) in transfers {
+          for (sequence_number, tx_offset, old_satpoint, satpoint) in transfers {
             //1. Get ordinal receive address
             let (address, prev_address, price, tx_fee, tx_size) = if satpoint.outpoint == unbound_outpoint() && (old_satpoint.outpoint == unbound_outpoint() || old_satpoint.outpoint.is_null()) {
               ("unbound".to_string(), "unbound".to_string(), 0, 0, 0)
@@ -1317,7 +1319,7 @@ impl Vermilion {
 
               (address, prev_address, price, tx_fee, tx_size)
             };
-            seq_point_transfer_details.push((sequence_number, satpoint, address, prev_address, price, tx_fee, tx_size));
+            seq_point_transfer_details.push((sequence_number, tx_offset, satpoint, address, prev_address, price, tx_fee, tx_size));
           }
           if error_in_loop {
             log::info!("Error detected tx loop for block {:?}, breaking and waiting a minute", height);
@@ -1328,7 +1330,7 @@ impl Vermilion {
           let t4 = Instant::now();
           let block_time = index.block_time(Height(height)).unwrap();
           let mut transfer_vec = Vec::new();
-          for (sequence_number, point, address, prev_address, price, tx_fee, tx_size) in seq_point_transfer_details {
+          for (sequence_number, tx_offset, point, address, prev_address, price, tx_fee, tx_size) in seq_point_transfer_details {
             let entry = index.get_inscription_entry_by_sequence_number(sequence_number).unwrap();
             let id = entry.unwrap().id;
             let transfer = Transfer {
@@ -1336,6 +1338,7 @@ impl Vermilion {
               block_number: height.try_into().unwrap(),
               block_timestamp: block_time.timestamp().timestamp_millis(),
               satpoint: point.to_string(),
+              tx_offset: tx_offset as i64,
               transaction: point.outpoint.txid.to_string(),
               vout: point.outpoint.vout as i32,
               offset: point.offset as i64,
@@ -2442,6 +2445,7 @@ impl Vermilion {
         block_number bigint not null,
         block_timestamp bigint,
         satpoint varchar(100) not null,
+        tx_offset bigint,
         transaction text,
         vout int,
         satpoint_offset bigint,
@@ -2466,6 +2470,7 @@ impl Vermilion {
       block_number,
       block_timestamp,
       satpoint,
+      tx_offset,
       transaction,
       vout,
       satpoint_offset,
@@ -2480,6 +2485,7 @@ impl Vermilion {
       Type::INT8,
       Type::INT8,
       Type::TEXT,
+      Type::INT8,
       Type::TEXT,
       Type::INT4,
       Type::INT8,
@@ -2499,6 +2505,7 @@ impl Vermilion {
       row.push(&m.block_number);
       row.push(&m.block_timestamp);
       row.push(&m.satpoint);
+      row.push(&m.tx_offset);
       row.push(&m.transaction);
       row.push(&m.vout);
       row.push(&m.offset);
@@ -2522,6 +2529,7 @@ impl Vermilion {
         block_number bigint not null,
         block_timestamp bigint,
         satpoint varchar(100),
+        tx_offset bigint,
         transaction text,
         vout int,
         satpoint_offset bigint,
@@ -2548,6 +2556,7 @@ impl Vermilion {
       block_number,
       block_timestamp,
       satpoint,
+      tx_offset,
       transaction,
       vout,
       satpoint_offset,
@@ -2562,6 +2571,7 @@ impl Vermilion {
       Type::INT8,
       Type::INT8,
       Type::TEXT,
+      Type::INT8,
       Type::TEXT,
       Type::INT4,
       Type::INT8,
@@ -2581,6 +2591,7 @@ impl Vermilion {
       row.push(&m.block_number);
       row.push(&m.block_timestamp);
       row.push(&m.satpoint);
+      row.push(&m.tx_offset);
       row.push(&m.transaction);
       row.push(&m.vout);
       row.push(&m.offset);
@@ -2597,6 +2608,7 @@ impl Vermilion {
       block_number = EXCLUDED.block_number, 
       block_timestamp = EXCLUDED.block_timestamp,
       satpoint = EXCLUDED.satpoint,
+      tx_offset = EXCLUDED.tx_offset,
       transaction = EXCLUDED.transaction,
       vout = EXCLUDED.vout,
       satpoint_offset = EXCLUDED.satpoint_offset,
@@ -4162,6 +4174,7 @@ impl Vermilion {
       block_number: result.get("block_number"),
       block_timestamp: result.get("block_timestamp"),
       satpoint: result.get("satpoint"),
+      tx_offset: result.get("tx_offset"),
       transaction: result.get("transaction"),
       vout: result.get("vout"),
       offset: result.get("satpoint_offset"),
@@ -4186,6 +4199,7 @@ impl Vermilion {
       block_number: result.get("block_number"),
       block_timestamp: result.get("block_timestamp"),
       satpoint: result.get("satpoint"),
+      tx_offset: result.get("tx_offset"),
       transaction: result.get("transaction"),
       vout: result.get("vout"),
       offset: result.get("satpoint_offset"),
@@ -4212,6 +4226,7 @@ impl Vermilion {
         block_number: row.get("block_number"),
         block_timestamp: row.get("block_timestamp"),
         satpoint: row.get("satpoint"),
+        tx_offset: row.get("tx_offset"),
         transaction: row.get("transaction"),
         vout: row.get("vout"),
         offset: row.get("satpoint_offset"),
@@ -4239,6 +4254,7 @@ impl Vermilion {
         block_number: row.get("block_number"),
         block_timestamp: row.get("block_timestamp"),
         satpoint: row.get("satpoint"),
+        tx_offset: row.get("tx_offset"),
         transaction: row.get("transaction"),
         vout: row.get("vout"),
         offset: row.get("satpoint_offset"),
@@ -4268,6 +4284,7 @@ impl Vermilion {
         block_number: row.get("block_number"),
         block_timestamp: row.get("block_timestamp"),
         satpoint: row.get("satpoint"),
+        tx_offset: row.get("tx_offset"),
         transaction: row.get("transaction"),
         vout: row.get("vout"),
         offset: row.get("satpoint_offset"),

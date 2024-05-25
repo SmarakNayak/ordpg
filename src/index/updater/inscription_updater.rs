@@ -65,7 +65,8 @@ pub(super) struct InscriptionUpdater<'a, 'db, 'tx> {
   pub(super) unbound_inscriptions: u64,
   pub(super) value_cache: &'a mut HashMap<OutPoint, u64>,
   pub(super) value_receiver: &'a mut Receiver<u64>,
-  pub(super) height_to_transfers: &'a mut MultimapTable<'db, 'tx, u32, &'static [u8; 92]>,
+  pub(super) height_to_transfers: &'a mut MultimapTable<'db, 'tx, u32, &'static [u8; 96]>,
+  pub(super) tx_offset: u32,
   pub(super) transaction_id_to_fee: &'a mut Table<'db, 'tx, &'static TxidValue, u64>,
 }
 
@@ -559,13 +560,15 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
       Origin::New { .. } => SatPoint{outpoint: OutPoint::null(), offset: 0},
       Origin::Old { old_satpoint } => old_satpoint,
     };
-    let transfer: [u8; 92] = {
-      let mut transfer: [u8; 92] = [0; 92];
-      let (one, rest) = transfer.split_at_mut(4);
-      let (two, three) = rest.split_at_mut(44);
+    let transfer: [u8; 96] = {
+      let mut transfer: [u8; 96] = [0; 96];
+      let (one, two_three_four) = transfer.split_at_mut(4);
+      let (two, three_four) = two_three_four.split_at_mut(4);
+      let (three, four) = three_four.split_at_mut(44);
       one.copy_from_slice(&sequence_number.to_ne_bytes());
-      two.copy_from_slice(&old_satpoint.store());
-      three.copy_from_slice(&satpoint);
+      two.copy_from_slice(&self.tx_offset.to_ne_bytes());
+      three.copy_from_slice(&old_satpoint.store());
+      four.copy_from_slice(&satpoint);
       transfer
     };
     self.height_to_transfers.insert(&self.height, &transfer)?;

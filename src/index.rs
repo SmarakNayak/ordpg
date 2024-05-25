@@ -59,7 +59,7 @@ macro_rules! define_multimap_table {
 define_multimap_table! { SATPOINT_TO_SEQUENCE_NUMBER, &SatPointValue, u32 }
 define_multimap_table! { SAT_TO_SEQUENCE_NUMBER, u64, u32 }
 define_multimap_table! { SEQUENCE_NUMBER_TO_CHILDREN, u32, u32 }
-define_multimap_table! { HEIGHT_TO_TRANSFERS, u32, &[u8; 92] }
+define_multimap_table! { HEIGHT_TO_TRANSFERS, u32, &[u8; 96] }
 define_table! { HEIGHT_TO_BLOCK_HEADER, u32, &HeaderValue }
 define_table! { HEIGHT_TO_LAST_SEQUENCE_NUMBER, u32, u32 }
 define_table! { HEIGHT_TO_BLOCK_SIZE, u32, u32 }
@@ -1716,7 +1716,7 @@ impl Index {
     )
   }
 
-  pub(crate) fn get_transfers_by_block_height(&self, height: u32) -> Result<Vec<(u32, SatPoint, SatPoint)>>  {
+  pub(crate) fn get_transfers_by_block_height(&self, height: u32) -> Result<Vec<(u32, u32, SatPoint, SatPoint)>>  {
     let mut return_vec = Vec::new();
     let rtx = self
       .database
@@ -1726,12 +1726,14 @@ impl Index {
     for transfer in transfers {
       let result = transfer?;
       let transfer = result.value();
-      let (sequence_number, rest) = transfer.split_at(4);
-      let (old_satpoint, new_satpoint) = rest.split_at(44);
+      let (sequence_number, offset_satpoints) = transfer.split_at(4);
+      let (tx_offset, satpoints) = offset_satpoints.split_at(4);
+      let (old_satpoint, new_satpoint) = satpoints.split_at(44);
       let sequence_number = u32::from_ne_bytes(sequence_number.try_into()?);
+      let tx_offset = u32::from_ne_bytes(tx_offset.try_into()?);
       let old_satpoint: SatPoint = SatPoint::load(old_satpoint.try_into()?);
       let new_satpoint: SatPoint = SatPoint::load(new_satpoint.try_into()?);
-      return_vec.push((sequence_number, old_satpoint, new_satpoint));
+      return_vec.push((sequence_number, tx_offset, old_satpoint, new_satpoint));
     }
     Ok(return_vec)
   }

@@ -455,6 +455,7 @@ impl<'index> Updater<'_> {
       value_cache,
       value_receiver,
       height_to_transfers: &mut height_to_transfers,
+      tx_offset: 0,
       transaction_id_to_fee: &mut transaction_id_to_fee
     };
 
@@ -473,6 +474,7 @@ impl<'index> Updater<'_> {
 
       for (tx_offset, (tx, txid)) in block.txdata.iter().enumerate().skip(1) {
         log::trace!("Indexing transaction {tx_offset}…");
+        inscription_updater.tx_offset = tx_offset as u32;
 
         let mut input_sat_ranges = VecDeque::new();
 
@@ -518,6 +520,7 @@ impl<'index> Updater<'_> {
       }
 
       if let Some((tx, txid)) = block.txdata.first() {
+        inscription_updater.tx_offset = 999999 as u32;
         self.index_transaction_sats(
           tx,
           *txid,
