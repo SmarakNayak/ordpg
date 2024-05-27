@@ -1046,7 +1046,8 @@ impl Vermilion {
             block_fees: blockstat_result.clone().map(|x| x.total_fee.map(|y| y.to_sat() as i64)).flatten(),
             min_fee: blockstat_result.clone().map(|x| x.min_fee_rate.map(|y| y.to_sat() as i64)).flatten(),
             max_fee: blockstat_result.clone().map(|x| x.max_fee_rate.map(|y| y.to_sat() as i64)).flatten(),
-            average_fee: blockstat_result.clone().map(|x| x.avg_fee_rate.map(|y| y.to_sat() as i64)).flatten()
+            average_fee: blockstat_result.clone().map(|x| x.fee_rate_percentiles.map(|y| y.fr_50th.to_sat() as i64)).flatten(),
+            //average_fee: blockstat_result.clone().map(|x| x.avg_fee_rate.map(|y| y.to_sat() as i64)).flatten()
           };
           blockstats.push(blockstat);
 
