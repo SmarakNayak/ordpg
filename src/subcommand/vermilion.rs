@@ -436,7 +436,7 @@ pub struct CollectionSummary {
   range_start: Option<i64>,
   range_end: Option<i64>,
   total_volume: Option<i64>,
-  total_fees: Option<i64>,
+  total_fees: Option<f64>,
   total_on_chain_footprint: Option<i64>
 }
 
@@ -2012,7 +2012,7 @@ impl Vermilion {
         range_start bigint,
         range_end bigint,
         total_volume bigint, 
-        total_fees bigint, 
+        total_fees double precision, 
         total_on_chain_footprint bigint
       )").await?;
     Ok(())
