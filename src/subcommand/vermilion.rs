@@ -437,7 +437,7 @@ pub struct CollectionSummary {
   range_end: Option<i64>,
   total_volume: Option<i64>,
   total_fees: Option<f64>,
-  total_on_chain_footprint: Option<i64>
+  total_on_chain_footprint: Option<f64>
 }
 
 #[derive(Serialize)]
@@ -2013,7 +2013,7 @@ impl Vermilion {
         range_end bigint,
         total_volume bigint, 
         total_fees double precision, 
-        total_on_chain_footprint bigint
+        total_on_chain_footprint double precision
       )").await?;
     Ok(())
   }
