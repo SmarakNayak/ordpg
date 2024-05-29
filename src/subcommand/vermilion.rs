@@ -191,8 +191,8 @@ pub struct Transfer {
   address: String,
   previous_address: String,
   price: i64,
-  tx_fee: f64,
-  tx_size: f64,
+  tx_fee: i64,
+  tx_size: i64,
   is_genesis: bool
 }
 
@@ -436,8 +436,8 @@ pub struct CollectionSummary {
   range_start: Option<i64>,
   range_end: Option<i64>,
   total_volume: Option<i64>,
-  total_fees: Option<f64>,
-  total_on_chain_footprint: Option<f64>
+  total_fees: Option<i64>,
+  total_on_chain_footprint: Option<i64>
 }
 
 #[derive(Serialize)]
@@ -1131,7 +1131,7 @@ impl Vermilion {
           }
           let t2 = Instant::now();
           let mut tx_id_list = transfers.clone().into_iter().map(|(_id, _tx_offset, _,satpoint)| satpoint.outpoint.txid).collect::<Vec<_>>();
-          let transfer_counts: HashMap<Txid, i32> = tx_id_list.iter().map(|&x| (x, 1)).collect();
+          let transfer_counts: HashMap<Txid, u64> = tx_id_list.iter().map(|&x| (x, 1)).collect();
           let mut prev_tx_id_list = transfers.clone().into_iter().map(|(_id, _tx_offset, previous_satpoint,_)| previous_satpoint.outpoint.txid).collect::<Vec<_>>();
           tx_id_list.append(&mut prev_tx_id_list);
           tx_id_list.retain(|x| *x != Hash::all_zeros());
@@ -1182,7 +1182,7 @@ impl Vermilion {
           for (sequence_number, tx_offset, old_satpoint, satpoint) in transfers {
             //1. Get ordinal receive address
             let (address, prev_address, price, tx_fee, tx_size) = if satpoint.outpoint == unbound_outpoint() && (old_satpoint.outpoint == unbound_outpoint() || old_satpoint.outpoint.is_null()) {
-              ("unbound".to_string(), "unbound".to_string(), 0, 0 as f64, 0 as f64)
+              ("unbound".to_string(), "unbound".to_string(), 0, 0, 0)
             } else if satpoint.outpoint == unbound_outpoint() {
               let prev_tx = tx_map.get(&old_satpoint.outpoint.txid).unwrap();
               let prev_output = prev_tx
@@ -1196,7 +1196,7 @@ impl Vermilion {
                 .address_from_script(&prev_output.script_pubkey)
                 .map(|address| address.to_string())
                 .unwrap_or_else(|e| e.to_string());
-              ("unbound".to_string(), prev_address, 0, 0 as f64, 0 as f64)
+              ("unbound".to_string(), prev_address, 0, 0, 0)
             } else if old_satpoint.outpoint == unbound_outpoint() || old_satpoint.outpoint.is_null() {
               let tx = tx_map.get(&satpoint.outpoint.txid).unwrap();
               //1. Get address
@@ -1225,7 +1225,7 @@ impl Vermilion {
               //4. Get transfer count
               let transfer_count = transfer_counts.get(&satpoint.outpoint.txid).unwrap();
 
-              (address, "unbound".to_string(), 0, (tx_fee as f64)/(*transfer_count as f64), (tx_size as f64)/(*transfer_count as f64))
+              (address, "unbound".to_string(), 0, tx_fee/transfer_count, (tx_size as u64)/transfer_count)
             } else {
               let tx = tx_map.get(&satpoint.outpoint.txid).unwrap();
               let prev_tx = tx_map.get(&old_satpoint.outpoint.txid).unwrap();
@@ -1323,7 +1323,7 @@ impl Vermilion {
               //5. Get transfer count
               let transfer_count = transfer_counts.get(&satpoint.outpoint.txid).unwrap();
 
-              (address, prev_address, price, (tx_fee as f64)/(*transfer_count as f64), (tx_size as f64)/(*transfer_count as f64))
+              (address, prev_address, price, tx_fee/transfer_count, (tx_size as u64)/transfer_count)
             };
             seq_point_transfer_details.push((sequence_number, tx_offset, satpoint, address, prev_address, price, tx_fee, tx_size));
           }
@@ -1351,8 +1351,8 @@ impl Vermilion {
               address: address,
               previous_address: prev_address,
               price: price as i64,
-              tx_fee: tx_fee,
-              tx_size: tx_size,
+              tx_fee: tx_fee as i64,
+              tx_size: tx_size as i64,
               is_genesis: point.outpoint.txid == id.txid
             };
             transfer_vec.push(transfer);
@@ -2012,8 +2012,8 @@ impl Vermilion {
         range_start bigint,
         range_end bigint,
         total_volume bigint, 
-        total_fees double precision, 
-        total_on_chain_footprint double precision
+        total_fees bigint, 
+        total_on_chain_footprint bigint
       )").await?;
     Ok(())
   }
@@ -2458,8 +2458,8 @@ impl Vermilion {
         address varchar(100),
         previous_address varchar(100),
         price bigint,
-        tx_fee double precision,
-        tx_size double precision,
+        tx_fee bigint,
+        tx_size bigint,
         is_genesis boolean,
         PRIMARY KEY (id, block_number, satpoint)
       )").await?;
@@ -2498,8 +2498,8 @@ impl Vermilion {
       Type::VARCHAR,
       Type::VARCHAR,
       Type::INT8,
-      Type::FLOAT8,
-      Type::FLOAT8,
+      Type::INT8,
+      Type::INT8,
       Type::BOOL
     ];
     let sink = tx.copy_in(copy_stm).await?;
@@ -2542,8 +2542,8 @@ impl Vermilion {
         address varchar(100),
         previous_address varchar(100),
         price bigint,
-        tx_fee double precision,
-        tx_size double precision,
+        tx_fee bigint,
+        tx_size bigint,
         is_genesis boolean
       )").await?;
     conn.simple_query(r"
@@ -2584,8 +2584,8 @@ impl Vermilion {
       Type::VARCHAR,
       Type::VARCHAR,
       Type::INT8,
-      Type::FLOAT8,
-      Type::FLOAT8,
+      Type::INT8,
+      Type::INT8,
       Type::BOOL
     ];
     let sink = tx.copy_in(copy_stm).await?;
