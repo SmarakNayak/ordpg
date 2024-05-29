@@ -1,18 +1,15 @@
 use super::*;
 
-fn target_as_block_hash(target: bitcoin::Target) -> BlockHash {
-  BlockHash::from_raw_hash(Hash::from_byte_array(target.to_le_bytes()))
-}
-
 #[derive(Boilerplate)]
 pub(crate) struct BlockHtml {
-  hash: BlockHash,
-  target: BlockHash,
   best_height: Height,
   block: Block,
+  featured_inscriptions: Vec<InscriptionId>,
+  hash: BlockHash,
   height: Height,
   inscription_count: usize,
-  featured_inscriptions: Vec<InscriptionId>,
+  runes: Vec<SpacedRune>,
+  target: BlockHash,
 }
 
 impl BlockHtml {
@@ -22,6 +19,7 @@ impl BlockHtml {
     best_height: Height,
     inscription_count: usize,
     featured_inscriptions: Vec<InscriptionId>,
+    runes: Vec<SpacedRune>,
   ) -> Self {
     Self {
       hash: block.header.block_hash(),
@@ -31,32 +29,7 @@ impl BlockHtml {
       best_height,
       inscription_count,
       featured_inscriptions,
-    }
-  }
-}
-
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
-pub struct BlockJson {
-  pub hash: BlockHash,
-  pub target: BlockHash,
-  pub best_height: u32,
-  pub height: u32,
-  pub inscriptions: Vec<InscriptionId>,
-}
-
-impl BlockJson {
-  pub(crate) fn new(
-    block: Block,
-    height: Height,
-    best_height: Height,
-    inscriptions: Vec<InscriptionId>,
-  ) -> Self {
-    Self {
-      hash: block.header.block_hash(),
-      target: target_as_block_hash(block.header.target()),
-      height: height.0,
-      best_height: best_height.0,
-      inscriptions,
+      runes,
     }
   }
 }
@@ -79,6 +52,7 @@ mod tests {
         Height(0),
         Height(0),
         0,
+        Vec::new(),
         Vec::new()
       ),
       "
@@ -94,6 +68,7 @@ mod tests {
         prev
         next
         .*
+        <h2>0 Runes</h2>
         <h2>0 Inscriptions</h2>
         <div class=thumbnails>
         </div>
@@ -114,6 +89,7 @@ mod tests {
         Height(0),
         Height(1),
         0,
+        Vec::new(),
         Vec::new()
       ),
       r"<h1>Block 0</h1>.*prev\s*<a class=next href=/block/1>next</a>.*"
@@ -128,6 +104,7 @@ mod tests {
         Height(1),
         Height(1),
         0,
+        Vec::new(),
         Vec::new()
       ),
       r"<h1>Block 1</h1>.*<a class=prev href=/block/0>prev</a>\s*next.*",

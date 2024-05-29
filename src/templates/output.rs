@@ -6,50 +6,9 @@ pub(crate) struct OutputHtml {
   pub(crate) inscriptions: Vec<InscriptionId>,
   pub(crate) outpoint: OutPoint,
   pub(crate) output: TxOut,
-  pub(crate) runes: Vec<(SpacedRune, Pile)>,
+  pub(crate) runes: BTreeMap<SpacedRune, Pile>,
   pub(crate) sat_ranges: Option<Vec<(u64, u64)>>,
   pub(crate) spent: bool,
-}
-
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
-pub struct OutputJson {
-  pub address: Option<String>,
-  pub indexed: bool,
-  pub inscriptions: Vec<InscriptionId>,
-  pub runes: Vec<(SpacedRune, Pile)>,
-  pub sat_ranges: Option<Vec<(u64, u64)>>,
-  pub script_pubkey: String,
-  pub spent: bool,
-  pub transaction: String,
-  pub value: u64,
-}
-
-impl OutputJson {
-  pub fn new(
-    chain: Chain,
-    inscriptions: Vec<InscriptionId>,
-    outpoint: OutPoint,
-    output: TxOut,
-    indexed: bool,
-    runes: Vec<(SpacedRune, Pile)>,
-    sat_ranges: Option<Vec<(u64, u64)>>,
-    spent: bool,
-  ) -> Self {
-    Self {
-      address: chain
-        .address_from_script(&output.script_pubkey)
-        .ok()
-        .map(|address| address.to_string()),
-      indexed,
-      inscriptions,
-      runes,
-      sat_ranges,
-      script_pubkey: output.script_pubkey.to_asm_string(),
-      spent,
-      transaction: outpoint.txid.to_string(),
-      value: output.value,
-    }
-  }
 }
 
 impl PageContent for OutputHtml {
@@ -73,7 +32,7 @@ mod tests {
         inscriptions: Vec::new(),
         outpoint: outpoint(1),
         output: TxOut { value: 3, script_pubkey: ScriptBuf::new_p2pkh(&PubkeyHash::all_zeros()), },
-        runes: Vec::new(),
+        runes: BTreeMap::new(),
         sat_ranges: Some(vec![(0, 1), (1, 3)]),
         spent: false,
       },
@@ -107,7 +66,7 @@ mod tests {
           value: 1,
           script_pubkey: script::Builder::new().push_int(0).into_script(),
         },
-        runes: Vec::new(),
+        runes: BTreeMap::new(),
         sat_ranges: None,
         spent: true,
       },
@@ -132,7 +91,7 @@ mod tests {
         inscriptions: Vec::new(),
         outpoint: outpoint(1),
         output: TxOut { value: 3, script_pubkey: ScriptBuf::new_p2pkh(&PubkeyHash::all_zeros()), },
-        runes: Vec::new(),
+        runes: BTreeMap::new(),
         sat_ranges: Some(vec![(0, 1), (1, 3)]),
         spent: true,
       },
@@ -163,7 +122,7 @@ mod tests {
         inscriptions: Vec::new(),
         outpoint: outpoint(1),
         output: TxOut { value: 3, script_pubkey: ScriptBuf::new_p2pkh(&PubkeyHash::all_zeros()), },
-        runes: Vec::new(),
+        runes: BTreeMap::new(),
         sat_ranges: None,
         spent: false,
       }
@@ -193,7 +152,7 @@ mod tests {
           value: 3,
           script_pubkey: ScriptBuf::new_p2pkh(&PubkeyHash::all_zeros()),
         },
-        runes: Vec::new(),
+        runes: BTreeMap::new(),
         sat_ranges: None,
         spent: false,
       },
@@ -232,7 +191,9 @@ mod tests {
             divisibility: 1,
             symbol: None,
           }
-        )],
+        )]
+        .into_iter()
+        .collect(),
         sat_ranges: None,
         spent: false,
       },
@@ -248,7 +209,7 @@ mod tests {
               </tr>
               <tr>
                 <td><a href=/rune/A•A>A•A</a></td>
-                <td>1.1</td>
+                <td>1.1\u{A0}¤</td>
               </tr>
             </table>
           </dd>

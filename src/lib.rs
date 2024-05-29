@@ -15,18 +15,18 @@ use {
   self::{
     arguments::Arguments,
     blocktime::Blocktime,
-    config::Config,
     decimal::Decimal,
-    decimal_sat::DecimalSat,
-    degree::Degree,
     deserialize_from_str::DeserializeFromStr,
-    epoch::Epoch,
-    height::Height,
-    inscriptions::{media, teleburn, Charm, Media, ParsedEnvelope},
-    outgoing::Outgoing,
+    index::BitcoinCoreRpcResultExt,
+    inscriptions::{
+      inscription_id,
+      media::{self, ImageRendering, Media},
+      teleburn, ParsedEnvelope,
+    },
+    into_usize::IntoUsize,
     representation::Representation,
-    runes::{Etching, Pile, SpacedRune},
-    subcommand::{Subcommand, SubcommandResult},
+    settings::Settings,
+    subcommand::{OutputFormat, Subcommand, SubcommandResult},
     tally::Tally,
   },
   anyhow::{anyhow, bail, ensure, Context, Error},
@@ -34,40 +34,41 @@ use {
   bitcoin::{
     address::{Address, NetworkUnchecked},
     blockdata::{
-      constants::{
-        COIN_VALUE, DIFFCHANGE_INTERVAL, MAX_SCRIPT_ELEMENT_SIZE, SUBSIDY_HALVING_INTERVAL,
-      },
+      constants::{DIFFCHANGE_INTERVAL, MAX_SCRIPT_ELEMENT_SIZE, SUBSIDY_HALVING_INTERVAL},
       locktime::absolute::LockTime,
     },
     consensus::{self, Decodable, Encodable},
-    hash_types::BlockHash,
+    hash_types::{BlockHash, TxMerkleNode},
     hashes::Hash,
-    opcodes,
-    script::{self, Instruction},
-    Amount, Block, Network, OutPoint, Script, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid,
-    Witness,
+    script, Amount, Block, Network, OutPoint, Script, ScriptBuf, Sequence, Transaction, TxIn,
+    TxOut, Txid, Witness,
   },
   bitcoincore_rpc::{Client, RpcApi},
   chrono::{DateTime, TimeZone, Utc},
   ciborium::Value,
   clap::{ArgGroup, Parser},
-  derive_more::{Display, FromStr},
   html_escaper::{Escape, Trusted},
+  http::HeaderMap,
   lazy_static::lazy_static,
+  ordinals::{
+    varint, Artifact, Charm, Edict, Epoch, Etching, Height, Pile, Rarity, Rune, RuneId, Runestone,
+    Sat, SatPoint, SpacedRune, Terms,
+  },
   regex::Regex,
-  serde::{Deserialize, Deserializer, Serialize, Serializer},
+  reqwest::Url,
+  serde::{Deserialize, Deserializer, Serialize},
+  serde_with::{DeserializeFromStr, SerializeDisplay},
   std::{
-    cmp,
+    cmp::{self, Reverse},
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     env,
     fmt::{self, Display, Formatter},
-    fs::{self, File},
-    io::{self, Cursor},
+    fs,
+    io::{self, Cursor, Read},
     mem,
     net::ToSocketAddrs,
-    ops::{Add, AddAssign, Sub},
     path::{Path, PathBuf},
-    process,
+    process::{self, Command, Stdio},
     str::FromStr,
     sync::{
       atomic::{self, AtomicBool},
@@ -77,7 +78,6 @@ use {
     time::{Duration, Instant, SystemTime},
   },
   sysinfo::System,
-  templates::{InscriptionJson, OutputJson, RuneJson, StatusJson},
   tokio::{runtime::Runtime, task},
 };
 
@@ -88,11 +88,7 @@ pub use self::{
   inscriptions::{Envelope, Inscription, InscriptionId},
   object::Object,
   options::Options,
-  rarity::Rarity,
   block_rarity::BlockRarity,
-  runes::{Edict, Rune, RuneId, Runestone},
-  sat::Sat,
-  sat_point::SatPoint,
   wallet::transaction_builder::{Target, TransactionBuilder},
 };
 
@@ -103,39 +99,26 @@ mod test;
 #[cfg(test)]
 use self::test::*;
 
-macro_rules! tprintln {
-    ($($arg:tt)*) => {
-
-      if cfg!(test) {
-        eprint!("==> ");
-        eprintln!($($arg)*);
-      }
-    };
-}
-
+pub mod api;
 pub mod arguments;
 mod blocktime;
 pub mod chain;
-mod config;
-mod decimal;
-mod decimal_sat;
-mod degree;
+pub mod decimal;
 mod deserialize_from_str;
-mod epoch;
 mod fee_rate;
-mod height;
 pub mod index;
 mod inscriptions;
+mod into_usize;
+mod macros;
 mod object;
-mod options;
-mod outgoing;
+pub mod options;
+pub mod outgoing;
+mod re;
 pub mod rarity;
 pub mod block_rarity;
 mod representation;
 pub mod runes;
-pub mod sat;
-mod sat_point;
-mod server_config;
+mod settings;
 pub mod subcommand;
 mod tally;
 pub mod templates;
@@ -143,13 +126,11 @@ pub mod wallet;
 
 type Result<T = (), E = Error> = std::result::Result<T, E>;
 
-const CYCLE_EPOCHS: u32 = 6;
+const TARGET_POSTAGE: Amount = Amount::from_sat(10_000);
 
 static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 static LISTENERS: Mutex<Vec<axum_server::Handle>> = Mutex::new(Vec::new());
-static INDEXER: Mutex<Option<thread::JoinHandle<()>>> = Mutex::new(Option::None);
-
-const TARGET_POSTAGE: Amount = Amount::from_sat(10_000);
+static INDEXER: Mutex<Option<thread::JoinHandle<()>>> = Mutex::new(None);
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn fund_raw_transaction(
@@ -178,22 +159,34 @@ fn fund_raw_transaction(
           // by 1000.
           fee_rate: Some(Amount::from_sat((fee_rate.n() * 1000.0).ceil() as u64)),
           change_position: Some(unfunded_transaction.output.len().try_into()?),
-          ..Default::default()
+          ..default()
         }),
         Some(false),
-      )?
+      )
+      .map_err(|err| {
+        if matches!(
+          err,
+          bitcoincore_rpc::Error::JsonRpc(bitcoincore_rpc::jsonrpc::Error::Rpc(
+            bitcoincore_rpc::jsonrpc::error::RpcError { code: -6, .. }
+          ))
+        ) {
+          anyhow!("not enough cardinal utxos")
+        } else {
+          err.into()
+        }
+      })?
       .hex,
   )
 }
 
-fn integration_test() -> bool {
-  env::var_os("ORD_INTEGRATION_TEST")
-    .map(|value| value.len() > 0)
-    .unwrap_or(false)
+pub fn timestamp(seconds: u64) -> DateTime<Utc> {
+  Utc
+    .timestamp_opt(seconds.try_into().unwrap_or(i64::MAX), 0)
+    .unwrap()
 }
 
-pub fn timestamp(seconds: u32) -> DateTime<Utc> {
-  Utc.timestamp_opt(seconds.into(), 0).unwrap()
+fn target_as_block_hash(target: bitcoin::Target) -> BlockHash {
+  BlockHash::from_raw_hash(Hash::from_byte_array(target.to_le_bytes()))
 }
 
 fn unbound_outpoint() -> OutPoint {
@@ -203,10 +196,27 @@ fn unbound_outpoint() -> OutPoint {
   }
 }
 
-pub fn parse_ord_server_args(args: &str) -> (Options, crate::subcommand::server::Server) {
+fn uncheck(address: &Address) -> Address<NetworkUnchecked> {
+  address.to_string().parse().unwrap()
+}
+
+fn default<T: Default>() -> T {
+  Default::default()
+}
+
+pub fn parse_ord_server_args(args: &str) -> (Settings, subcommand::server::Server) {
   match Arguments::try_parse_from(args.split_whitespace()) {
     Ok(arguments) => match arguments.subcommand {
-      Subcommand::Server(server) => (arguments.options, server),
+      Subcommand::Server(server) => (
+        Settings::merge(
+          arguments.options,
+          vec![("INTEGRATION_TEST".into(), "1".into())]
+            .into_iter()
+            .collect(),
+        )
+        .unwrap(),
+        server,
+      ),
       subcommand => panic!("unexpected subcommand: {subcommand:?}"),
     },
     Err(err) => panic!("error parsing arguments: {err}"),
@@ -233,7 +243,7 @@ pub fn main() {
       process::exit(1);
     }
 
-    println!("Shutting down gracefully. Press <CTRL-C> again to shutdown immediately.");
+    eprintln!("Shutting down gracefully. Press <CTRL-C> again to shutdown immediately.");
 
     LISTENERS
       .lock()
@@ -245,7 +255,11 @@ pub fn main() {
   })
   .expect("Error setting <CTRL-C> handler");
 
-  match Arguments::parse().run() {
+  let args = Arguments::parse();
+
+  let format = args.options.format;
+
+  match args.run() {
     Err(err) => {
       eprintln!("error: {err}");
       err
@@ -265,7 +279,7 @@ pub fn main() {
     }
     Ok(output) => {
       if let Some(output) = output {
-        output.print_json();
+        output.print(format.unwrap_or_default());
       }
       gracefully_shutdown_indexer();
     }
