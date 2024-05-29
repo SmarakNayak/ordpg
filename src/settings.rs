@@ -29,6 +29,15 @@ pub struct Settings {
   server_password: Option<String>,
   server_url: Option<String>,
   server_username: Option<String>,
+  db_connection_string: Option<String>,
+  db_host: Option<String>,
+  db_name: Option<String>,
+  db_user: Option<String>,
+  db_password: Option<String>,
+  start_number_override: Option<u64>,
+  s3_bucket_name: Option<String>,
+  s3_upload_start_number: Option<u64>,
+  s3_head_check: Option<bool>,
 }
 
 impl Settings {
@@ -145,6 +154,15 @@ impl Settings {
       server_password: self.server_password.or(source.server_password),
       server_url: self.server_url.or(source.server_url),
       server_username: self.server_username.or(source.server_username),
+      db_connection_string: self.db_connection_string.or(source.db_connection_string),
+      db_host: self.db_host.or(source.db_host),
+      db_name: self.db_name.or(source.db_name),
+      db_user: self.db_user.or(source.db_user),
+      db_password: self.db_password.or(source.db_password),
+      start_number_override: self.start_number_override.or(source.start_number_override),
+      s3_bucket_name: self.s3_bucket_name.or(source.s3_bucket_name),
+      s3_upload_start_number: self.s3_upload_start_number.or(source.s3_upload_start_number),
+      s3_head_check: self.s3_head_check.or(source.s3_head_check),
     }
   }
 
@@ -181,6 +199,15 @@ impl Settings {
       server_password: options.server_password,
       server_url: None,
       server_username: options.server_username,
+      db_connection_string: None,
+      db_host: None,
+      db_name: None,
+      db_user: None,
+      db_password: None,
+      start_number_override: None,
+      s3_bucket_name: None,
+      s3_upload_start_number: None,
+      s3_head_check: None,
     }
   }
 
@@ -261,6 +288,15 @@ impl Settings {
       server_password: get_string("SERVER_PASSWORD"),
       server_url: get_string("SERVER_URL"),
       server_username: get_string("SERVER_USERNAME"),
+      db_connection_string: get_string("DB_CONNECTION_STRING"),
+      db_host: get_string("DB_HOST"),
+      db_name: get_string("DB_NAME"),
+      db_user: get_string("DB_USER"),
+      db_password: get_string("DB_PASSWORD"),
+      start_number_override: get_u32("START_NUMBER_OVERRIDE")?,
+      s3_bucket_name: get_string("S3_BUCKET_NAME"),
+      s3_upload_start_number: get_u32("S3_UPLOAD_START_NUMBER")?,
+      s3_head_check: Some(get_bool("S3_HEAD_CHECK")),
     })
   }
 
@@ -292,6 +328,15 @@ impl Settings {
       server_password: None,
       server_url: Some(server_url.into()),
       server_username: None,
+      db_connection_string: None,
+      db_host: None,
+      db_name: None,
+      db_user: None,
+      db_password: None,
+      start_number_override: None,
+      s3_bucket_name: None,
+      s3_upload_start_number: None,
+      s3_head_check: None,
     }
   }
 
@@ -373,6 +418,15 @@ impl Settings {
       server_password: self.server_password,
       server_url: self.server_url,
       server_username: self.server_username,
+      db_connection_string: self.db_connection_string,
+      db_host: self.db_host,
+      db_name: self.db_name,
+      db_user: self.db_user,
+      db_password: self.db_password,
+      start_number_override: self.start_number_override,
+      s3_bucket_name: self.s3_bucket_name,
+      s3_upload_start_number: self.s3_upload_start_number,
+      s3_head_check: self.s3_head_check,
     })
   }
 
@@ -1068,6 +1122,15 @@ mod tests {
         server_password: Some("server password".into()),
         server_url: Some("server url".into()),
         server_username: Some("server username".into()),
+        db_connection_string: None,
+        db_host: None,
+        db_name: None,
+        db_user: None,
+        db_password: None,
+        start_number_override: None,
+        s3_bucket_name: None,
+        s3_upload_start_number: None,
+        s3_head_check: Some(true),
       }
     );
   }
@@ -1132,6 +1195,15 @@ mod tests {
         server_password: Some("server password".into()),
         server_url: None,
         server_username: Some("server username".into()),
+        db_connection_string: None,
+        db_host: None,
+        db_name: None,
+        db_user: None,
+        db_password: None,
+        start_number_override: None,
+        s3_bucket_name: None,
+        s3_upload_start_number: None,
+        s3_head_check: Some(true),
       }
     );
   }
