@@ -10,7 +10,7 @@ pub(crate) struct Migrator {
 }
 
 impl Migrator {
-  pub(crate) fn run(&self, _options: Options, _index: Arc<Index>) -> SubcommandResult {
+  pub(crate) fn run(&self, _settings: Settings, _index: Arc<Index>) -> SubcommandResult {
     if self.script_number == 1 {
       println!("Running test migration 1");
       //CODE GOES HERE

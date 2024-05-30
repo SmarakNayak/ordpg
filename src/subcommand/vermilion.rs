@@ -105,6 +105,17 @@ pub(crate) struct Vermilion {
   pub(crate) no_sync: bool,
   #[arg(
     long,
+    help = "Proxy `/content/INSCRIPTION_ID` requests to `<CONTENT_PROXY>/content/INSCRIPTION_ID` if the inscription is not present on current chain."
+  )]
+  pub(crate) content_proxy: Option<Url>,
+  #[arg(
+    long,
+    default_value = "5s",
+    help = "Poll Bitcoin Core every <POLLING_INTERVAL>."
+  )]
+  pub(crate) polling_interval: humantime::Duration,
+  #[arg(
+    long,
     help = "Listen on <HTTP_PORT> for incoming REST requests. [default: 81]."
   )]
   pub(crate) api_http_port: Option<u16>,
@@ -116,7 +127,7 @@ pub(crate) struct Vermilion {
   #[arg(long, help = "Only run api server, do not run indexer. [default: false].")]
   pub(crate) run_api_server_only: bool,
   #[arg(long, help = "Run migration script. [default: false].")]
-  pub(crate) run_migration_script: bool
+  pub(crate) run_migration_script: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -531,11 +542,11 @@ pub struct ApiServerConfig {
 const INDEX_BATCH_SIZE: usize = 10000;
 
 impl Vermilion {
-  pub(crate) fn run(self, options: Options) -> SubcommandResult {
+  pub(crate) fn run(self, settings: Settings) -> SubcommandResult {
     //1. Run Vermilion Server
     println!("Vermilion Server Starting");
     let vermilion_server_clone = self.clone();
-    let _vermilion_server_thread = vermilion_server_clone.run_vermilion_server(options.clone());
+    let _vermilion_server_thread = vermilion_server_clone.run_vermilion_server(settings.clone());
 
     if self.run_api_server_only {//If only running api server, block here, early return on ctrl-c
       let rt = Runtime::new().unwrap();
@@ -552,25 +563,25 @@ impl Vermilion {
 
     //2. Run Ordinals Server
     println!("Ordinals Server Starting");
-    let index = Arc::new(Index::open(&options)?);
+    let index = Arc::new(Index::open(&settings)?);
     let handle = axum_server::Handle::new();
     LISTENERS.lock().unwrap().push(handle.clone());
     let ordinals_server_clone = self.clone();
-    let ordinals_server_thread = ordinals_server_clone.run_ordinals_server(options.clone(), index.clone(), handle);
+    let ordinals_server_thread = ordinals_server_clone.run_ordinals_server(settings.clone(), index.clone(), handle);
 
     //2a. Run Migration script
     let migration_clone = self.clone();
-    let migration_script_thread = migration_clone.run_migration_script(options.clone(), index.clone());
+    let migration_script_thread = migration_clone.run_migration_script(settings.clone(), index.clone());
 
     //3. Run Address Indexer
     println!("Address Indexer Starting");
     let address_indexer_clone = self.clone();
-    let address_indexer_thread = address_indexer_clone.run_address_indexer(options.clone(), index.clone());
+    let address_indexer_thread = address_indexer_clone.run_address_indexer(settings.clone(), index.clone());
 
     //4. Run Inscription Indexer
     println!("Inscription Indexer Starting");
     let inscription_indexer_clone = self.clone();
-    inscription_indexer_clone.run_inscription_indexer(options.clone(), index.clone()); //this blocks
+    inscription_indexer_clone.run_inscription_indexer(settings.clone(), index.clone()); //this blocks
     println!("Inscription Indexer Stopped");
 
     //Wait for other threads to finish before exiting
@@ -593,27 +604,25 @@ impl Vermilion {
     Ok(None)
   }
 
-  pub(crate) fn run_inscription_indexer(self, options: Options, index: Arc<Index>) {
+  pub(crate) fn run_inscription_indexer(self, settings: Settings, index: Arc<Index>) {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap();
     rt.block_on(async {
-      let config = options.load_config().unwrap();
-      let cloned_config = options.clone().load_config().unwrap();
-      let deadpool = match Self::get_deadpool(cloned_config).await {
+      let deadpool = match Self::get_deadpool(settings).await {
         Ok(deadpool) => deadpool,
         Err(err) => {
           println!("Error creating deadpool: {:?}", err);
           return;
         }
       };
-      let start_number_override = config.start_number_override;
+      let start_number_override = settings.start_number_override().map(|x| x as u64);
       let s3_config = aws_config::from_env().load().await;
       let s3client = s3::Client::new(&s3_config);
-      let s3_bucket_name = config.s3_bucket_name.unwrap();
-      let s3_upload_start_number = config.s3_upload_start_number.unwrap_or(0);
-      let s3_head_check = config.s3_head_check.unwrap_or(false);
+      let s3_bucket_name = settings.s3_bucket_name().unwrap().to_string();
+      let s3_upload_start_number = settings.s3_upload_start_number().unwrap_or(0) as u64;
+      let s3_head_check = settings.s3_head_check();
       let n_threads = self.n_threads.unwrap_or(1).into();
       let sem = Arc::new(Semaphore::new(n_threads));
       let status_vector: Arc<Mutex<Vec<SequenceNumberStatus>>> = Arc::new(Mutex::new(Vec::new()));
@@ -959,15 +968,14 @@ impl Vermilion {
     })
   }
 
-  pub(crate) fn run_address_indexer(self, options: Options, index: Arc<Index>) -> JoinHandle<()> {
+  pub(crate) fn run_address_indexer(self, settings: Settings, index: Arc<Index>) -> JoinHandle<()> {
     let address_indexer_thread = thread::spawn(move ||{
       let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap();
       rt.block_on(async move {
-        let config = options.load_config().unwrap();
-        let deadpool = match Self::get_deadpool(config).await {
+        let deadpool = match Self::get_deadpool(settings).await {
           Ok(deadpool) => deadpool,
           Err(err) => {
             println!("Error creating deadpool: {:?}", err);
@@ -995,8 +1003,8 @@ impl Vermilion {
           return;
         }
 
-        let fetcher = fetcher::Fetcher::new(&options).unwrap();
-        let first_inscription_height = options.first_inscription_height();
+        let fetcher = fetcher::Fetcher::new(&settings).unwrap();
+        let first_inscription_height = settings.first_inscription_height();
         let mut height = match Self::get_start_block(deadpool.clone()).await {
           Ok(height) => height,
           Err(err) => {
@@ -1191,7 +1199,7 @@ impl Vermilion {
                 .into_iter()
                 .nth(old_satpoint.outpoint.vout.try_into().unwrap())
                 .unwrap();
-              let prev_address = options
+              let prev_address = settings
                 .chain()
                 .address_from_script(&prev_output.script_pubkey)
                 .map(|address| address.to_string())
@@ -1206,7 +1214,7 @@ impl Vermilion {
                 .into_iter()
                 .nth(satpoint.outpoint.vout.try_into().unwrap())
                 .unwrap();
-              let address = options
+              let address = settings
                 .chain()
                 .address_from_script(&output.script_pubkey)
                 .map(|address| address.to_string())
@@ -1236,7 +1244,7 @@ impl Vermilion {
                 .into_iter()
                 .nth(satpoint.outpoint.vout.try_into().unwrap())
                 .unwrap();
-              let address = options
+              let address = settings
                 .chain()
                 .address_from_script(&output.script_pubkey)
                 .map(|address| address.to_string())
@@ -1248,7 +1256,7 @@ impl Vermilion {
                 .into_iter()
                 .nth(old_satpoint.outpoint.vout.try_into().unwrap())
                 .unwrap();
-              let prev_address = options
+              let prev_address = settings
                 .chain()
                 .address_from_script(&prev_output.script_pubkey)
                 .map(|address| address.to_string())
@@ -1391,12 +1399,11 @@ impl Vermilion {
     return address_indexer_thread;
   }
 
-  pub(crate) fn run_vermilion_server(self, options: Options) -> JoinHandle<()> {
+  pub(crate) fn run_vermilion_server(self, settings: Settings) -> JoinHandle<()> {
     let verm_server_thread = thread::spawn(move ||{
       let rt = Runtime::new().unwrap();
       rt.block_on(async move {
-        let config = options.load_config().unwrap();
-        let deadpool = match Self::get_deadpool(config).await {
+        let deadpool = match Self::get_deadpool(settings).await {
           Ok(deadpool) => deadpool,
           Err(err) => {
             println!("Error creating deadpool: {:?}", err);
@@ -1483,7 +1490,7 @@ impl Vermilion {
     return verm_server_thread;
   }
 
-  pub(crate) fn run_ordinals_server(self, options: Options, index: Arc<Index>, handle: Handle) -> JoinHandle<()> {
+  pub(crate) fn run_ordinals_server(self, settings: Settings, index: Arc<Index>, handle: Handle) -> JoinHandle<()> {
     //1. Ordinals Server
     let server = server::Server {
       address: self.address,
@@ -1499,9 +1506,11 @@ impl Vermilion {
       csp_origin: self.csp_origin,
       decompress: self.decompress,
       no_sync: self.no_sync,
+      content_proxy: self.content_proxy,
+      polling_interval: self.polling_interval,
     };
     let server_thread = thread::spawn(move || {
-      let server_result = server.run(options, index, handle);
+      let server_result = server.run(settings, index, handle);
       match server_result {
         Ok(_) => {
           println!("Ordinals server stopped");
@@ -1514,14 +1523,14 @@ impl Vermilion {
     return server_thread;
   }
 
-  pub(crate) fn run_migration_script(self, options: Options, index: Arc<Index>) -> JoinHandle<()> {
+  pub(crate) fn run_migration_script(self, settings: Settings, index: Arc<Index>) -> JoinHandle<()> {
       let migration_thread = thread::spawn(move || {
         if self.run_migration_script {
           println!("Migration Script Starting");
           let migrator = Migrator {
             script_number: 1
           };
-          let migration_result = migrator.run(options, index);
+          let migration_result = migrator.run(settings, index);
           match migration_result {
             Ok(_) => {
               println!("Migration script stopped");
@@ -1763,7 +1772,7 @@ impl Vermilion {
     let charms = Charm::ALL
       .iter()
       .filter(|charm| charm.is_set(entry.charms))
-      .map(|charm| charm.title().to_string())
+      .map(|charm| charm.to_string())
       .collect();
     let metadata = Metadata {
       id: inscription_id.to_string(),
@@ -4158,12 +4167,12 @@ impl Vermilion {
     Ok(inscriptions)
   }
 
-  async fn get_deadpool(config: Config) -> anyhow::Result<deadpool> {
+  async fn get_deadpool(settings: Settings) -> anyhow::Result<deadpool> {
     let mut deadpool_cfg = deadpool_postgres::Config::new();
-    deadpool_cfg.host = config.db_host;
-    deadpool_cfg.dbname = config.db_name;
-    deadpool_cfg.user = config.db_user;
-    deadpool_cfg.password = config.db_password;
+    deadpool_cfg.host = settings.db_host().map(|s| s.to_string());
+    deadpool_cfg.dbname = settings.db_name().map(|s| s.to_string());
+    deadpool_cfg.user = settings.db_user().map(|s| s.to_string());
+    deadpool_cfg.password = settings.db_password().map(|s| s.to_string());
     deadpool_cfg.manager = Some(ManagerConfig { recycling_method: RecyclingMethod::Fast });
     let deadpool = deadpool_cfg.create_pool(Some(deadpool_postgres::Runtime::Tokio1), NoTls)?;
     Ok(deadpool)

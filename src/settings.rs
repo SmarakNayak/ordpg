@@ -29,7 +29,6 @@ pub struct Settings {
   server_password: Option<String>,
   server_url: Option<String>,
   server_username: Option<String>,
-  db_connection_string: Option<String>,
   db_host: Option<String>,
   db_name: Option<String>,
   db_user: Option<String>,
@@ -154,7 +153,6 @@ impl Settings {
       server_password: self.server_password.or(source.server_password),
       server_url: self.server_url.or(source.server_url),
       server_username: self.server_username.or(source.server_username),
-      db_connection_string: self.db_connection_string.or(source.db_connection_string),
       db_host: self.db_host.or(source.db_host),
       db_name: self.db_name.or(source.db_name),
       db_user: self.db_user.or(source.db_user),
@@ -199,7 +197,6 @@ impl Settings {
       server_password: options.server_password,
       server_url: None,
       server_username: options.server_username,
-      db_connection_string: None,
       db_host: None,
       db_name: None,
       db_user: None,
@@ -288,7 +285,6 @@ impl Settings {
       server_password: get_string("SERVER_PASSWORD"),
       server_url: get_string("SERVER_URL"),
       server_username: get_string("SERVER_USERNAME"),
-      db_connection_string: get_string("DB_CONNECTION_STRING"),
       db_host: get_string("DB_HOST"),
       db_name: get_string("DB_NAME"),
       db_user: get_string("DB_USER"),
@@ -328,7 +324,6 @@ impl Settings {
       server_password: None,
       server_url: Some(server_url.into()),
       server_username: None,
-      db_connection_string: None,
       db_host: None,
       db_name: None,
       db_user: None,
@@ -418,7 +413,6 @@ impl Settings {
       server_password: self.server_password,
       server_url: self.server_url,
       server_username: self.server_username,
-      db_connection_string: self.db_connection_string,
       db_host: self.db_host,
       db_name: self.db_name,
       db_user: self.db_user,
@@ -626,6 +620,38 @@ impl Settings {
 
   pub fn server_url(&self) -> Option<&str> {
     self.server_url.as_deref()
+  }
+
+  pub fn db_host(&self) -> Option<&str> {
+    self.db_host.as_deref()
+  }
+
+  pub fn db_name(&self) -> Option<&str> {
+    self.db_name.as_deref()
+  }
+
+  pub fn db_user(&self) -> Option<&str> {
+    self.db_user.as_deref()
+  }
+
+  pub fn db_password(&self) -> Option<&str> {
+    self.db_password.as_deref()
+  }
+
+  pub fn start_number_override(&self) -> Option<u32> {
+    self.start_number_override
+  }
+
+  pub fn s3_bucket_name(&self) -> Option<&str> {
+    self.s3_bucket_name.as_deref()
+  }
+
+  pub fn s3_upload_start_number(&self) -> Option<u32> {
+    self.s3_upload_start_number
+  }
+
+  pub fn s3_head_check(&self) -> bool {
+    self.s3_head_check.unwrap_or_default()
   }
 }
 
@@ -1122,7 +1148,6 @@ mod tests {
         server_password: Some("server password".into()),
         server_url: Some("server url".into()),
         server_username: Some("server username".into()),
-        db_connection_string: None,
         db_host: None,
         db_name: None,
         db_user: None,
@@ -1195,7 +1220,6 @@ mod tests {
         server_password: Some("server password".into()),
         server_url: None,
         server_username: Some("server username".into()),
-        db_connection_string: None,
         db_host: None,
         db_name: None,
         db_user: None,
