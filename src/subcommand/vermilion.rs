@@ -142,7 +142,7 @@ pub struct Metadata {
   genesis_transaction: String,
   pointer: Option<i64>,
   number: i64,
-  parent: Option<String>,
+  parents: Vec<String>,
   delegate: Option<String>,
   metaprotocol: Option<String>,
   on_chain_metadata: serde_json::Value,
@@ -231,7 +231,7 @@ pub struct TransferWithMetadata {
   sat: Option<i64>,
   satributes: Vec<String>,
   charms: Vec<String>,
-  parent: Option<String>,
+  parents: Vec<String>,
   delegate: Option<String>,
   metaprotocol: Option<String>,
   on_chain_metadata: serde_json::Value,
@@ -482,7 +482,7 @@ pub struct MetadataWithCollectionMetadata {
   genesis_transaction: String,
   pointer: Option<i64>,
   number: i64,
-  parent: Option<String>,
+  parents: Vec<String>,
   delegate: Option<String>,
   metaprotocol: Option<String>,
   on_chain_metadata: serde_json::Value,
@@ -610,7 +610,7 @@ impl Vermilion {
         .build()
         .unwrap();
     rt.block_on(async {
-      let deadpool = match Self::get_deadpool(settings).await {
+      let deadpool = match Self::get_deadpool(settings.clone()).await {
         Ok(deadpool) => deadpool,
         Err(err) => {
           println!("Error creating deadpool: {:?}", err);
@@ -975,7 +975,7 @@ impl Vermilion {
         .build()
         .unwrap();
       rt.block_on(async move {
-        let deadpool = match Self::get_deadpool(settings).await {
+        let deadpool = match Self::get_deadpool(settings.clone()).await {
           Ok(deadpool) => deadpool,
           Err(err) => {
             println!("Error creating deadpool: {:?}", err);
@@ -1714,7 +1714,15 @@ impl Vermilion {
       },
       None => Vec::new()
     };
-    let parent = entry.parent.map_or(None, |parent| Some(parent.to_string()));
+    let mut parents = Vec::new();
+    for parent in entry.parents {
+      let parent_entry = index
+        .get_inscription_entry_by_sequence_number(parent)?
+        .ok_or(anyhow!("Parent not found"))?
+        .id
+        .to_string();
+      parents.push(parent_entry);
+    }
     let metaprotocol = inscription.metaprotocol().map_or(None, |str| Some(str.to_string()));
     if let Some(metaprotocol_inner) = metaprotocol.clone() {
       if metaprotocol_inner.len() > 100 {
@@ -1785,7 +1793,7 @@ impl Vermilion {
       pointer: inscription.pointer().map(|value| { value.try_into().unwrap()}),
       number: entry.inscription_number as i64,
       sequence_number: entry.sequence_number as i64,
-      parent: parent,
+      parents: parents,
       delegate: inscription.delegate().map(|x| x.to_string()),
       metaprotocol: metaprotocol,
       on_chain_metadata: on_chain_metadata,
@@ -1865,7 +1873,7 @@ impl Vermilion {
         genesis_transaction varchar(80),
         pointer bigint,
         number bigint,          
-        parent varchar(80),
+        parents varchar(80)[],
         delegate varchar(80),
         metaprotocol text,
         on_chain_metadata jsonb,
@@ -1888,7 +1896,7 @@ impl Vermilion {
       CREATE INDEX IF NOT EXISTS index_metadata_sat ON ordinals (sat);
       CREATE INDEX IF NOT EXISTS index_metadata_satributes on ordinals USING GIN (satributes);
       CREATE INDEX IF NOT EXISTS index_metadata_charms on ordinals USING GIN (charms);
-      CREATE INDEX IF NOT EXISTS index_metadata_parent ON ordinals (parent);
+      CREATE INDEX IF NOT EXISTS index_metadata_parents ON ordinals USING GIN (parents);
       CREATE INDEX IF NOT EXISTS index_metadata_delegate ON ordinals (delegate);
       CREATE INDEX IF NOT EXISTS index_metadata_fee ON ordinals (genesis_fee);
       CREATE INDEX IF NOT EXISTS index_metadata_size ON ordinals (content_length);
@@ -2066,7 +2074,7 @@ impl Vermilion {
       genesis_transaction, 
       pointer, 
       number, 
-      parent, 
+      parents, 
       delegate, 
       metaprotocol, 
       on_chain_metadata, 
@@ -2091,7 +2099,7 @@ impl Vermilion {
       Type::VARCHAR,
       Type::INT8,
       Type::INT8,
-      Type::VARCHAR,
+      Type::VARCHAR_ARRAY,
       Type::VARCHAR,
       Type::TEXT,
       Type::JSONB,
@@ -2123,7 +2131,7 @@ impl Vermilion {
       row.push(&m.genesis_transaction);
       row.push(&m.pointer);
       row.push(&m.number);
-      row.push(&m.parent);
+      row.push(&m.parents);
       row.push(&m.delegate);
       let clean_metaprotocol = &m.metaprotocol.map(|s| s.replace("\0", ""));
       row.push(clean_metaprotocol);
@@ -3813,7 +3821,7 @@ impl Vermilion {
       pointer: row.get("pointer"),
       number: row.get("number"),
       sequence_number: row.get("sequence_number"),
-      parent: row.get("parent"),
+      parents: row.get("parents"),
       delegate: row.get("delegate"),
       metaprotocol: row.get("metaprotocol"),
       on_chain_metadata: row.get("on_chain_metadata"),
@@ -4314,7 +4322,7 @@ impl Vermilion {
         pointer: row.get("pointer"),
         number: row.get("number"),
         sequence_number: row.get("sequence_number"),
-        parent: row.get("parent"),
+        parents: row.get("parents"),
         delegate: row.get("delegate"),
         metaprotocol: row.get("metaprotocol"),
         on_chain_metadata: row.get("on_chain_metadata"),
@@ -4653,7 +4661,7 @@ impl Vermilion {
         pointer: row.get("pointer"),
         number: row.get("number"),
         sequence_number: row.get("sequence_number"),
-        parent: row.get("parent"),
+        parents: row.get("parents"),
         delegate: row.get("delegate"),
         metaprotocol: row.get("metaprotocol"),
         on_chain_metadata: row.get("on_chain_metadata"),

@@ -402,6 +402,7 @@ impl<'a, 'tx> InscriptionUpdater<'a, 'tx> {
     flotsam: Flotsam,
     new_satpoint: SatPoint,
   ) -> Result {
+    let cloned_flotsam = flotsam.clone();
     let inscription_id = flotsam.inscription_id;
     let (unbound, sequence_number) = match flotsam.origin {
       Origin::Old { old_satpoint } => {
@@ -571,7 +572,7 @@ impl<'a, 'tx> InscriptionUpdater<'a, 'tx> {
     self
       .sequence_number_to_satpoint
       .insert(sequence_number, &satpoint)?;
-    let old_satpoint = match flotsam.origin {
+    let old_satpoint = match cloned_flotsam.origin {
       Origin::New { .. } => SatPoint{outpoint: OutPoint::null(), offset: 0},
       Origin::Old { old_satpoint } => old_satpoint,
     };
