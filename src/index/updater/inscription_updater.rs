@@ -65,9 +65,9 @@ pub(super) struct InscriptionUpdater<'a, 'tx> {
   pub(super) unbound_inscriptions: u64,
   pub(super) utxo_cache: &'a mut HashMap<OutPoint, TxOut>,
   pub(super) txout_receiver: &'a mut broadcast::Receiver<TxOut>,
-  pub(super) height_to_transfers: &'a mut MultimapTable<'db, 'tx, u32, &'static [u8; 96]>,
+  pub(super) height_to_transfers: &'a mut MultimapTable<'tx, u32, &'static [u8; 96]>,
   pub(super) tx_offset: u32,
-  pub(super) transaction_id_to_fee: &'a mut Table<'db, 'tx, &'static TxidValue, u64>,
+  pub(super) transaction_id_to_fee: &'a mut Table<'tx, &'static TxidValue, u64>,
 }
 
 impl<'a, 'tx> InscriptionUpdater<'a, 'tx> {

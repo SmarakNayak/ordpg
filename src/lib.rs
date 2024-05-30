@@ -88,7 +88,6 @@ pub use self::{
   inscriptions::{Envelope, Inscription, InscriptionId},
   object::Object,
   options::Options,
-  block_rarity::BlockRarity,
   wallet::transaction_builder::{Target, TransactionBuilder},
 };
 
@@ -114,8 +113,6 @@ mod object;
 pub mod options;
 pub mod outgoing;
 mod re;
-pub mod rarity;
-pub mod block_rarity;
 mod representation;
 pub mod runes;
 mod settings;

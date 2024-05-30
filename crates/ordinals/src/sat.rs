@@ -57,7 +57,7 @@ impl Sat {
     self.into()
   }
 
-  pub(crate) fn block_rarities(self) -> Vec<BlockRarity> {
+  pub fn block_rarities(self) -> Vec<BlockRarity> {
     self.into()
   }
 
@@ -106,6 +106,10 @@ impl Sat {
       Rarity::Mythic => Charm::Mythic.set(&mut charms),
       Rarity::Rare => Charm::Rare.set(&mut charms),
       Rarity::Uncommon => Charm::Uncommon.set(&mut charms),
+      Rarity::BlackEpic => {},
+      Rarity::BlackLegendary => {},
+      Rarity::BlackRare => {},
+      Rarity::BlackUncommon => {},
     }
 
     charms

@@ -34,9 +34,9 @@ pub struct Settings {
   db_name: Option<String>,
   db_user: Option<String>,
   db_password: Option<String>,
-  start_number_override: Option<u64>,
+  start_number_override: Option<u32>,
   s3_bucket_name: Option<String>,
-  s3_upload_start_number: Option<u64>,
+  s3_upload_start_number: Option<u32>,
   s3_head_check: Option<bool>,
 }
 
