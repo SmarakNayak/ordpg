@@ -1330,6 +1330,10 @@ impl Vermilion {
               let tx_size = tx.vsize();
               //5. Get transfer count
               let transfer_count = transfer_counts.get(&satpoint.outpoint.txid).unwrap();
+              if satpoint.outpoint.txid.to_string() == "9f7b4df61e094fbc01adb013c70f810a7a80d4a2b633b52f96b8ae70c85fdd09".to_string() {
+                log::warn!("Satpoint: {:?}, Price: {:?}, tx_fee: {:?}, tx_size: {:?}, transfer_count: {:?}", satpoint.outpoint, price, tx_fee, tx_size, transfer_count);
+                log::warn!("Satpoint: {:?}, Price: {:?}, tx_fee: {:?}, tx_size: {:?}, transfer_count: {:?}", satpoint.outpoint, price, tx_fee/transfer_count, (tx_size as u64)/transfer_count, transfer_count);
+              }
 
               (address, prev_address, price, tx_fee/transfer_count, (tx_size as u64)/transfer_count)
             };
