@@ -1139,7 +1139,10 @@ impl Vermilion {
           }
           let t2 = Instant::now();
           let mut tx_id_list = transfers.clone().into_iter().map(|(_id, _tx_offset, _,satpoint)| satpoint.outpoint.txid).collect::<Vec<_>>();
-          let transfer_counts: HashMap<Txid, u64> = tx_id_list.iter().map(|&x| (x, 1)).collect();
+          let transfer_counts: HashMap<Txid, u64> = tx_id_list.iter().fold(HashMap::new(), |mut acc, &x| {
+            *acc.entry(x).or_insert(0) += 1;
+            acc
+          });
           let mut prev_tx_id_list = transfers.clone().into_iter().map(|(_id, _tx_offset, previous_satpoint,_)| previous_satpoint.outpoint.txid).collect::<Vec<_>>();
           tx_id_list.append(&mut prev_tx_id_list);
           tx_id_list.retain(|x| *x != Hash::all_zeros());
