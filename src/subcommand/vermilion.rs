@@ -5074,7 +5074,7 @@ impl Vermilion {
           ON CONFLICT (delegate_id) DO UPDATE SET total = EXCLUDED.total;
           -- Insert the new delegate
           INSERT INTO delegates (delegate_id, bootleg_id, bootleg_number, bootleg_sequence_number, bootleg_edition) VALUES (NEW.delegate, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_delegate_total, 0) + 1)
-          ON CONFLICT (delegate_id) DO NOTHING;
+          ON CONFLICT DO NOTHING;
         END IF;
 
         -- 2. Update references
@@ -5087,7 +5087,7 @@ impl Vermilion {
           ON CONFLICT (reference_id) DO UPDATE SET total = EXCLUDED.total;
           -- Insert the new reference
           INSERT INTO inscription_references (reference_id, recursive_id, recursive_number, recursive_sequence_number, recursive_edition) VALUES (ref_id, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_reference_total, 0) + 1)
-          ON CONFLICT (reference_id) DO NOTHING;
+          ON CONFLICT DO NOTHING;
         END LOOP;
 
         RETURN NEW;
