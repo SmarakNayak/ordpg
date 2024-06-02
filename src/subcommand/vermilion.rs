@@ -1858,6 +1858,10 @@ impl Vermilion {
     Self::create_content_table(pool.clone()).await.context("Failed to create content table")?;
     Self::create_edition_table(pool.clone()).await.context("Failed to create editions table")?;
     Self::create_editions_total_table(pool.clone()).await.context("Failed to create editions total table")?;
+    Self::create_delegate_table(pool.clone()).await.context("Failed to create delegate table")?;
+    Self::create_delegates_total_table(pool.clone()).await.context("Failed to create delegates total table")?;
+    Self::create_reference_table(pool.clone()).await.context("Failed to create reference table")?;
+    Self::create_references_total_table(pool.clone()).await.context("Failed to create references total table")?;
     Self::create_satributes_table(pool.clone()).await.context("Failed to create satributes table")?;
     Self::create_collection_list_table(pool.clone()).await.context("Failed to create collection list table")?;
     Self::create_collections_table(pool.clone()).await.context("Failed to create collections table")?;
@@ -1994,6 +1998,60 @@ impl Vermilion {
     conn.simple_query(
       r"CREATE TABLE IF NOT EXISTS editions_total (
           sha256 varchar(64) not null primary key,
+          total bigint
+      )").await?;
+    Ok(())
+  }
+
+  pub(crate) async fn create_delegate_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
+      r"CREATE TABLE IF NOT EXISTS delegates (
+          delegate_id varchar(80),
+          bootleg_id varchar(80) not null primary key,
+          bootleg_number bigint,
+          bootleg_sequence_number bigint,
+          bootleg_edition bigint
+      )").await?;
+      conn.simple_query(r"
+        CREATE INDEX IF NOT EXISTS index_delegates_number ON delegates (bootleg_number);
+        CREATE INDEX IF NOT EXISTS index_delegates_delegate_id ON delegates (delegate_id);
+      ").await?;
+    Ok(())
+  }
+  
+  pub(crate) async fn create_delegates_total_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
+      r"CREATE TABLE IF NOT EXISTS delegates_total (
+          delegate_id varchar(80) not null primary key,
+          total bigint
+      )").await?;
+    Ok(())
+  }
+
+  pub(crate) async fn create_reference_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
+      r"CREATE TABLE IF NOT EXISTS inscription_references (
+          reference_id varchar(80),
+          recursive_id varchar(80) not null primary key,
+          recursive_number bigint,
+          recursive_sequence_number bigint,
+          recursive_edition bigint
+      )").await?;
+      conn.simple_query(r"
+        CREATE INDEX IF NOT EXISTS index_references_number ON inscription_references (recursive_number);
+        CREATE INDEX IF NOT EXISTS index_references_reference_id ON inscription_references (reference_id);
+      ").await?;
+    Ok(())
+  }
+  
+  pub(crate) async fn create_references_total_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
+      r"CREATE TABLE IF NOT EXISTS inscription_references_total (
+          reference_id varchar(80) not null primary key,
           total bigint
       )").await?;
     Ok(())
@@ -4999,10 +5057,39 @@ impl Vermilion {
   async fn create_metadata_insert_trigger(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
     conn.simple_query(r"CREATE OR REPLACE FUNCTION before_metadata_insert() RETURNS TRIGGER AS $$
+      DECLARE previous_delegate_total INTEGER;
+      DECLARE ref_id INTEGER;
+      DECLARE previous_reference_total INTEGER;
       BEGIN
         -- RAISE NOTICE 'insert_metadata: waiting for lock';
         LOCK TABLE ordinals IN EXCLUSIVE MODE;
         -- RAISE NOTICE 'insert_metadata: lock acquired';
+
+        -- 1. Update delegates
+        IF NEW.delegate IS NOT NULL THEN
+          -- Get the previous total for the same delegate id
+          SELECT total INTO previous_delegate_total FROM delegates_total WHERE delegate_id = NEW.delegate;
+          -- Insert or update the total in delegates_total
+          INSERT INTO delegates_total (delegate_id, total) VALUES (NEW.delegate, COALESCE(previous_delegate_total, 0) + 1)
+          ON CONFLICT (delegate_id) DO UPDATE SET total = EXCLUDED.total;
+          -- Insert the new delegate
+          INSERT INTO delegates (delegate_id, bootleg_id, bootleg_number, bootleg_sequence_number, bootleg_edition) VALUES (NEW.delegate, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_delegate_total, 0) + 1)
+          ON CONFLICT (delegate_id) DO NOTHING;
+        END IF;
+
+        -- 2. Update references
+        FOREACH ref_id IN ARRAY NEW.referenced_ids
+        LOOP
+          -- Get the previous total for the same reference id
+          SELECT total INTO previous_reference_total FROM inscription_references_total WHERE reference_id = ref_id;
+          -- Insert or update the total in inscription_references_total
+          INSERT INTO inscription_references_total (reference_id, total) VALUES (ref_id, COALESCE(previous_reference_total, 0) + 1)
+          ON CONFLICT (reference_id) DO UPDATE SET total = EXCLUDED.total;
+          -- Insert the new reference
+          INSERT INTO inscription_references (reference_id, recursive_id, recursive_number, recursive_sequence_number, recursive_edition) VALUES (ref_id, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_reference_total, 0) + 1)
+          ON CONFLICT (reference_id) DO NOTHING;
+        END LOOP;
+
         RETURN NEW;
       END;
       $$ LANGUAGE plpgsql;").await?;
@@ -5069,7 +5156,7 @@ impl Vermilion {
       EXECUTE PROCEDURE before_edition_insert();"#).await?;
     Ok(())
   }
-  
+
   async fn create_edition_procedure(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
     conn.simple_query(r"DROP PROCEDURE IF EXISTS update_editions").await?;
