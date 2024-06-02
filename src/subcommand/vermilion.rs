@@ -5058,7 +5058,7 @@ impl Vermilion {
     let conn = pool.get().await?;
     conn.simple_query(r"CREATE OR REPLACE FUNCTION before_metadata_insert() RETURNS TRIGGER AS $$
       DECLARE previous_delegate_total INTEGER;
-      DECLARE ref_id INTEGER;
+      DECLARE ref_id VARCHAR(80);
       DECLARE previous_reference_total INTEGER;
       BEGIN
         -- RAISE NOTICE 'insert_metadata: waiting for lock';
