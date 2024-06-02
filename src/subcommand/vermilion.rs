@@ -152,7 +152,7 @@ pub struct Metadata {
   timestamp: i64,
   sha256: Option<String>,
   text: Option<String>,
-  references: Vec<String>,
+  referenced_ids: Vec<String>,
   is_json: bool,
   is_maybe_json: bool,
   is_bitmap_style: bool,
@@ -239,7 +239,7 @@ pub struct TransferWithMetadata {
   timestamp: i64,
   sha256: Option<String>,
   text: Option<String>,
-  references: Vec<String>,
+  referenced_ids: Vec<String>,
   is_json: bool,
   is_maybe_json: bool,
   is_bitmap_style: bool,
@@ -494,7 +494,7 @@ pub struct MetadataWithCollectionMetadata {
   timestamp: i64,
   sha256: Option<String>,
   text: Option<String>,
-  references: Vec<String>,
+  referenced_ids: Vec<String>,
   is_json: bool,
   is_maybe_json: bool,
   is_bitmap_style: bool,
@@ -1759,11 +1759,11 @@ impl Vermilion {
         None
       }
     };
-    let references = match text.clone() {
+    let referenced_ids = match text.clone() {
       Some(text) => {
         let re = regex::Regex::new(r"content/([[:xdigit:]]{64}i\d+)").unwrap();
-        let references = re.captures_iter(&text).map(|x| x[1].to_string()).collect::<Vec<String>>();
-        references
+        let referenced_ids = re.captures_iter(&text).map(|x| x[1].to_string()).collect::<Vec<String>>();
+        referenced_ids
       },
       None => Vec::new()
     };
@@ -1817,7 +1817,7 @@ impl Vermilion {
       timestamp: entry.timestamp.try_into().unwrap(),
       sha256: sha256.clone(),
       text: text,
-      references: references,
+      referenced_ids: referenced_ids,
       is_json: is_json,
       is_maybe_json: is_maybe_json,
       is_bitmap_style: is_bitmap_style,
@@ -1898,7 +1898,7 @@ impl Vermilion {
         timestamp bigint,
         sha256 varchar(64),
         text text,
-        references varchar(80)[],
+        referenced_ids varchar(80)[],
         is_json boolean,
         is_maybe_json boolean,
         is_bitmap_style boolean,
@@ -1919,7 +1919,7 @@ impl Vermilion {
       CREATE INDEX IF NOT EXISTS index_metadata_type ON ordinals (content_type);
       CREATE INDEX IF NOT EXISTS index_metadata_metaprotocol ON ordinals (metaprotocol);
       CREATE INDEX IF NOT EXISTS index_metadata_text ON ordinals USING GIN (to_tsvector('english', left(text, 1048575)));
-      CREATE INDEX IF NOT EXISTS index_metadata_references ON ordinals USING GIN (references);
+      CREATE INDEX IF NOT EXISTS index_metadata_referenced_ids ON ordinals USING GIN (referenced_ids);
     ").await?;
     conn.simple_query(r"
       CREATE EXTENSION IF NOT EXISTS btree_gin;
@@ -2101,7 +2101,7 @@ impl Vermilion {
       timestamp, 
       sha256, 
       text,
-      references,
+      referenced_ids,
       is_json, 
       is_maybe_json, 
       is_bitmap_style, 
@@ -2163,7 +2163,7 @@ impl Vermilion {
       row.push(&m.sha256);
       let clean_text = &m.text.map(|s| s.replace("\0", ""));
       row.push(clean_text);
-      row.push(&m.references);
+      row.push(&m.referenced_ids);
       row.push(&m.is_json);
       row.push(&m.is_maybe_json);
       row.push(&m.is_bitmap_style);
@@ -3851,7 +3851,7 @@ impl Vermilion {
       timestamp: row.get("timestamp"),
       sha256: row.get("sha256"),
       text: row.get("text"),
-      references: row.get("references"),
+      referenced_ids: row.get("referenced_ids"),
       is_json: row.get("is_json"),
       is_maybe_json: row.get("is_maybe_json"),
       is_bitmap_style: row.get("is_bitmap_style"),
@@ -4353,7 +4353,7 @@ impl Vermilion {
         timestamp: row.get("timestamp"),
         sha256: row.get("sha256"),
         text: row.get("text"),
-        references: row.get("references"),
+        referenced_ids: row.get("referenced_ids"),
         is_json: row.get("is_json"),
         is_maybe_json: row.get("is_maybe_json"),
         is_bitmap_style: row.get("is_bitmap_style"),
@@ -4693,7 +4693,7 @@ impl Vermilion {
         timestamp: row.get("timestamp"),
         sha256: row.get("sha256"),
         text: row.get("text"),
-        references: row.get("references"),
+        referenced_ids: row.get("referenced_ids"),
         is_json: row.get("is_json"),
         is_maybe_json: row.get("is_maybe_json"),
         is_bitmap_style: row.get("is_bitmap_style"),
