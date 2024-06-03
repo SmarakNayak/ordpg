@@ -5093,7 +5093,7 @@ impl Vermilion {
       DECLARE previous_delegate_total INTEGER;
       DECLARE ref_id VARCHAR(80);
       DECLARE previous_reference_total INTEGER;
-      DECLARE satribute VARCHAR(30);
+      DECLARE inscription_satribute VARCHAR(30);
       DECLARE previous_satribute_total INTEGER;
       BEGIN
         -- RAISE NOTICE 'insert_metadata: waiting for lock';
@@ -5126,15 +5126,15 @@ impl Vermilion {
         END LOOP;
 
         -- 3. Update satributes
-        FOREACH satribute IN ARRAY NEW.satributes
+        FOREACH inscription_satribute IN ARRAY NEW.satributes
         LOOP
           -- Get the previous total for the same satribute
-          SELECT total INTO previous_satribute_total FROM inscription_satributes_total WHERE satribute = satribute;
+          SELECT total INTO previous_satribute_total FROM inscription_satributes_total WHERE satribute = inscription_satribute;
           -- Insert or update the total in inscription_satributes_total
-          INSERT INTO inscription_satributes_total (satribute, total) VALUES (satribute, COALESCE(previous_satribute_total, 0) + 1)
+          INSERT INTO inscription_satributes_total (satribute, total) VALUES (inscription_satribute, COALESCE(previous_satribute_total, 0) + 1)
           ON CONFLICT (satribute) DO UPDATE SET total = EXCLUDED.total;
           -- Insert the new satribute
-          INSERT INTO inscription_satributes (satribute, sat, inscription_id, inscription_number, inscription_sequence_number, satribute_edition) VALUES (satribute, NEW.sat, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_satribute_total, 0) + 1)
+          INSERT INTO inscription_satributes (satribute, sat, inscription_id, inscription_number, inscription_sequence_number, satribute_edition) VALUES (inscription_satribute, NEW.sat, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_satribute_total, 0) + 1)
           ON CONFLICT DO NOTHING;
         END LOOP;
 
