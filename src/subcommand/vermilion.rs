@@ -2075,7 +2075,7 @@ impl Vermilion {
         CREATE INDEX IF NOT EXISTS index_inscription_satribute_satribute ON inscription_satributes (satribute);
         CREATE INDEX IF NOT EXISTS index_inscription_satribute_sat ON inscription_satributes (sat);
         CREATE INDEX IF NOT EXISTS index_inscription_satribute_number ON inscription_satributes (inscription_number);
-        CREATE INDEX IF NOT EXISTS index_inscription_satribute_id ON inscription_satributes (reference_id);
+        CREATE INDEX IF NOT EXISTS index_inscription_satribute_id ON inscription_satributes (inscription_id);
       ").await?;
     Ok(())
   }
