@@ -2069,7 +2069,7 @@ impl Vermilion {
           inscription_number bigint,
           inscription_sequence_number bigint,
           inscription_edition bigint,
-          CONSTRAINT satribute_key PRIMARY KEY (satribute, inscription_id)
+          CONSTRAINT inscription_satribute_key PRIMARY KEY (satribute, inscription_id)
       )").await?;
       conn.simple_query(r"
         CREATE INDEX IF NOT EXISTS index_inscription_satribute_satribute ON inscription_satributes (satribute);
