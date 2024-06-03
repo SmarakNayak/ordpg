@@ -1862,6 +1862,8 @@ impl Vermilion {
     Self::create_delegates_total_table(pool.clone()).await.context("Failed to create delegates total table")?;
     Self::create_reference_table(pool.clone()).await.context("Failed to create reference table")?;
     Self::create_references_total_table(pool.clone()).await.context("Failed to create references total table")?;
+    Self::create_inscription_satributes_table(pool.clone()).await.context("Failed to create inscription satributes table")?;
+    Self::create_inscription_satributes_total_table(pool.clone()).await.context("Failed to create inscription satributes total table")?;
     Self::create_satributes_table(pool.clone()).await.context("Failed to create satributes table")?;
     Self::create_collection_list_table(pool.clone()).await.context("Failed to create collection list table")?;
     Self::create_collections_table(pool.clone()).await.context("Failed to create collections table")?;
@@ -2052,6 +2054,37 @@ impl Vermilion {
     conn.simple_query(
       r"CREATE TABLE IF NOT EXISTS inscription_references_total (
           reference_id varchar(80) not null primary key,
+          total bigint
+      )").await?;
+    Ok(())
+  }
+
+  pub(crate) async fn create_inscription_satributes_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
+      r"CREATE TABLE IF NOT EXISTS inscription_satributes (
+          satribute varchar(30) not null,
+          sat bigint,
+          inscription_id varchar(80) not null,
+          inscription_number bigint,
+          inscription_sequence_number bigint,
+          inscription_edition bigint,
+          CONSTRAINT satribute_key PRIMARY KEY (satribute, inscription_id)
+      )").await?;
+      conn.simple_query(r"
+        CREATE INDEX IF NOT EXISTS index_inscription_satribute_satribute ON inscription_satributes (satribute);
+        CREATE INDEX IF NOT EXISTS index_inscription_satribute_sat ON inscription_satributes (sat);
+        CREATE INDEX IF NOT EXISTS index_inscription_satribute_number ON inscription_satributes (inscription_number);
+        CREATE INDEX IF NOT EXISTS index_inscription_satribute_id ON inscription_satributes (reference_id);
+      ").await?;
+    Ok(())
+  }
+  
+  pub(crate) async fn create_inscription_satributes_total_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
+      r"CREATE TABLE IF NOT EXISTS inscription_satributes_total (
+          satribute varchar(80) not null primary key,
           total bigint
       )").await?;
     Ok(())
@@ -5060,6 +5093,8 @@ impl Vermilion {
       DECLARE previous_delegate_total INTEGER;
       DECLARE ref_id VARCHAR(80);
       DECLARE previous_reference_total INTEGER;
+      DECLARE satribute VARCHAR(30);
+      DECLARE previous_satribute_total INTEGER;
       BEGIN
         -- RAISE NOTICE 'insert_metadata: waiting for lock';
         LOCK TABLE ordinals IN EXCLUSIVE MODE;
@@ -5087,6 +5122,19 @@ impl Vermilion {
           ON CONFLICT (reference_id) DO UPDATE SET total = EXCLUDED.total;
           -- Insert the new reference
           INSERT INTO inscription_references (reference_id, recursive_id, recursive_number, recursive_sequence_number, recursive_edition) VALUES (ref_id, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_reference_total, 0) + 1)
+          ON CONFLICT DO NOTHING;
+        END LOOP;
+
+        -- 3. Update satributes
+        FOREACH satribute IN ARRAY NEW.satributes
+        LOOP
+          -- Get the previous total for the same satribute
+          SELECT total INTO previous_satributes_total FROM inscription_satributes_total WHERE satribute = satribute;
+          -- Insert or update the total in inscription_satributes_total
+          INSERT INTO inscription_satributes_total (satribute, total) VALUES (satribute, COALESCE(previous_satribute_total, 0) + 1)
+          ON CONFLICT (satribute) DO UPDATE SET total = EXCLUDED.total;
+          -- Insert the new satribute
+          INSERT INTO inscription_satributes (satribute, sat, inscription_id, inscription_number, inscription_sequence_number, satribute_edition) VALUES (satribute, NEW.sat, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_satribute_total, 0) + 1)
           ON CONFLICT DO NOTHING;
         END LOOP;
 
