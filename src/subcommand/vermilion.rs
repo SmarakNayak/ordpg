@@ -5129,7 +5129,7 @@ impl Vermilion {
         FOREACH satribute IN ARRAY NEW.satributes
         LOOP
           -- Get the previous total for the same satribute
-          SELECT total INTO previous_satributes_total FROM inscription_satributes_total WHERE satribute = satribute;
+          SELECT total INTO previous_satribute_total FROM inscription_satributes_total WHERE satribute = satribute;
           -- Insert or update the total in inscription_satributes_total
           INSERT INTO inscription_satributes_total (satribute, total) VALUES (satribute, COALESCE(previous_satribute_total, 0) + 1)
           ON CONFLICT (satribute) DO UPDATE SET total = EXCLUDED.total;
