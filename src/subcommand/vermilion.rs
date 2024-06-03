@@ -4469,7 +4469,7 @@ impl Vermilion {
 
   async fn get_inscriptions_in_sat_block(pool: deadpool, block: i64, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<Metadata>> {
     let conn = pool.get().await?;
-    let base_query = "SELECT * from ordinals o where sat in (select sat from sat where block=$1)".to_string();
+    let base_query = "SELECT o.* from ordinals o right join sat s on o.sat = s.sat where s.block=$1".to_string();
     let full_query = Self::create_inscription_query_string(base_query, params);
     let result = conn.query(
       full_query.as_str(), 
