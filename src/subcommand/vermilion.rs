@@ -2138,7 +2138,7 @@ impl Vermilion {
           inscription_id varchar(80) not null,
           inscription_number bigint,
           inscription_sequence_number bigint,
-          inscription_edition bigint,
+          satribute_edition bigint,
           CONSTRAINT inscription_satribute_key PRIMARY KEY (satribute, inscription_id)
       )").await?;
       conn.simple_query(r"
