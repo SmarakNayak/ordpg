@@ -137,6 +137,7 @@ pub struct Metadata {
   content_length: Option<i64>,
   content_type: Option<String>,
   content_encoding: Option<String>,
+  content_category: String,
   genesis_fee: i64,
   genesis_height: i64,
   genesis_transaction: String,
@@ -147,6 +148,7 @@ pub struct Metadata {
   metaprotocol: Option<String>,
   on_chain_metadata: serde_json::Value,
   sat: Option<i64>,
+  sat_block: Option<i64>,
   satributes: Vec<String>,
   charms: Vec<String>,
   timestamp: i64,
@@ -223,6 +225,7 @@ pub struct TransferWithMetadata {
   content_length: Option<i64>,
   content_type: Option<String>,
   content_encoding: Option<String>,
+  content_category: String,
   genesis_fee: i64,
   genesis_height: i64,
   genesis_transaction: String,
@@ -230,6 +233,7 @@ pub struct TransferWithMetadata {
   number: i64,
   sequence_number: Option<i64>,
   sat: Option<i64>,
+  sat_block: Option<i64>,
   satributes: Vec<String>,
   charms: Vec<String>,
   parents: Vec<String>,
@@ -479,6 +483,7 @@ pub struct MetadataWithCollectionMetadata {
   content_length: Option<i64>,
   content_type: Option<String>,
   content_encoding: Option<String>,
+  content_category: String,
   genesis_fee: i64,
   genesis_height: i64,
   genesis_transaction: String,
@@ -489,6 +494,7 @@ pub struct MetadataWithCollectionMetadata {
   metaprotocol: Option<String>,
   on_chain_metadata: serde_json::Value,
   sat: Option<i64>,
+  sat_block: Option<i64>,
   satributes: Vec<String>,
   charms: Vec<String>,
   timestamp: i64,
@@ -1709,6 +1715,12 @@ impl Vermilion {
         None
       }
     };
+    let sat_block = match entry.sat {
+      Some(sat) => Some(sat.height().0 as i64),
+      None => {
+        None
+      }
+    };
     let satributes = match entry.sat {
       Some(sat) => {
         let mut satributes = sat.block_rarities().iter().map(|x| x.to_string()).collect::<Vec<String>>();
@@ -1791,6 +1803,58 @@ impl Vermilion {
       Some(text) => Self::is_recursive(&text),
       None => false
     };
+    let content_category = match inscription.content_type() {
+      Some(content_type) => {
+        let content_type = content_type.to_string();
+        let mut content_category = match content_type.as_str() {
+          "text/plain;charset=utf-8" => "text", 
+          "text/plain" => "text",
+          "text/markdown" => "text",
+          "text/javascript" => "javascript",
+          "text/plain;charset=us-ascii" => "text",
+          "text/rtf" => "text",
+          "image/jpeg" => "image",
+          "image/png" => "image",
+          "image/svg+xml" => "image",
+          "image/webp" => "image",
+          "image/avif" => "image", 
+          "image/tiff" => "image", 
+          "image/heic" => "image", 
+          "image/jp2" => "image",
+          "image/gif" => "gif",
+          "audio/mpeg" => "audio", 
+          "audio/ogg" => "audio", 
+          "audio/wav" => "audio", 
+          "audio/webm" => "audio", 
+          "audio/flac" => "audio", 
+          "audio/mod" => "audio", 
+          "audio/midi" => "audio", 
+          "audio/x-m4a" => "audio",
+          "video/mp4" => "video",
+          "video/ogg" => "video",
+          "video/webm" => "video",
+          "text/html;charset=utf-8" => "html",
+          "text/html" => "html",
+          "model/gltf+json" => "3d",
+          "model/gltf-binary" => "3d",
+          "model/stl" => "3d",
+          "application/json" => "json",
+          "application/json;charset=utf-8" => "json",
+          "application/pdf" => "pdf",
+          "application/javascript" => "javascript",          
+          _ => "unknown"
+        };
+        if is_json {
+          content_category = "json";
+        } else if is_maybe_json {
+          content_category = "maybe_json";
+        } else if is_bitmap_style {
+          content_category = "namespace";
+        }
+        content_category
+      },
+      None => "unknown"
+    };
     let charms = Charm::ALL
       .iter()
       .filter(|charm| charm.is_set(entry.charms))
@@ -1801,6 +1865,7 @@ impl Vermilion {
       content_length: content_length,
       content_encoding: content_encoding,
       content_type: inscription.content_type().map(str::to_string),
+      content_category: content_category.to_string(),
       genesis_fee: entry.fee.try_into().unwrap(),
       genesis_height: entry.height.try_into().unwrap(),
       genesis_transaction: inscription_id.txid.to_string(),
@@ -1812,6 +1877,7 @@ impl Vermilion {
       metaprotocol: metaprotocol,
       on_chain_metadata: on_chain_metadata,
       sat: sat,
+      sat_block: sat_block,
       satributes: satributes.clone(),
       charms: charms,
       timestamp: entry.timestamp.try_into().unwrap(),
@@ -1889,6 +1955,7 @@ impl Vermilion {
         content_length bigint,
         content_type text,
         content_encoding text,
+        content_category varchar(20),
         genesis_fee bigint,
         genesis_height bigint,
         genesis_transaction varchar(80),
@@ -1899,6 +1966,7 @@ impl Vermilion {
         metaprotocol text,
         on_chain_metadata jsonb,
         sat bigint,
+        sat_block bigint,
         satributes varchar(30)[],
         charms varchar(15)[],
         timestamp bigint,
@@ -1916,6 +1984,7 @@ impl Vermilion {
       CREATE INDEX IF NOT EXISTS index_metadata_block ON ordinals (genesis_height);
       CREATE INDEX IF NOT EXISTS index_metadata_sha256 ON ordinals (sha256);
       CREATE INDEX IF NOT EXISTS index_metadata_sat ON ordinals (sat);
+      CREATE INDEX IF NOT EXISTS index_metadata_sat ON ordinals (sat_block);
       CREATE INDEX IF NOT EXISTS index_metadata_satributes on ordinals USING GIN (satributes);
       CREATE INDEX IF NOT EXISTS index_metadata_charms on ordinals USING GIN (charms);
       CREATE INDEX IF NOT EXISTS index_metadata_parents ON ordinals USING GIN (parents);
@@ -1923,6 +1992,7 @@ impl Vermilion {
       CREATE INDEX IF NOT EXISTS index_metadata_fee ON ordinals (genesis_fee);
       CREATE INDEX IF NOT EXISTS index_metadata_size ON ordinals (content_length);
       CREATE INDEX IF NOT EXISTS index_metadata_type ON ordinals (content_type);
+      CREATE INDEX IF NOT EXISTS index_metadata_category ON ordinals (content_category);
       CREATE INDEX IF NOT EXISTS index_metadata_metaprotocol ON ordinals (metaprotocol);
       CREATE INDEX IF NOT EXISTS index_metadata_text ON ordinals USING GIN (to_tsvector('english', left(text, 1048575)));
       CREATE INDEX IF NOT EXISTS index_metadata_referenced_ids ON ordinals USING GIN (referenced_ids);
@@ -2176,7 +2246,8 @@ impl Vermilion {
       id, 
       content_length, 
       content_type, 
-      content_encoding, 
+      content_encoding,
+      content_category,
       genesis_fee, 
       genesis_height, 
       genesis_transaction, 
@@ -2187,6 +2258,7 @@ impl Vermilion {
       metaprotocol, 
       on_chain_metadata, 
       sat,
+      sat_block,
       satributes,
       charms, 
       timestamp, 
@@ -2203,6 +2275,7 @@ impl Vermilion {
       Type::INT8,
       Type::TEXT,
       Type::TEXT,
+      Type::VARCHAR,
       Type::INT8,
       Type::INT8,
       Type::VARCHAR,
@@ -2212,6 +2285,7 @@ impl Vermilion {
       Type::VARCHAR,
       Type::TEXT,
       Type::JSONB,
+      Type::INT8,
       Type::INT8,
       Type::VARCHAR_ARRAY,
       Type::VARCHAR_ARRAY,
@@ -2236,6 +2310,7 @@ impl Vermilion {
       row.push(clean_type);
       let clean_encoding = &m.content_encoding.map(|s| s.replace("\0", ""));
       row.push(clean_encoding);
+      row.push(&m.content_category);
       row.push(&m.genesis_fee);
       row.push(&m.genesis_height);
       row.push(&m.genesis_transaction);
@@ -2248,6 +2323,7 @@ impl Vermilion {
       //let clean_metadata = &m.on_chain_metadata.map(|s| s.replace("\0", ""));
       row.push(&m.on_chain_metadata);
       row.push(&m.sat);
+      row.push(&m.sat_block);
       row.push(&m.satributes);
       row.push(&m.charms);
       row.push(&m.timestamp);
@@ -3926,6 +4002,7 @@ impl Vermilion {
       content_length: row.get("content_length"),
       content_type: row.get("content_type"), 
       content_encoding: row.get("content_encoding"),
+      content_category: row.get("content_category"),
       genesis_fee: row.get("genesis_fee"),
       genesis_height: row.get("genesis_height"),
       genesis_transaction: row.get("genesis_transaction"),
@@ -3937,6 +4014,7 @@ impl Vermilion {
       metaprotocol: row.get("metaprotocol"),
       on_chain_metadata: row.get("on_chain_metadata"),
       sat: row.get("sat"),
+      sat_block: row.get("sat_block"),
       satributes: row.get("satributes"),
       charms: row.get("charms"),
       timestamp: row.get("timestamp"),
@@ -4428,6 +4506,7 @@ impl Vermilion {
         content_length: row.get("content_length"),
         content_type: row.get("content_type"),
         content_encoding: row.get("content_encoding"),
+        content_category: row.get("content_category"),
         genesis_fee: row.get("genesis_fee"),
         genesis_height: row.get("genesis_height"),
         genesis_transaction: row.get("genesis_transaction"),
@@ -4439,6 +4518,7 @@ impl Vermilion {
         metaprotocol: row.get("metaprotocol"),
         on_chain_metadata: row.get("on_chain_metadata"),
         sat: row.get("sat"),
+        sat_block: row.get("sat_block"),
         satributes: row.get("satributes"),
         charms: row.get("charms"),
         timestamp: row.get("timestamp"),
@@ -4768,6 +4848,7 @@ impl Vermilion {
         content_length: row.get("content_length"),
         content_type: row.get("content_type"), 
         content_encoding: row.get("content_encoding"),
+        content_category: row.get("content_category"),
         genesis_fee: row.get("genesis_fee"),
         genesis_height: row.get("genesis_height"),
         genesis_transaction: row.get("genesis_transaction"),
@@ -4779,6 +4860,7 @@ impl Vermilion {
         metaprotocol: row.get("metaprotocol"),
         on_chain_metadata: row.get("on_chain_metadata"),
         sat: row.get("sat"),
+        sat_block: row.get("sat_block"),
         satributes: row.get("satributes"),
         charms: row.get("charms"),
         timestamp: row.get("timestamp"),
