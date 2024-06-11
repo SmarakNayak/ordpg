@@ -539,7 +539,7 @@ pub struct FullMetadata {
   is_bitmap_style: bool,
   is_recursive: bool,
   collection_symbol: Option<String>,
-  off_chain_metadata: serde_json::Value,
+  off_chain_metadata: Option<serde_json::Value>,
   collection_name: Option<String>
 }
 
