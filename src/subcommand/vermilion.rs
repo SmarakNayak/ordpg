@@ -510,9 +510,43 @@ pub struct MetadataWithCollectionMetadata {
 }
 
 #[derive(Serialize)]
+pub struct FullMetadata {  
+  sequence_number: i64,
+  id: String,
+  content_length: Option<i64>,
+  content_type: Option<String>,
+  content_encoding: Option<String>,
+  content_category: String,
+  genesis_fee: i64,
+  genesis_height: i64,
+  genesis_transaction: String,
+  pointer: Option<i64>,
+  number: i64,
+  parents: Vec<String>,
+  delegate: Option<String>,
+  metaprotocol: Option<String>,
+  on_chain_metadata: serde_json::Value,
+  sat: Option<i64>,
+  sat_block: Option<i64>,
+  satributes: Vec<String>,
+  charms: Vec<String>,
+  timestamp: i64,
+  sha256: Option<String>,
+  text: Option<String>,
+  referenced_ids: Vec<String>,
+  is_json: bool,
+  is_maybe_json: bool,
+  is_bitmap_style: bool,
+  is_recursive: bool,
+  collection_symbol: String,
+  off_chain_metadata: serde_json::Value,
+  collection_name: String
+}
+
+#[derive(Serialize)]
 pub struct SearchResult {
   collections: Vec<CollectionSummary>,
-  inscription: Option<Metadata>,
+  inscription: Option<FullMetadata>,
   address: Option<String>,
   block: Option<CombinedBlockStats>,
   sat: Option<SatMetadata>
@@ -4028,22 +4062,57 @@ impl Vermilion {
     }
   }
 
-  async fn get_ordinal_metadata(pool: deadpool, inscription_id: String) -> anyhow::Result<Metadata> {
-    let conn = pool.get().await?;
-    let result = conn.query_one(
-      "SELECT * FROM ordinals WHERE id=$1 LIMIT 1", 
-      &[&inscription_id]
-    ).await?;
-    Ok(Self::map_row_to_metadata(result))
+  fn map_row_to_fullmetadata(row: tokio_postgres::Row) -> FullMetadata {
+    FullMetadata {
+      id: row.get("id"),
+      content_length: row.get("content_length"),
+      content_type: row.get("content_type"), 
+      content_encoding: row.get("content_encoding"),
+      content_category: row.get("content_category"),
+      genesis_fee: row.get("genesis_fee"),
+      genesis_height: row.get("genesis_height"),
+      genesis_transaction: row.get("genesis_transaction"),
+      pointer: row.get("pointer"),
+      number: row.get("number"),
+      sequence_number: row.get("sequence_number"),
+      parents: row.get("parents"),
+      delegate: row.get("delegate"),
+      metaprotocol: row.get("metaprotocol"),
+      on_chain_metadata: row.get("on_chain_metadata"),
+      sat: row.get("sat"),
+      sat_block: row.get("sat_block"),
+      satributes: row.get("satributes"),
+      charms: row.get("charms"),
+      timestamp: row.get("timestamp"),
+      sha256: row.get("sha256"),
+      text: row.get("text"),
+      referenced_ids: row.get("referenced_ids"),
+      is_json: row.get("is_json"),
+      is_maybe_json: row.get("is_maybe_json"),
+      is_bitmap_style: row.get("is_bitmap_style"),
+      is_recursive: row.get("is_recursive"),
+      collection_symbol: row.get("collection_symbol"),
+      off_chain_metadata: row.get("off_chain_metadata"),      
+      collection_name: row.get("collection_name"),
+    }
   }
 
-  async fn get_ordinal_metadata_by_number(pool: deadpool, number: i64) -> anyhow::Result<Metadata> {
+  async fn get_ordinal_metadata(pool: deadpool, inscription_id: String) -> anyhow::Result<FullMetadata> {
     let conn = pool.get().await?;
     let result = conn.query_one(
-      "SELECT * FROM ordinals WHERE number=$1 LIMIT 1", 
+      "SELECT o.*, c.collection_symbol, c.off_chain_metadata, l.collection_name FROM ordinals o WHERE o.id=$1 left join collections c on o.id=c.id left join collection_list l on c.collection_symbol=l.collection_symbol LIMIT 1", 
+      &[&inscription_id]
+    ).await?;
+    Ok(Self::map_row_to_fullmetadata(result))
+  }
+
+  async fn get_ordinal_metadata_by_number(pool: deadpool, number: i64) -> anyhow::Result<FullMetadata> {
+    let conn = pool.get().await?;
+    let result = conn.query_one(
+      "SELECT o.*, c.collection_symbol, c.off_chain_metadata, l.collection_name FROM ordinals o WHERE o.number=$1 left join collections c on o.id=c.id left join collection_list l on c.collection_symbol=l.collection_symbol LIMIT 1", 
       &[&number]
     ).await?;
-    Ok(Self::map_row_to_metadata(result))
+    Ok(Self::map_row_to_fullmetadata(result))
   }
 
   async fn get_inscription_edition(pool: deadpool, inscription_id: String) -> anyhow::Result<InscriptionNumberEdition> {
