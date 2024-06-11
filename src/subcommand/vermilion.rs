@@ -538,9 +538,9 @@ pub struct FullMetadata {
   is_maybe_json: bool,
   is_bitmap_style: bool,
   is_recursive: bool,
-  collection_symbol: String,
+  collection_symbol: Option<String>,
   off_chain_metadata: serde_json::Value,
-  collection_name: String
+  collection_name: Option<String>
 }
 
 #[derive(Serialize)]
