@@ -4100,7 +4100,7 @@ impl Vermilion {
   async fn get_ordinal_metadata(pool: deadpool, inscription_id: String) -> anyhow::Result<FullMetadata> {
     let conn = pool.get().await?;
     let result = conn.query_one(
-      "SELECT o.*, c.collection_symbol, c.off_chain_metadata, l.collection_name FROM ordinals o WHERE o.id=$1 left join collections c on o.id=c.id left join collection_list l on c.collection_symbol=l.collection_symbol LIMIT 1", 
+      "SELECT o.*, c.collection_symbol, c.off_chain_metadata, l.collection_name FROM ordinals o left join collections c on o.id=c.id left join collection_list l on c.collection_symbol=l.collection_symbol WHERE o.id=$1 LIMIT 1", 
       &[&inscription_id]
     ).await?;
     Ok(Self::map_row_to_fullmetadata(result))
@@ -4109,7 +4109,7 @@ impl Vermilion {
   async fn get_ordinal_metadata_by_number(pool: deadpool, number: i64) -> anyhow::Result<FullMetadata> {
     let conn = pool.get().await?;
     let result = conn.query_one(
-      "SELECT o.*, c.collection_symbol, c.off_chain_metadata, l.collection_name FROM ordinals o WHERE o.number=$1 left join collections c on o.id=c.id left join collection_list l on c.collection_symbol=l.collection_symbol LIMIT 1", 
+      "SELECT o.*, c.collection_symbol, c.off_chain_metadata, l.collection_name FROM ordinals o left join collections c on o.id=c.id left join collection_list l on c.collection_symbol=l.collection_symbol WHERE o.number=$1 LIMIT 1", 
       &[&number]
     ).await?;
     Ok(Self::map_row_to_fullmetadata(result))
