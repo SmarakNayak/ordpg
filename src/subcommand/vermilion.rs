@@ -1977,6 +1977,8 @@ impl Vermilion {
     Self::create_edition_insert_trigger(pool.clone()).await.context("Failed to create edition trigger")?;
     Self::create_metadata_insert_trigger(pool.clone()).await.context("Failed to create metadata trigger")?;
     Self::create_transfer_insert_trigger(pool.clone()).await.context("Failed to create transfer trigger")?;
+
+    Self::create_ordinals_full_view(pool.clone()).await.context("Failed to create ordinals full view")?;
     Ok(())
   }
 
@@ -4100,7 +4102,7 @@ impl Vermilion {
   async fn get_ordinal_metadata(pool: deadpool, inscription_id: String) -> anyhow::Result<FullMetadata> {
     let conn = pool.get().await?;
     let result = conn.query_one(
-      "SELECT o.*, c.collection_symbol, c.off_chain_metadata, l.name as collection_name FROM ordinals o left join collections c on o.id=c.id left join collection_list l on c.collection_symbol=l.collection_symbol WHERE o.id=$1 LIMIT 1", 
+      "SELECT * FROM ordinals_full_v where id=$1 LIMIT 1", 
       &[&inscription_id]
     ).await?;
     Ok(Self::map_row_to_fullmetadata(result))
@@ -4109,7 +4111,7 @@ impl Vermilion {
   async fn get_ordinal_metadata_by_number(pool: deadpool, number: i64) -> anyhow::Result<FullMetadata> {
     let conn = pool.get().await?;
     let result = conn.query_one(
-      "SELECT o.*, c.collection_symbol, c.off_chain_metadata, l.name as collection_name FROM ordinals o left join collections c on o.id=c.id left join collection_list l on c.collection_symbol=l.collection_symbol WHERE o.number=$1 LIMIT 1", 
+      "SELECT * FROM ordinals_full_v where number=$1 LIMIT 1", 
       &[&number]
     ).await?;
     Ok(Self::map_row_to_fullmetadata(result))
@@ -5638,6 +5640,20 @@ impl Vermilion {
         ts timestamp,
         rows_returned int
       )").await?;
+    Ok(())
+  }
+
+  async fn create_ordinals_full_view(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
+      r"CREATE OR REPLACE VIEW ordinals_full_v AS
+        SELECT o.*, 
+               c.collection_symbol, 
+               c.off_chain_metadata, 
+               l.name as collection_name 
+        FROM ordinals o 
+        left join collections c on o.id=c.id 
+        left join collection_list l on c.collection_symbol=l.collection_symbol").await?;
     Ok(())
   }
   
