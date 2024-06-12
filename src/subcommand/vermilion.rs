@@ -2020,7 +2020,7 @@ impl Vermilion {
       CREATE INDEX IF NOT EXISTS index_metadata_block ON ordinals (genesis_height);
       CREATE INDEX IF NOT EXISTS index_metadata_sha256 ON ordinals (sha256);
       CREATE INDEX IF NOT EXISTS index_metadata_sat ON ordinals (sat);
-      CREATE INDEX IF NOT EXISTS index_metadata_sat ON ordinals (sat_block);
+      CREATE INDEX IF NOT EXISTS index_metadata_sat_block ON ordinals (sat_block);
       CREATE INDEX IF NOT EXISTS index_metadata_satributes on ordinals USING GIN (satributes);
       CREATE INDEX IF NOT EXISTS index_metadata_charms on ordinals USING GIN (charms);
       CREATE INDEX IF NOT EXISTS index_metadata_parents ON ordinals USING GIN (parents);
@@ -2032,6 +2032,12 @@ impl Vermilion {
       CREATE INDEX IF NOT EXISTS index_metadata_metaprotocol ON ordinals (metaprotocol);
       CREATE INDEX IF NOT EXISTS index_metadata_text ON ordinals USING GIN (to_tsvector('english', left(text, 1048575)));
       CREATE INDEX IF NOT EXISTS index_metadata_referenced_ids ON ordinals USING GIN (referenced_ids);
+    ").await?;
+    conn.simple_query(r"
+      CREATE INDEX IF NOT EXISTS index_metadata_sat_block_sat on ordinals (sat_block, sat);
+      CREATE INDEX IF NOT EXISTS index_metadata_sat_block_sequence on ordinals (sat_block, sequence_number);
+      CREATE INDEX IF NOT EXISTS index_metadata_sat_block_fee on ordinals (sat_block, genesis_fee);
+      CREATE INDEX IF NOT EXISTS index_metadata_sat_block_size on ordinals (sat_block, content_length);
     ").await?;
     conn.simple_query(r"
       CREATE EXTENSION IF NOT EXISTS btree_gin;
@@ -3500,7 +3506,7 @@ impl Vermilion {
         ).into_response();
       }
     };
-    let inscriptions: Vec<Metadata> = match Self::get_inscriptions_in_sat_block(server_config.deadpool, block, parsed_params).await {
+    let inscriptions = match Self::get_inscriptions_in_sat_block(server_config.deadpool, block, parsed_params).await {
       Ok(inscriptions) => inscriptions,
       Err(error) => {
         log::warn!("Error getting /inscriptions_in_sat_block: {}", error);
@@ -4174,7 +4180,7 @@ impl Vermilion {
     Ok(editions)
   }
 
-  async fn get_inscription_children(pool: deadpool, inscription_id: String, params: PaginationParams) -> anyhow::Result<Vec<Metadata>> {
+  async fn get_inscription_children(pool: deadpool, inscription_id: String, params: PaginationParams) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
     let page_size = params.page_size.unwrap_or(10);
     let offset = params.page_number.unwrap_or(0) * page_size;
@@ -4191,12 +4197,12 @@ impl Vermilion {
     ).await?;
     let mut inscriptions = Vec::new();
     for row in result {
-      inscriptions.push(Self::map_row_to_metadata(row));
+      inscriptions.push(Self::map_row_to_fullmetadata(row));
     }
     Ok(inscriptions)
   }
 
-  async fn get_inscription_children_by_number(pool: deadpool, number: i64, params: PaginationParams) -> anyhow::Result<Vec<Metadata>> {
+  async fn get_inscription_children_by_number(pool: deadpool, number: i64, params: PaginationParams) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
     let query = "Select id from ordinals where number=$1";
     let result = conn.query_one(
@@ -4608,9 +4614,9 @@ impl Vermilion {
     Ok(inscriptions)
   }
 
-  async fn get_inscriptions_in_sat_block(pool: deadpool, block: i64, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<Metadata>> {
+  async fn get_inscriptions_in_sat_block(pool: deadpool, block: i64, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
-    let base_query = "SELECT o.* from ordinals o right join sat s on o.sat = s.sat where s.block=$1".to_string();
+    let base_query = "select o.* from ordinals_full_v o where o.sat_block=$1".to_string();
     let full_query = Self::create_inscription_query_string(base_query, params);
     let result = conn.query(
       full_query.as_str(), 
@@ -4618,7 +4624,7 @@ impl Vermilion {
     ).await?;
     let mut inscriptions = Vec::new();
     for row in result {
-      inscriptions.push(Self::map_row_to_metadata(row));
+      inscriptions.push(Self::map_row_to_fullmetadata(row));
     }
     Ok(inscriptions)
   }
