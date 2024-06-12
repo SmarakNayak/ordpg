@@ -4198,24 +4198,14 @@ impl Vermilion {
 
   async fn get_inscription_children_by_number(pool: deadpool, number: i64, params: PaginationParams) -> anyhow::Result<Vec<Metadata>> {
     let conn = pool.get().await?;
-    let page_size = params.page_size.unwrap_or(10);
-    let offset = params.page_number.unwrap_or(0) * page_size;
-    let mut query = "SELECT * FROM ordinals_full_v WHERE parents && (SELECT ARRAY_AGG(id) FROM ordinals WHERE number = $1)".to_string();
-    if page_size > 0 {
-      query.push_str(format!(" LIMIT {}", page_size).as_str());
-    }
-    if offset > 0 {
-      query.push_str(format!(" OFFSET {}", offset).as_str());
-    }
-    let result = conn.query(
-      query.as_str(), 
+    let query = "Select id from ordinals where number=$1";
+    let result = conn.query_one(
+      query, 
       &[&number]
     ).await?;
-    let mut inscriptions = Vec::new();
-    for row in result {
-      inscriptions.push(Self::map_row_to_metadata(row));
-    }
-    Ok(inscriptions)
+    let id: String = result.get(0);
+    let inscriptions = Self::get_inscription_children(pool, id, params).await;
+    inscriptions
   }
 
   async fn get_inscriptions_within_block(pool: deadpool, block: i64, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<Metadata>> {
