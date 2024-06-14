@@ -3928,7 +3928,8 @@ impl Vermilion {
       },
       None => {}
     }
-    let content = Self::get_ordinal_content_by_sha256(pool, sha256.unwrap(), content_type, content_encoding).await;
+    let sha256 = sha256.ok_or(anyhow!("No sha256 found"))?;
+    let content = Self::get_ordinal_content_by_sha256(pool, sha256, content_type, content_encoding).await;
     content
   }
 
@@ -3957,7 +3958,8 @@ impl Vermilion {
       },
       None => {}
     }
-    let content = Self::get_ordinal_content_by_sha256(pool, sha256.unwrap(), content_type, content_encoding).await;
+    let sha256 = sha256.ok_or(anyhow!("No sha256 found"))?;
+    let content = Self::get_ordinal_content_by_sha256(pool, sha256, content_type, content_encoding).await;
     content
   }
 
