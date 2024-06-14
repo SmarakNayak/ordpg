@@ -458,6 +458,14 @@ pub struct CollectionSummary {
 }
 
 #[derive(Serialize)]
+pub struct CollectionHolders {
+  collection_symbol: String, 
+  collection_holder_count: Option<i64>,
+  address: Option<String>,
+  address_count: Option<i64>,
+}
+
+#[derive(Serialize)]
 pub struct InscriptionCollectionData {
   id: String,
   number: i64,
@@ -1499,7 +1507,8 @@ impl Vermilion {
           .route("/block_statistics/:block", get(Self::block_statistics))
           .route("/sat_block_statistics/:block", get(Self::sat_block_statistics))
           .route("/blocks", get(Self::blocks))
-          .route("/collection_summary/:collection_symbol", get(Self::collection_summary))
+          .route("/collection_summary/:collection_symbol", get(Self::collection_summary))          
+          .route("/collection_holders/:collection_symbol", get(Self::collection_holders))
           .route("/collections", get(Self::collections))
           .route("/inscriptions_in_collection/:collection_symbol", get(Self::inscriptions_in_collection))
           .route("/search/:search_by_query", get(Self::search_by_query))
@@ -3575,6 +3584,23 @@ impl Vermilion {
     ).into_response()
   }
 
+  async fn collection_holders(Path(collection_symbol): Path<String>, params: Query<PaginationParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let collection_holders = match Self::get_collection_holders(server_config.deadpool, collection_symbol.clone(), params.0).await {
+      Ok(collection_holders) => collection_holders,
+      Err(error) => {
+        log::warn!("Error getting /collection_holders: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving collection_holders summary for {}", collection_symbol),
+        ).into_response();
+      }    
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(collection_holders),
+    ).into_response()
+  }
+
   async fn collections(params: Query<CollectionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     //1. parse params
     let params = params.0;
@@ -4760,6 +4786,46 @@ impl Vermilion {
       total_on_chain_footprint: result.get("total_on_chain_footprint")
     };
     Ok(collection)
+  }
+
+  async fn get_collection_holders(pool: deadpool, collection_symbol: String, params: PaginationParams) -> anyhow::Result<Vec<CollectionHolders>> {
+    let conn = pool.get().await?;
+    let page_size = params.page_size.unwrap_or(10);
+    let offset = params.page_number.unwrap_or(0) * page_size;
+    let mut query = r"
+      select 
+        collection_symbol, 
+        COUNT(address) OVER () AS collection_holder_count, 
+        address, 
+        count(*) as address_count
+      from collections c 
+      left join addresses a 
+      on c.id = a.id 
+      where c.collection_symbol = $1 
+      group by a.address, c.collection_symbol 
+      order by count(*) desc".to_string();
+    if page_size > 0 {
+      query.push_str(format!(" LIMIT {}", page_size).as_str());        
+    }
+    if offset > 0 {
+      query.push_str(format!(" OFFSET {}", offset).as_str());
+    }
+    
+    let result = conn.query(
+      query.as_str(), 
+      &[&collection_symbol]
+    ).await?;
+    let mut holders = Vec::new();
+    for row in result {
+      let holder = CollectionHolders {
+        collection_symbol: row.get("collection_symbol"),
+        collection_holder_count: row.get("collection_holder_count"),
+        address: row.get("address"),
+        address_count: row.get("address_count")
+      };
+      holders.push(holder);
+    }
+    Ok(holders)
   }
 
   async fn get_collections(pool: deadpool, params: CollectionQueryParams) -> anyhow::Result<Vec<CollectionSummary>> {
