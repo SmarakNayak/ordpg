@@ -4359,10 +4359,10 @@ impl Vermilion {
     query
   }
 
-  async fn get_inscriptions(pool: deadpool, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<Metadata>> {
+  async fn get_inscriptions(pool: deadpool, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
     //1. build query
-    let mut query = "SELECT o.* FROM ordinals o WHERE 1=1".to_string();
+    let mut query = "SELECT o.* FROM ordinals_full_v o WHERE 1=1".to_string();
     if params.content_types.len() > 0 {
       query.push_str(" AND (");
       for (i, content_type) in params.content_types.iter().enumerate() {
@@ -4431,7 +4431,7 @@ impl Vermilion {
     ).await?;
     let mut inscriptions = Vec::new();
     for row in result {
-      inscriptions.push(Self::map_row_to_metadata(row));
+      inscriptions.push(Self::map_row_to_fullmetadata(row));
     }
     Ok(inscriptions)
   }
@@ -4851,21 +4851,23 @@ impl Vermilion {
       query.push_str(" AND (");
       for (i, content_type) in params.content_types.iter().enumerate() {
         if content_type == "text" {
-          query.push_str("(o.content_type IN ('text/plain;charset=utf-8', 'text/plain','text/markdown', 'text/javascript', 'text/plain;charset=us-ascii', 'text/rtf') AND o.is_json=false AND o.is_maybe_json=false AND o.is_bitmap_style=false)");
+          query.push_str("o.content_category = 'text'");
         } else if content_type == "image" {
-          query.push_str("o.content_type IN ('image/jpeg', 'image/png', 'image/svg+xml', 'image/webp', 'image/avif', 'image/tiff', 'image/heic', 'image/jp2')");
+          query.push_str("o.content_category = 'image'");
         } else if content_type == "gif" {
-          query.push_str("o.content_type = 'image/gif'");
+          query.push_str("o.content_category = 'gif'");
         } else if content_type == "audio" {
-          query.push_str("o.content_type IN ('audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/webm', 'audio/flac', 'audio/mod', 'audio/midi', 'audio/x-m4a')");
+          query.push_str("o.content_category = 'audio'");
         } else if content_type == "video" {
-          query.push_str("o.content_type IN ('video/mp4', 'video/ogg', 'video/webm')");
+          query.push_str("o.content_category = 'video'");
         } else if content_type == "html" {
-          query.push_str("o.content_type IN ('text/html;charset=utf-8', 'text/html')");
+          query.push_str("o.content_category = 'html'");
         } else if content_type == "json" {
-          query.push_str("o.is_json=true");
+          query.push_str("o.content_category = 'json'");
         } else if content_type == "namespace" {
-          query.push_str("o.is_bitmap_style=true");
+          query.push_str("o.content_category = 'namespace'");
+        } else if content_type == "javascript" {
+          query.push_str("o.content_category = 'javascript'");
         }
         if i < params.content_types.len() - 1 {
           query.push_str(" OR ");
