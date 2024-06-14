@@ -1489,6 +1489,8 @@ impl Vermilion {
           .route("/inscription_editions_sha256/:sha256", get(Self::inscription_editions_sha256))          
           .route("/inscription_children/:inscription_id", get(Self::inscription_children))
           .route("/inscription_children_number/:number", get(Self::inscription_children_number))
+          .route("/inscription_referenced_by/:inscription_id", get(Self::inscription_referenced_by))
+          .route("/inscription_referenced_by_number/:number", get(Self::inscription_referenced_by_number))
           .route("/inscriptions_in_block/:block", get(Self::inscriptions_in_block))
           .route("/inscriptions", get(Self::inscriptions))
           .route("/random_inscription", get(Self::random_inscription))
@@ -3255,6 +3257,41 @@ impl Vermilion {
     ).into_response()
   }
 
+  async fn inscription_referenced_by(Path(inscription_id): Path<InscriptionId>, params: Query<PaginationParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let referenced_by = match Self::get_inscription_referenced_by(server_config.deadpool, inscription_id.to_string(), params.0).await {
+      Ok(referenced_by) => referenced_by,
+      Err(error) => {
+        log::warn!("Error getting /inscription_referenced_by: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving referenced by for {}", inscription_id.to_string()),
+        ).into_response();
+      }
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(referenced_by),
+    ).into_response()
+  }
+
+  async fn inscription_referenced_by_number(Path(number): Path<i64>, params: Query<PaginationParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let referenced_by = match Self::get_inscription_referenced_by_number(server_config.deadpool, number, params.0).await {
+      Ok(referenced_by) => referenced_by,
+      Err(error) => {
+        log::warn!("Error getting /inscription_referenced_by_number: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving referenced by for {}", number),
+        ).into_response();
+      }
+    
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(referenced_by),
+    ).into_response()
+  }
+
   async fn inscriptions_in_block(Path(block): Path<i64>, params: Query<InscriptionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     let parsed_params = match Self::parse_and_validate_inscription_params(params.0) {
       Ok(parsed_params) => parsed_params,
@@ -4241,6 +4278,40 @@ impl Vermilion {
     ).await?;
     let id: String = result.get(0);
     let inscriptions = Self::get_inscription_children(pool, id, params).await;
+    inscriptions
+  }
+
+  async fn get_inscription_referenced_by(pool: deadpool, inscription_id: String, params: PaginationParams) -> anyhow::Result<Vec<FullMetadata>> {
+    let conn = pool.get().await?;
+    let page_size = params.page_size.unwrap_or(10);
+    let offset = params.page_number.unwrap_or(0) * page_size;
+    let mut query = "SELECT * FROM ordinals_full_v WHERE referenced_ids && ARRAY[$1::varchar]".to_string();
+    if page_size > 0 {
+      query.push_str(format!(" LIMIT {}", page_size).as_str());
+    }
+    if offset > 0 {
+      query.push_str(format!(" OFFSET {}", offset).as_str());
+    }
+    let result = conn.query(
+      query.as_str(), 
+      &[&inscription_id]
+    ).await?;
+    let mut inscriptions = Vec::new();
+    for row in result {
+      inscriptions.push(Self::map_row_to_fullmetadata(row));
+    }
+    Ok(inscriptions)
+  }
+
+  async fn get_inscription_referenced_by_number(pool: deadpool, number: i64, params: PaginationParams) -> anyhow::Result<Vec<FullMetadata>> {
+    let conn = pool.get().await?;
+    let query = "Select id from ordinals where number=$1";
+    let result = conn.query_one(
+      query, 
+      &[&number]
+    ).await?;
+    let id: String = result.get(0);
+    let inscriptions = Self::get_inscription_referenced_by(pool, id, params).await;
     inscriptions
   }
 
