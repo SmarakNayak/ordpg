@@ -3481,7 +3481,7 @@ impl Vermilion {
   }
 
   async fn inscriptions_on_sat(Path(sat): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let inscriptions: Vec<Metadata> = match Self::get_inscriptions_on_sat(server_config.deadpool, sat).await {
+    let inscriptions: Vec<FullMetadata> = match Self::get_inscriptions_on_sat(server_config.deadpool, sat).await {
       Ok(inscriptions) => inscriptions,
       Err(error) => {
         log::warn!("Error getting /inscriptions_on_sat: {}", error);
@@ -4218,9 +4218,9 @@ impl Vermilion {
     inscriptions
   }
 
-  async fn get_inscriptions_within_block(pool: deadpool, block: i64, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<Metadata>> {
+  async fn get_inscriptions_within_block(pool: deadpool, block: i64, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
-    let base_query = "SELECT * FROM ordinals o WHERE genesis_height=$1".to_string();
+    let base_query = "SELECT * FROM ordinals_full_v o WHERE genesis_height=$1".to_string();
     let full_query = Self::create_inscription_query_string(base_query, params);
     println!("{}", full_query);
     let result = conn.query(
@@ -4229,12 +4229,12 @@ impl Vermilion {
     ).await?;
     let mut inscriptions = Vec::new();
     for row in result {
-      inscriptions.push(Self::map_row_to_metadata(row));
+      inscriptions.push(Self::map_row_to_fullmetadata(row));
     }
     Ok(inscriptions)
   }
   
-  async fn get_random_inscription(pool: deadpool, random_float: f64) -> anyhow::Result<(Metadata, (f64, f64))> {
+  async fn get_random_inscription(pool: deadpool, random_float: f64) -> anyhow::Result<(FullMetadata, (f64, f64))> {
     let conn = pool.get().await?;
     let random_inscription_band = conn.query_one(
       "SELECT first_number, class_band_start, class_band_end FROM weights where band_end>$1 order by band_end limit 1",
@@ -4246,14 +4246,14 @@ impl Vermilion {
       end: random_inscription_band.get("class_band_end")
     };
     let metadata = conn.query_one(
-      "SELECT * from ordinals where sequence_number=$1 limit 1", 
+      "SELECT * from ordinals_full_v where sequence_number=$1 limit 1", 
       &[&random_inscription_band.sequence_number]
     ).await?;
-    let metadata = Self::map_row_to_metadata(metadata);
+    let metadata = Self::map_row_to_fullmetadata(metadata);
     Ok((metadata,(random_inscription_band.start, random_inscription_band.end)))
   }
 
-  async fn get_random_inscriptions(pool: deadpool, n: u32, mut bands: Vec<(f64, f64)>) -> anyhow::Result<(Vec<Metadata>, Vec<(f64, f64)>)> {
+  async fn get_random_inscriptions(pool: deadpool, n: u32, mut bands: Vec<(f64, f64)>) -> anyhow::Result<(Vec<FullMetadata>, Vec<(f64, f64)>)> {
     let n = std::cmp::min(n, 100);
     let mut rng = rand::rngs::StdRng::from_entropy();
     let mut random_floats = Vec::new();
@@ -4284,15 +4284,15 @@ impl Vermilion {
     Ok((random_metadatas, bands))
   }
 
-  async fn get_recent_inscriptions(pool: deadpool, n: u32) -> anyhow::Result<Vec<Metadata>> {
+  async fn get_recent_inscriptions(pool: deadpool, n: u32) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
     let result = conn.query(
-      "SELECT * FROM ordinals order by sequence_number desc limit $1", 
+      "SELECT * FROM ordinals_full_v order by sequence_number desc limit $1", 
       &[&n]
     ).await?;
     let mut inscriptions = Vec::new();
     for row in result {
-      inscriptions.push(Self::map_row_to_metadata(row));
+      inscriptions.push(Self::map_row_to_fullmetadata(row));
     }
     Ok(inscriptions)
   }
@@ -4609,15 +4609,15 @@ impl Vermilion {
     Ok(transfers)
   }
 
-  async fn get_inscriptions_on_sat(pool: deadpool, sat: i64) -> anyhow::Result<Vec<Metadata>> {
+  async fn get_inscriptions_on_sat(pool: deadpool, sat: i64) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
     let result = conn.query(
-      "SELECT * FROM ordinals WHERE sat=$1", 
+      "SELECT * FROM ordinals_full_v WHERE sat=$1", 
       &[&sat]
     ).await?;
     let mut inscriptions = Vec::new();
     for row in result {
-      inscriptions.push(Self::map_row_to_metadata(row));
+      inscriptions.push(Self::map_row_to_fullmetadata(row));
     }
     Ok(inscriptions)
   }
