@@ -2043,6 +2043,8 @@ impl Vermilion {
       CREATE EXTENSION IF NOT EXISTS btree_gin;
       CREATE INDEX IF NOT EXISTS index_metadata_type_satribute on ordinals USING GIN(content_type, satributes);
       CREATE INDEX IF NOT EXISTS index_metadata_type_charm on ordinals USING GIN(content_type, charms);
+      CREATE INDEX IF NOT EXISTS index_metadata_category_satribute on ordinals USING GIN(content_category, satributes);
+      CREATE INDEX IF NOT EXISTS index_metadata_category_charm on ordinals USING GIN(content_category, charms);
       CREATE INDEX IF NOT EXISTS index_metadata_json on ordinals(is_json, is_maybe_json, is_bitmap_style);
     ").await?;
   
