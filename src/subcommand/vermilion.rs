@@ -418,9 +418,7 @@ pub struct CollectionList {
   discord: Option<String>,
   #[serde(rename(deserialize = "websiteLink"))]
   website: Option<String>,
-  #[serde(deserialize_with = "deserialize_option_number_from_string")]
   min_inscription_number: Option<i64>,
-  #[serde(deserialize_with = "deserialize_option_number_from_string")]
   max_inscription_number: Option<i64>,
   #[serde(rename(deserialize = "createdAt"), deserialize_with = "deserialize_date")]
   date_created: i64
