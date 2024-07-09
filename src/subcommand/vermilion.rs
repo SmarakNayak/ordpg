@@ -410,7 +410,6 @@ pub struct CollectionList {
   #[serde(rename(deserialize = "inscriptionIcon"))]
   inscription_icon: Option<String>,
   description: Option<String>,
-  #[serde(deserialize_with = "deserialize_option_number_from_string")]
   supply: Option<i64>,
   #[serde(rename(deserialize = "twitterLink"))]
   twitter: Option<String>,
