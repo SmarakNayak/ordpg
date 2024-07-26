@@ -400,8 +400,12 @@ where
   }
 }
 
-#[derive(Deserialize, Serialize)]
-pub struct CollectionList {
+fn default_json_null() -> serde_json::Value {
+  serde_json::Value::Null
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+pub struct CollectionMetadata {
   #[serde(rename(deserialize = "symbol"))]
   collection_symbol: String,
   name: Option<String>,
@@ -423,14 +427,14 @@ pub struct CollectionList {
   date_created: i64
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct Collection {
   id: String,
   #[serde(rename(deserialize = "inscriptionNumber"))]
   number: i64,
   #[serde(rename(deserialize = "collectionSymbol"))]
   collection_symbol: String,
-  #[serde(rename(deserialize = "meta"))]
+  #[serde(rename(deserialize = "meta"), default = "default_json_null")]
   off_chain_metadata: serde_json::Value
 }
 
@@ -617,16 +621,17 @@ impl Vermilion {
     let ordinals_server_clone = self.clone();
     let ordinals_server_thread = ordinals_server_clone.run_ordinals_server(settings.clone(), index.clone(), handle);
 
-    //2a. Run Migration script
-    let migration_clone = self.clone();
-    let migration_script_thread = migration_clone.run_migration_script(settings.clone(), index.clone());
-
     //3. Run Address Indexer
     println!("Address Indexer Starting");
     let address_indexer_clone = self.clone();
     let address_indexer_thread = address_indexer_clone.run_address_indexer(settings.clone(), index.clone());
 
-    //4. Run Inscription Indexer
+    //4. Run Collection Indexer
+    println!("Collection Indexer Starting");
+    let collection_indexer_clone = self.clone();
+    let collection_indexer_thread = collection_indexer_clone.run_collection_indexer(settings.clone(), index.clone());
+
+    //5. Run Inscription Indexer
     println!("Inscription Indexer Starting");
     let inscription_indexer_clone = self.clone();
     inscription_indexer_clone.run_inscription_indexer(settings.clone(), index.clone()); //this blocks
@@ -638,16 +643,16 @@ impl Vermilion {
     println!("Server thread joined");
     let address_thread_result = address_indexer_thread.join();
     println!("Address thread joined");
-    let migration_thread_result = migration_script_thread.join();
-    println!("Migration thread joined");
+    let collection_thread_result = collection_indexer_thread.join();
+    println!("Collection thread joined");
     if server_thread_result.is_err() {
       println!("Error joining ordinals server thread: {:?}", server_thread_result.unwrap_err());
     }
     if address_thread_result.is_err() {
       println!("Error joining address indexer thread: {:?}", address_thread_result.unwrap_err());
     }
-    if migration_thread_result.is_err() {
-      println!("Error joining migration script thread: {:?}", migration_thread_result.unwrap_err());
+    if collection_thread_result.is_err() {
+      println!("Error joining collection indexer thread: {:?}", collection_thread_result.unwrap_err());
     }
     Ok(None)
   }
@@ -680,21 +685,21 @@ impl Vermilion {
         println!("Error initializing db tables: {:?}", init_result.unwrap_err());
         return;
       }
-      let collection_list_insert_result = Self::insert_collection_list(deadpool.clone()).await;
-      let collection_insert_result = Self::insert_collections(deadpool.clone()).await;
-      let collection_summary_result = Self::update_collection_summary(deadpool.clone()).await;
-      if collection_list_insert_result.is_err() {
-        println!("Error inserting collection list: {:?}", collection_list_insert_result.unwrap_err());
-        return;
-      }
-      if collection_insert_result.is_err() {
-        println!("Error inserting collection: {:?}", collection_insert_result.unwrap_err());
-        return;
-      }
-      if collection_summary_result.is_err() {
-        println!("Error updating collection summary: {:?}", collection_summary_result.unwrap_err());
-        return;
-      }
+      // let collection_list_insert_result = Self::insert_collection_list_from_file(deadpool.clone()).await;
+      // let collection_insert_result = Self::insert_collections_from_file(deadpool.clone()).await;
+      // let collection_summary_result = Self::update_collection_summary(deadpool.clone()).await;
+      // if collection_list_insert_result.is_err() {
+      //   println!("Error inserting collection list: {:?}", collection_list_insert_result.unwrap_err());
+      //   return;
+      // }
+      // if collection_insert_result.is_err() {
+      //   println!("Error inserting collection: {:?}", collection_insert_result.unwrap_err());
+      //   return;
+      // }
+      // if collection_summary_result.is_err() {
+      //   println!("Error updating collection summary: {:?}", collection_summary_result.unwrap_err());
+      //   return;
+      // }
 
       let start_number = match start_number_override {
         Some(start_number_override) => start_number_override,
@@ -1577,27 +1582,292 @@ impl Vermilion {
     return server_thread;
   }
 
-  pub(crate) fn run_migration_script(self, settings: Settings, index: Arc<Index>) -> JoinHandle<()> {
-      let migration_thread = thread::spawn(move || {
-        if self.run_migration_script {
-          println!("Migration Script Starting");
-          let migrator = Migrator {
-            script_number: 1
-          };
-          let migration_result = migrator.run(settings, index);
-          match migration_result {
-            Ok(_) => {
-              println!("Migration script stopped");
-            },
+  pub(crate) fn run_collection_indexer(self, settings: Settings, index: Arc<Index>) -> JoinHandle<()> {
+    let address_indexer_thread = thread::spawn(move ||{
+      let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+      rt.block_on(async move {
+        let pool = match Self::get_deadpool(settings.clone()).await {
+          Ok(deadpool) => deadpool,
+          Err(err) => {
+            println!("Error creating deadpool: {:?}", err);
+            return;
+          }
+        };
+        let init_result = Self::initialize_collection_tables(pool.clone()).await;
+        if init_result.is_err() {
+          println!("Error initializing collection tables: {:?}", init_result.unwrap_err());
+          return;
+        }
+        loop {
+          let t0 = Instant::now();
+          // break if ctrl-c is received
+          if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
+            break;
+          }
+          match Self::update_all_tokens(pool.clone(), settings.clone()).await {
+            Ok(update) => update,
             Err(err) => {
-              println!("Migration script failed: {:?}", err);
+              println!("Error updating all tokens: {:?}", err);
+              return;
             }
+          };
+          let t1 = Instant::now();
+          println!("Collection indexer: Updated all tokens in {:?}", t1.duration_since(t0));
+          tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+        println!("Collection indexer stopped");
+      })
+    });
+    return address_indexer_thread;
+  }
+  //Collection indexer helper functions
+  async fn get_recently_traded_collections() -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut collections = Vec::new();
+    let mut offset = 0;
+
+    loop {
+      let url = format!(
+        "https://stats-mainnet.magiceden.io/collection_stats/search/bitcoin?window=30d&limit=1000&offset={}&sort=totalVolume&direction=desc",
+        offset
+      );
+
+      let response = reqwest::get(&url).await?;
+
+      if response.status() != 200 {
+        println!("Error: {}", response.status());
+        println!("{}", response.text().await?);
+        break;
+      }
+
+      let data: Vec<JsonValue> = response.json().await?;
+      if data.is_empty() {
+        break;
+      }
+
+      for item in data {
+        if let Some(total_vol) = item["totalVol"].as_f64() {
+          if total_vol <= 0.0 {
+            println!("{}", serde_json::to_string_pretty(&item)?);
+            println!("Collections length: {}", collections.len());
+            return Ok(collections);
           }
         }
-      });
-      return migration_thread;
+        if let Some(symbol) = item["collectionSymbol"].as_str() {
+          collections.push(symbol.to_string());
+        }
+      }
+
+      offset += 1000;
+    }
+
+    println!("Collections length: {}", collections.len());
+    Ok(collections)
+}
+
+  async fn get_collection_metadata(settings: Settings, symbol: &str) -> Result<Option<CollectionMetadata>, Box<dyn std::error::Error>> {
+    let url = format!(
+        "https://api-mainnet.magiceden.dev/v2/ord/btc/tokens?limit=20&offset=0&collectionSymbol={}",
+        symbol
+    );
+    let client = reqwest::Client::new();
+    let mut headers = reqwest::header::HeaderMap::new();
+    let token = settings.magiceden_api_key().map(|s| s.to_string()).ok_or("No Magic Eden Api key found")?;
+    headers.insert(reqwest::header::AUTHORIZATION, format!("Bearer {}", token).parse().unwrap());
+
+    let request_start_time = Instant::now();
+    let response = client.get(&url).headers(headers).send().await?;
+    // println!(
+    //   "Got metadata for {} in {:.2} seconds",
+    //   symbol,
+    //   request_start_time.elapsed().as_secs_f64()
+    // );
+
+    if response.status() != 200 {
+      println!("Error: {}", response.status());
+      println!("{}", response.text().await?);
+      return Err("Error occurred, 200 not returned".into());
+    }
+
+    let data: JsonValue = response.json().await?;
+    if let Some(tokens) = data["tokens"].as_array() {
+      if let Some(first_token) = tokens.first() {
+        if let Some(item_type) = first_token.get("itemType") {
+          if item_type.as_str() == Some("UTXO") {//skip rare-sats
+            return Ok(None);
+          }
+        }
+        if let Some(collection) = first_token.get("collection") {
+          if let Some(brc20) = collection.get("brc20") { //Skip brc20 collections
+            return Ok(None);
+          } else {
+            let metadata: CollectionMetadata = serde_json::from_value(collection.clone())?;
+            return Ok(Some(metadata));
+          }
+        }
+      }
+    }
+    Ok(None)
   }
-  
+
+  async fn get_recently_traded_collection_metadata(settings: Settings, recently_traded_collections: Vec<String>) -> Result<Vec<CollectionMetadata>, Box<dyn std::error::Error>> {
+    let mut traded_metadata = Vec::new();
+    println!("Getting metadata for traded collections: {}", recently_traded_collections.len());
+    let mut t0 = Instant::now();
+    for (i, symbol) in recently_traded_collections.iter().enumerate() {
+      if let Some(metadata) = Self::get_collection_metadata(settings.clone(), symbol).await? {
+        traded_metadata.push(metadata);
+      }
+      if i % 10 == 0 {
+        println!("Got metadata for 100 collections in {:.2} seconds, {} indexed so far", t0.elapsed().as_secs_f64(), i);
+        t0 = Instant::now();        
+      }
+    }
+
+    Ok(traded_metadata)
+  }
+
+  async fn get_stored_collection_metadata(pool: deadpool_postgres::Pool) -> Result<Vec<CollectionMetadata>, Box<dyn std::error::Error>> {
+    let mut collections = Vec::new();
+    let conn = pool.get().await?;
+    let query = "SELECT * from collection_list";
+    let rows = conn.query(query, &[]).await?;
+    for row in rows {
+      let metadata = CollectionMetadata {
+        collection_symbol: row.get("collection_symbol"),
+        name: row.get("name"),
+        image_uri: row.get("image_uri"),
+        inscription_icon: row.get("inscription_icon"),
+        description: row.get("description"),
+        supply: row.get("supply"),
+        twitter: row.get("twitter"),
+        discord: row.get("discord"),
+        website: row.get("website"),
+        min_inscription_number: row.get("min_inscription_number"),
+        max_inscription_number: row.get("max_inscription_number"),
+        date_created: row.get("date_created"),
+      };
+      collections.push(metadata);
+    }
+    Ok(collections)
+  }
+
+  async fn get_new_collection_symbols(pool: deadpool_postgres::Pool, settings: Settings, traded_collections: Vec<CollectionMetadata>) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let stored_collections = Self::get_stored_collection_metadata(pool.clone()).await?;
+    //let traded_collections = Self::get_recently_traded_collection_metadata(settings.clone()).await?;
+    let mut update_symbols = Vec::new();
+    for traded_collection in traded_collections {
+      if let Some(stored_collection) = stored_collections.iter().find(|item| item.collection_symbol == traded_collection.collection_symbol) {
+        if stored_collection.supply != traded_collection.supply {
+          println!("Symbol {} has updated supply", traded_collection.collection_symbol);
+          println!("Stored: {:?}, Traded: {:?}", stored_collection.supply, traded_collection.supply);
+          update_symbols.push(traded_collection.collection_symbol.clone());
+        }
+      } else {
+        // Symbol in traded but not in stored
+        println!("Symbol {} has not been stored", traded_collection.collection_symbol);
+        update_symbols.push(traded_collection.collection_symbol.clone());
+      }
+    }
+    Ok(update_symbols)
+  }
+
+  async fn get_tokens(settings: Settings, symbol: &str) -> Result<Vec<Collection>, Box<dyn std::error::Error>> {
+    let mut tokens = Vec::new();
+    let mut offset = 0;
+    let start_time = Instant::now();
+    let client = reqwest::Client::new();
+
+    loop {
+      let url = format!(
+        "https://api-mainnet.magiceden.dev/v2/ord/btc/tokens?limit=100&offset={}&sortBy=inscriptionNumberAsc&collectionSymbol={}",
+        offset, symbol
+      );
+      let mut headers = reqwest::header::HeaderMap::new();
+      let token = settings.magiceden_api_key().map(|s| s.to_string()).ok_or("No Magic Eden Api key found")?;
+      headers.insert(reqwest::header::AUTHORIZATION, format!("Bearer {}", token).parse().unwrap());
+
+      let request_start_time = Instant::now();
+      let response = match client.get(&url).headers(headers).send().await {
+        Ok(resp) => resp,
+        Err(e) => {
+          println!("Error occurred: {}", e);
+          tokio::time::sleep(Duration::from_secs(5)).await;
+          continue;
+        }
+      };
+
+      println!(
+        "Got 100 tokens for {} at offset {} in {:.2} seconds",
+        symbol,
+        offset,
+        request_start_time.elapsed().as_secs_f64()
+      );
+
+      if response.status() != 200 {
+        println!("Error: {}", response.status());
+        println!("{}", response.text().await?);
+        return Err("Error occurred, 200 not returned".into());
+      }
+
+      let data: JsonValue = response.json().await?;
+      if let Some(tokens_data) = data.get("tokens") {
+        let new_tokens: Vec<Collection> = tokens_data.as_array()
+          .ok_or("tokens is not an array")?
+          .iter()
+          .map(|token| serde_json::from_value(token.clone()))
+          .collect::<Result<_, _>>()?;
+        tokens.extend(new_tokens.clone());
+        if new_tokens.len() < 100 {
+          break;
+        }
+      } else {
+        break;
+      }
+
+      offset += 100;
+    }
+
+    println!(
+      "Got {} tokens for {} in {:.2} seconds",
+      tokens.len(),
+      symbol,
+      start_time.elapsed().as_secs_f64()
+    );
+    Ok(tokens)
+  }
+
+  async fn update_all_tokens(pool: deadpool_postgres::Pool, settings: Settings) -> Result<(), Box<dyn std::error::Error>> {
+    let recently_traded_collections = Self::get_recently_traded_collections().await?;
+    let stored_recently_traded_collections = Self::get_stored_recently_traded_collections(pool.clone()).await?;
+    //check if every collection in recently_traded_collections is stored
+    let new_collections = recently_traded_collections
+      .iter()
+      .filter(|item| !stored_recently_traded_collections.contains(item))
+      .map(|item| item.clone())
+      .collect::<Vec<_>>();
+    if new_collections.is_empty() {
+      return Ok(());
+    }
+
+    let traded_collections = Self::get_recently_traded_collection_metadata(settings.clone(), recently_traded_collections.clone()).await?;
+    let new_symbols = Self::get_new_collection_symbols(pool.clone(), settings.clone(), traded_collections.clone()).await?;
+    for symbol in new_symbols {
+      let new_tokens = Self::get_tokens(settings.clone(), &symbol).await?;
+      let collection_metadata = traded_collections.iter().find(|item| item.collection_symbol == symbol).ok_or("Collection metadata not found")?;
+      let mut conn = pool.get().await?;
+      let tx = conn.transaction().await?;
+      Self::insert_collection_list(&tx, vec![collection_metadata.clone()]).await?;
+      Self::remove_collection_symbol(&tx, symbol.clone()).await?;
+      Self::insert_collections(&tx, new_tokens).await?;
+      tx.commit().await?;
+    }
+    Self::insert_recently_traded_collections(pool, recently_traded_collections).await?;
+    Ok(())
+  }
+
   //Inscription Indexer Helper functions
   pub(crate) async fn upload_ordinal_content(client: &s3::Client, bucket_name: &str, inscription_id: InscriptionId, inscription: Inscription, head_check: bool) {
     let id = inscription_id.to_string();	
@@ -1976,6 +2246,7 @@ impl Vermilion {
     Self::create_collection_list_table(pool.clone()).await.context("Failed to create collection list table")?;
     Self::create_collections_table(pool.clone()).await.context("Failed to create collections table")?;
     Self::create_collections_summary_table(pool.clone()).await.context("Failed to create collections summary table")?;
+    Self::create_recently_traded_collection_table(pool.clone()).await.context("Failed to create recently traded collection table")?;
     
     Self::create_procedure_log(pool.clone()).await.context("Failed to create proc log")?;
     Self::create_collection_summary_procedure(pool.clone()).await.context("Failed to create collection summary proc")?;
@@ -1987,6 +2258,14 @@ impl Vermilion {
     Self::create_transfer_insert_trigger(pool.clone()).await.context("Failed to create transfer trigger")?;
 
     Self::create_ordinals_full_view(pool.clone()).await.context("Failed to create ordinals full view")?;
+    Ok(())
+  }
+
+  pub(crate) async fn initialize_collection_tables(pool: deadpool_postgres::Pool) -> anyhow::Result<()> {
+    Self::create_collection_list_table(pool.clone()).await.context("Failed to create collection list table")?;
+    Self::create_collections_table(pool.clone()).await.context("Failed to create collections table")?;
+    Self::create_collections_summary_table(pool.clone()).await.context("Failed to create collections summary table")?;
+    Self::create_recently_traded_collection_table(pool.clone()).await.context("Failed to create recently traded collection table")?;
     Ok(())
   }
 
@@ -2288,6 +2567,15 @@ impl Vermilion {
       CREATE INDEX IF NOT EXISTS index_min_inscription_number ON collection_list (min_inscription_number);
       CREATE INDEX IF NOT EXISTS index_date_created ON collection_list (date_created);
     ").await?;
+    Ok(())
+  }
+
+  pub(crate) async fn create_recently_traded_collection_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
+      r"CREATE TABLE IF NOT EXISTS recently_traded_collections (
+        collection_symbol varchar(50) not null primary key
+      )").await?;
     Ok(())
   }
 
@@ -3864,14 +4152,14 @@ impl Vermilion {
   }
 
   //DB functions
-  async fn insert_collection_list(pool: deadpool) -> anyhow::Result<()> {
+  async fn insert_collection_list_from_file(pool: deadpool) -> anyhow::Result<()> {
     let mut conn = pool.get().await?;
     let tx = conn.transaction().await?;
     let file = tokio::fs::File::open(std::path::Path::new("../ordinal-collections/collection_list.json")).await?;
     let mut rdr = tokio::io::BufReader::new(file);
     let mut content = String::new();
     rdr.read_to_string(&mut content).await?;
-    let collection_list: Vec<CollectionList> = serde_json::from_str(&mut content)?;
+    let collection_list: Vec<CollectionMetadata> = serde_json::from_str(&mut content)?;
     tx.simple_query("CREATE TEMP TABLE inserts_collection_list ON COMMIT DROP AS TABLE collection_list WITH NO DATA").await?;
     let copy_stm = r#"COPY inserts_collection_list (
       collection_symbol,
@@ -3927,7 +4215,7 @@ impl Vermilion {
     Ok(())
   }
 
-  async fn insert_collections(pool: deadpool) -> anyhow::Result<()> {
+  async fn insert_collections_from_file(pool: deadpool) -> anyhow::Result<()> {
     let mut conn = pool.get().await?;
     let tx = conn.transaction().await?;
     let file = tokio::fs::File::open(std::path::Path::new("../ordinal-collections/collections.json")).await?;
@@ -3963,6 +4251,132 @@ impl Vermilion {
     tx.simple_query("INSERT INTO collections SELECT * FROM inserts_collections ON CONFLICT DO NOTHING").await?;
     tx.commit().await?;
     Ok(())
+  }
+
+  async fn insert_collection_list(tx: &deadpool_postgres::Transaction<'_>, collection_list: Vec<CollectionMetadata>) -> anyhow::Result<()> {
+    tx.simple_query("CREATE TEMP TABLE inserts_collection_list ON COMMIT DROP AS TABLE collection_list WITH NO DATA").await?;
+    let copy_stm = r#"COPY inserts_collection_list (
+      collection_symbol,
+      name,
+      image_uri,
+      inscription_icon,
+      description,
+      supply,
+      twitter,
+      discord,
+      website,
+      min_inscription_number,
+      max_inscription_number,
+      date_created
+    ) FROM STDIN BINARY"#;
+    let col_types = vec![
+      Type::VARCHAR,
+      Type::TEXT,
+      Type::TEXT,
+      Type::VARCHAR,
+      Type::TEXT,
+      Type::INT8,
+      Type::TEXT,
+      Type::TEXT,
+      Type::TEXT,
+      Type::INT8,
+      Type::INT8,
+      Type::INT8
+    ];
+    let sink = tx.copy_in(copy_stm).await?;
+    let writer = BinaryCopyInWriter::new(sink, &col_types);
+    pin_mut!(writer);
+    for m in collection_list {
+      let mut row: Vec<&'_ (dyn ToSql + Sync)> = Vec::new();
+      row.push(&m.collection_symbol);
+      row.push(&m.name);
+      row.push(&m.image_uri);
+      let icon_short = &m.inscription_icon.map(|s| s.chars().take(80).collect::<String>());
+      row.push(icon_short);
+      row.push(&m.description);
+      row.push(&m.supply);
+      row.push(&m.twitter);
+      row.push(&m.discord);
+      row.push(&m.website);
+      row.push(&m.min_inscription_number);
+      row.push(&m.max_inscription_number);
+      row.push(&m.date_created);
+      writer.as_mut().write(&row).await?;
+    }  
+    writer.finish().await?;
+    tx.simple_query("INSERT INTO collection_list SELECT * FROM inserts_collection_list ON CONFLICT DO NOTHING").await?;
+    Ok(())
+  }
+
+  async fn insert_collections(tx: &deadpool_postgres::Transaction<'_>, collections: Vec<Collection>) -> anyhow::Result<()> {
+    tx.simple_query("CREATE TEMP TABLE inserts_collections ON COMMIT DROP AS TABLE collections WITH NO DATA").await?;
+    let copy_stm = r#"COPY inserts_collections (
+      id,
+      number,
+      collection_symbol,
+      off_chain_metadata
+    ) FROM STDIN BINARY"#;
+    let col_types = vec![
+      Type::VARCHAR,
+      Type::INT8,
+      Type::VARCHAR,
+      Type::JSONB
+    ];
+    let sink = tx.copy_in(copy_stm).await?;
+    let writer = BinaryCopyInWriter::new(sink, &col_types);
+    pin_mut!(writer);
+    for m in collections {
+      let mut row: Vec<&'_ (dyn ToSql + Sync)> = Vec::new();
+      row.push(&m.id);
+      row.push(&m.number);
+      row.push(&m.collection_symbol);
+      row.push(&m.off_chain_metadata);
+      writer.as_mut().write(&row).await?;
+    }
+    writer.finish().await?;
+    tx.simple_query("INSERT INTO collections SELECT * FROM inserts_collections ON CONFLICT DO NOTHING").await?;
+    Ok(())
+  }
+
+  async fn remove_collection_symbol(tx: &deadpool_postgres::Transaction<'_>, collection_symbol: String) -> anyhow::Result<()> {
+    tx.execute("DELETE FROM collections WHERE collection_symbol=$1", &[&collection_symbol]).await?;
+    Ok(())
+  }
+
+  async fn insert_recently_traded_collections(pool: deadpool, symbols: Vec<String>) -> anyhow::Result<()> {
+    let mut conn = pool.get().await?;
+    let tx = conn.transaction().await?;
+    tx.simple_query("CREATE TEMP TABLE inserts_recently_traded_collections ON COMMIT DROP AS TABLE recently_traded_collections WITH NO DATA").await?;
+    let copy_stm = r#"COPY inserts_recently_traded_collections (
+      collection_symbol
+    ) FROM STDIN BINARY"#;
+    let col_types = vec![
+      Type::VARCHAR
+    ];
+    let sink = tx.copy_in(copy_stm).await?;
+    let writer = BinaryCopyInWriter::new(sink, &col_types);
+    pin_mut!(writer);
+    for symbol in symbols {
+      let mut row: Vec<&'_ (dyn ToSql + Sync)> = Vec::new();
+      row.push(&symbol);
+      writer.as_mut().write(&row).await?;
+    }
+    writer.finish().await?;
+    tx.simple_query("DELETE FROM recently_traded_collections").await?;
+    tx.simple_query("INSERT INTO recently_traded_collections SELECT * FROM inserts_recently_traded_collections ON CONFLICT DO NOTHING").await?;
+    tx.commit().await?;
+    Ok(())
+  }
+
+  async fn get_stored_recently_traded_collections(pool: deadpool) -> anyhow::Result<Vec<String>> {
+    let conn = pool.get().await?;
+    let rows = conn.query("SELECT collection_symbol FROM recently_traded_collections", &[]).await?;
+    let mut symbols: Vec<String> = Vec::new();
+    for row in rows {
+      let symbol: String = row.get(0);
+      symbols.push(symbol);
+    }
+    Ok(symbols)
   }
 
   async fn get_ordinal_content(pool: deadpool, inscription_id: String) -> anyhow::Result<ContentBlob> {
