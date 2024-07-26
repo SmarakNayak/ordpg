@@ -4304,7 +4304,18 @@ impl Vermilion {
       writer.as_mut().write(&row).await?;
     }  
     writer.finish().await?;
-    tx.simple_query("INSERT INTO collection_list SELECT * FROM inserts_collection_list ON CONFLICT DO NOTHING").await?;
+    tx.simple_query("INSERT INTO collection_list SELECT * FROM inserts_collection_list ON CONFLICT (collection_symbol) DO UPDATE SET 
+      name=EXCLUDED.name, 
+      image_uri=EXCLUDED.image_uri, 
+      inscription_icon=EXCLUDED.inscription_icon, 
+      description=EXCLUDED.description,
+      supply=EXCLUDED.supply, 
+      twitter=EXCLUDED.twitter, 
+      discord=EXCLUDED.discord, 
+      website=EXCLUDED.website, 
+      min_inscription_number=EXCLUDED.min_inscription_number,
+      max_inscription_number=EXCLUDED.max_inscription_number, 
+      date_created=EXCLUDED.date_created").await?;
     Ok(())
   }
 
