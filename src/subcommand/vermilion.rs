@@ -1610,12 +1610,13 @@ impl Vermilion {
           match Self::update_all_tokens(pool.clone(), settings.clone()).await {
             Ok(update) => update,
             Err(err) => {
-              println!("Error updating all tokens: {:?}", err);
-              return;
+              log::warn!("Error updating all tokens: {:?}", err);
+              tokio::time::sleep(Duration::from_secs(60)).await;
+              continue;
             }
           };
           let t1 = Instant::now();
-          println!("Collection indexer: Updated all tokens in {:?}", t1.duration_since(t0));
+          log::info!("Collection indexer: Updated all tokens in {:?}", t1.duration_since(t0));
           tokio::time::sleep(Duration::from_secs(60)).await;
         }
         println!("Collection indexer stopped");
@@ -1650,12 +1651,15 @@ impl Vermilion {
       for item in data {
         if let Some(total_vol) = item["totalVol"].as_f64() {
           if total_vol <= 0.0 {
-            println!("{}", serde_json::to_string_pretty(&item)?);
-            println!("Collections length: {}", collections.len());
+            log::debug!("{}", serde_json::to_string_pretty(&item)?);
+            log::info!("{} recently traded collections detected", collections.len());
             return Ok(collections);
           }
         }
         if let Some(symbol) = item["collectionSymbol"].as_str() {
+          if symbol.starts_with("domain_dot") {
+            continue;
+          }
           collections.push(symbol.to_string());
         }
       }
@@ -1663,7 +1667,7 @@ impl Vermilion {
       offset += 1000;
     }
 
-    println!("Collections length: {}", collections.len());
+    log::info!("{} recently traded collections detected", collections.len());
     Ok(collections)
 }
 
@@ -1720,8 +1724,8 @@ impl Vermilion {
       if let Some(metadata) = Self::get_collection_metadata(settings.clone(), symbol).await? {
         traded_metadata.push(metadata);
       }
-      if i % 10 == 0 {
-        println!("Got metadata for 100 collections in {:.2} seconds, {} indexed so far", t0.elapsed().as_secs_f64(), i);
+      if i % 100 == 0 {
+        log::info!("Got metadata for 100 collections in {:.2} seconds, {} indexed so far", t0.elapsed().as_secs_f64(), i);
         t0 = Instant::now();        
       }
     }
@@ -1761,13 +1765,13 @@ impl Vermilion {
     for traded_collection in traded_collections {
       if let Some(stored_collection) = stored_collections.iter().find(|item| item.collection_symbol == traded_collection.collection_symbol) {
         if stored_collection.supply != traded_collection.supply {
-          println!("Symbol {} has updated supply", traded_collection.collection_symbol);
-          println!("Stored: {:?}, Traded: {:?}", stored_collection.supply, traded_collection.supply);
+          log::info!("Symbol {} has updated supply", traded_collection.collection_symbol);
+          log::info!("Stored: {:?}, Traded: {:?}", stored_collection.supply, traded_collection.supply);
           update_symbols.push(traded_collection.collection_symbol.clone());
         }
       } else {
         // Symbol in traded but not in stored
-        println!("Symbol {} has not been stored", traded_collection.collection_symbol);
+        log::info!("Symbol {} has not been stored", traded_collection.collection_symbol);
         update_symbols.push(traded_collection.collection_symbol.clone());
       }
     }
@@ -1799,7 +1803,7 @@ impl Vermilion {
         }
       };
 
-      println!(
+      log::info!(
         "Got 100 tokens for {} at offset {} in {:.2} seconds",
         symbol,
         offset,
@@ -1830,7 +1834,7 @@ impl Vermilion {
       offset += 100;
     }
 
-    println!(
+    log::info!(
       "Got {} tokens for {} in {:.2} seconds",
       tokens.len(),
       symbol,
@@ -1849,6 +1853,7 @@ impl Vermilion {
       .map(|item| item.clone())
       .collect::<Vec<_>>();
     if new_collections.is_empty() {
+      log::info!("No new collections to update");
       return Ok(());
     }
 
