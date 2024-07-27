@@ -1869,7 +1869,8 @@ impl Vermilion {
       Self::insert_collections(&tx, new_tokens).await?;
       tx.commit().await?;
     }
-    Self::insert_recently_traded_collections(pool, recently_traded_collections).await?;
+    Self::insert_recently_traded_collections(pool.clone(), recently_traded_collections).await?;
+    Self::update_collection_summary(pool).await?;
     Ok(())
   }
 
