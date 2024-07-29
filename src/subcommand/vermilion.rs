@@ -6194,11 +6194,11 @@ impl Vermilion {
         INSERT INTO collection_summary (collection_symbol, supply, total_inscription_size, total_inscription_fees, first_inscribed_date, last_inscribed_date, range_start, range_end, total_volume, transfer_fees, transfer_footprint, total_fees, total_on_chain_footprint) 
         select 
           a.*, 
-          b.total_volume,
-          b.transfer_fees, 
-          b.transfer_footprint,
-          a.total_inscription_fees + b.transfer_fees, 
-          a.total_inscription_size + b.transfer_footprint 
+          coalesce(b.total_volume,0),
+          coalesce(b.transfer_fees,0), 
+          coalesce(b.transfer_footprint,0),
+          a.total_inscription_fees + coalesce(b.transfer_fees,0), 
+          a.total_inscription_size + coalesce(b.transfer_footprint,0) 
         from a left join b on a.collection_symbol=b.collection_symbol
         ON CONFLICT (collection_symbol) DO UPDATE SET
         supply = EXCLUDED.supply,
