@@ -454,6 +454,8 @@ pub struct CollectionSummary {
   range_start: Option<i64>,
   range_end: Option<i64>,
   total_volume: Option<i64>,
+  transfer_fees: Option<i64>,
+  transfer_footprint: Option<i64>,
   total_fees: Option<i64>,
   total_on_chain_footprint: Option<i64>
 }
@@ -2544,7 +2546,9 @@ impl Vermilion {
         range_start bigint,
         range_end bigint,
         total_volume bigint, 
-        total_fees bigint, 
+        transfer_fees bigint,
+        transfer_footprint bigint,
+        total_fees bigint,
         total_on_chain_footprint bigint
       )").await?;
     Ok(())
@@ -5259,6 +5263,8 @@ impl Vermilion {
         s.range_start,
         s.range_end,
         s.total_volume,
+        s.transfer_fees,
+        s.transfer_footprint,
         s.total_fees,
         s.total_on_chain_footprint
       from collection_list l left join collection_summary s on l.collection_symbol=s.collection_symbol WHERE s.collection_symbol=$1 LIMIT 1";
@@ -5281,6 +5287,8 @@ impl Vermilion {
       range_start: result.get("range_start"),
       range_end: result.get("range_end"),
       total_volume: result.get("total_volume"),
+      transfer_fees: result.get("transfer_fees"),
+      transfer_footprint: result.get("transfer_footprint"),
       total_fees: result.get("total_fees"),
       total_on_chain_footprint: result.get("total_on_chain_footprint")
     };
@@ -5344,6 +5352,8 @@ impl Vermilion {
         s.range_start,
         s.range_end,
         s.total_volume,
+        s.transfer_fees,
+        s.transfer_footprint,
         s.total_fees,
         s.total_on_chain_footprint
       from collection_list l left join collection_summary s on l.collection_symbol=s.collection_symbol where l.name!=''".to_string();
@@ -5404,6 +5414,8 @@ impl Vermilion {
         range_start: row.get("range_start"),
         range_end: row.get("range_end"),
         total_volume: row.get("total_volume"),
+        transfer_fees: row.get("transfer_fees"),
+        transfer_footprint: row.get("transfer_footprint"),
         total_fees: row.get("total_fees"),
         total_on_chain_footprint: row.get("total_on_chain_footprint")
       };
@@ -5742,6 +5754,8 @@ impl Vermilion {
         s.range_start,
         s.range_end,
         s.total_volume,
+        s.transfer_fees,
+        s.transfer_footprint,
         s.total_fees,
         s.total_on_chain_footprint
       from collection_list l 
@@ -5767,7 +5781,9 @@ impl Vermilion {
         supply: row.get("supply"),
         range_start: row.get("range_start"),
         range_end: row.get("range_end"),
-        total_volume: row.get("total_volume"),
+        total_volume: row.get("total_volume"),        
+        transfer_fees: row.get("transfer_fees"),
+        transfer_footprint: row.get("transfer_footprint"),
         total_fees: row.get("total_fees"),
         total_on_chain_footprint: row.get("total_on_chain_footprint")
       };
@@ -5882,9 +5898,11 @@ impl Vermilion {
         LOCK TABLE transfers IN EXCLUSIVE MODE;
         -- RAISE NOTICE 'insert_transfers: lock acquired';
         SELECT collection_symbol INTO v_collection_symbol FROM collections WHERE id = NEW.id;
-        IF EXISTS (SELECT 1 FROM collections WHERE id = NEW.id) THEN
+        IF EXISTS (SELECT 1 FROM collections WHERE id = NEW.id) AND NEW.is_genesis = false THEN
           UPDATE collection_summary
           SET total_volume = coalesce(total_volume, 0) + new.price,
+              transfer_fees = coalesce(transfer_fees, 0) + NEW.tx_fee,
+              transfer_footprint = coalesce(transfer_footprint, 0) + NEW.tx_size,
               total_fees = coalesce(total_fees, 0) + NEW.tx_fee,
               total_on_chain_footprint = coalesce(total_on_chain_footprint, 0) + NEW.tx_size
             WHERE collection_symbol = v_collection_symbol;
@@ -6167,17 +6185,20 @@ impl Vermilion {
           select 
             c.collection_symbol, 
             sum(price) as total_volume, 
-            sum(tx_fee) as total_fees, 
-            sum(tx_size) as total_on_chain_footprint 
-            from collections c left join transfers t on c.id=t.id 
+            sum(tx_fee) as transfer_fees, 
+            sum(tx_size) as transfer_footprint 
+            from collections c left join transfers t on c.id=t.id            
+            where NOT t.is_genesis
             group by c.collection_symbol
         ) 
-        INSERT INTO collection_summary (collection_symbol, supply, total_inscription_size, total_inscription_fees, first_inscribed_date, last_inscribed_date, range_start, range_end, total_volume, total_fees, total_on_chain_footprint) 
+        INSERT INTO collection_summary (collection_symbol, supply, total_inscription_size, total_inscription_fees, first_inscribed_date, last_inscribed_date, range_start, range_end, total_volume, transfer_fees, transfer_footprint, total_fees, total_on_chain_footprint) 
         select 
           a.*, 
-          b.total_volume, 
-          b.total_fees, 
-          b.total_on_chain_footprint 
+          b.total_volume,
+          b.transfer_fees, 
+          b.transfer_footprint,
+          a.total_inscription_fees + b.transfer_fees, 
+          a.total_inscription_size + b.transfer_footprint 
         from a left join b on a.collection_symbol=b.collection_symbol
         ON CONFLICT (collection_symbol) DO UPDATE SET
         supply = EXCLUDED.supply,
@@ -6188,6 +6209,8 @@ impl Vermilion {
         range_start = EXCLUDED.range_start,
         range_end = EXCLUDED.range_end,
         total_volume = EXCLUDED.total_volume,
+        transfer_fees = EXCLUDED.transfer_fees,
+        transfer_footprint = EXCLUDED.transfer_footprint,
         total_fees = EXCLUDED.total_fees,
         total_on_chain_footprint = EXCLUDED.total_on_chain_footprint;
       END;
