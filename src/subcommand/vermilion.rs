@@ -2,6 +2,7 @@ use self::migrate::Migrator;
 
 use super::*;
 use axum_server::Handle;
+use rune_indexer::run_runes_indexer;
 use serde_aux::prelude::*;
 use tokio::io::AsyncReadExt;
 use crate::subcommand::server;
@@ -55,6 +56,9 @@ use tokio_postgres::NoTls;
 use tokio_postgres::binary_copy::BinaryCopyInWriter;
 use tokio_postgres::types::{ToSql, Type};
 use futures::pin_mut;
+
+mod rune_indexer;
+mod database;
 
 #[derive(Debug, Parser, Clone)]
 pub(crate) struct Vermilion {
@@ -633,7 +637,11 @@ impl Vermilion {
     let collection_indexer_clone = self.clone();
     let collection_indexer_thread = collection_indexer_clone.run_collection_indexer(settings.clone(), index.clone());
 
-    //5. Run Inscription Indexer
+    //5. Run Runes Indexer
+    println!("Runes Indexer Starting");
+    let runes_indexer_thread = run_runes_indexer(settings.clone(), index.clone());
+
+    //6. Run Inscription Indexer
     println!("Inscription Indexer Starting");
     let inscription_indexer_clone = self.clone();
     inscription_indexer_clone.run_inscription_indexer(settings.clone(), index.clone()); //this blocks
