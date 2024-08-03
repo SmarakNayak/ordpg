@@ -655,6 +655,8 @@ impl Vermilion {
     println!("Address thread joined");
     let collection_thread_result = collection_indexer_thread.join();
     println!("Collection thread joined");
+    let runes_thread_result = runes_indexer_thread.join();
+    println!("Runes thread joined");
     if server_thread_result.is_err() {
       println!("Error joining ordinals server thread: {:?}", server_thread_result.unwrap_err());
     }
@@ -663,6 +665,9 @@ impl Vermilion {
     }
     if collection_thread_result.is_err() {
       println!("Error joining collection indexer thread: {:?}", collection_thread_result.unwrap_err());
+    }
+    if runes_thread_result.is_err() {
+      println!("Error joining runes indexer thread: {:?}", runes_thread_result.unwrap_err());
     }
     Ok(None)
   }
@@ -1693,11 +1698,11 @@ impl Vermilion {
 
     let request_start_time = Instant::now();
     let response = client.get(&url).headers(headers).send().await?;
-    // println!(
-    //   "Got metadata for {} in {:.2} seconds",
-    //   symbol,
-    //   request_start_time.elapsed().as_secs_f64()
-    // );
+    log::debug!(
+      "Got metadata for {} in {:.2} seconds",
+      symbol,
+      request_start_time.elapsed().as_secs_f64()
+    );
 
     if response.status() != 200 {
       println!("Error: {}", response.status());
@@ -1714,7 +1719,7 @@ impl Vermilion {
           }
         }
         if let Some(collection) = first_token.get("collection") {
-          if let Some(brc20) = collection.get("brc20") { //Skip brc20 collections
+          if let Some(_brc20) = collection.get("brc20") { //Skip brc20 collections
             return Ok(None);
           } else {
             let metadata: CollectionMetadata = serde_json::from_value(collection.clone())?;
