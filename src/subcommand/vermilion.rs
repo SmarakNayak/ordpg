@@ -4926,7 +4926,7 @@ impl Vermilion {
         bootleg_id: row.get("bootleg_id"),
         bootleg_number: row.get("bootleg_number"),
         bootleg_sequence_number: row.get("bootleg_sequence_number"),
-        bootleg_edition: row.get("edition"),
+        bootleg_edition: row.get("bootleg_edition"),
         total: row.get("total")
       });
     }
@@ -4955,7 +4955,7 @@ impl Vermilion {
         bootleg_id: row.get("bootleg_id"),
         bootleg_number: row.get("bootleg_number"),
         bootleg_sequence_number: row.get("bootleg_sequence_number"),
-        bootleg_edition: row.get("edition"),
+        bootleg_edition: row.get("bootleg_edition"),
         total: row.get("total")
       });
     }
@@ -4973,7 +4973,7 @@ impl Vermilion {
       bootleg_id: result.get("bootleg_id"),
       bootleg_number: result.get("bootleg_number"),
       bootleg_sequence_number: result.get("bootleg_sequence_number"),
-      bootleg_edition: result.get("edition"),
+      bootleg_edition: result.get("bootleg_edition"),
       total: result.get("total")
     };
     Ok(edition)
@@ -4990,7 +4990,7 @@ impl Vermilion {
       bootleg_id: result.get("bootleg_id"),
       bootleg_number: result.get("bootleg_number"),
       bootleg_sequence_number: result.get("bootleg_sequence_number"),
-      bootleg_edition: result.get("edition"),
+      bootleg_edition: result.get("bootleg_edition"),
       total: result.get("total")
     };
     Ok(edition)
