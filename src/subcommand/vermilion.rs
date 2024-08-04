@@ -323,6 +323,27 @@ pub struct InscriptionNumberEdition {
 }
 
 #[derive(Clone, Serialize)]
+pub struct SatributeEdition {
+  satribute: String,
+  sat: i64,
+  inscription_id: String,
+  inscription_number: i64,
+  inscription_sequence_number: i64,
+  satribute_edition: i64,
+  total: i64
+}
+
+#[derive(Clone, Serialize)]
+pub struct BootlegEdition {
+  delegate_id: String,
+  bootleg_id: String,
+  bootleg_number: i64,
+  bootleg_sequence_number: i64,
+  bootleg_edition: i64,
+  total: i64
+}
+
+#[derive(Clone, Serialize)]
 pub struct InscriptionMetadataForBlock {
   id: String,
   content_length: Option<i64>,
@@ -1512,6 +1533,12 @@ impl Vermilion {
           .route("/inscription_children_number/:number", get(Self::inscription_children_number))
           .route("/inscription_referenced_by/:inscription_id", get(Self::inscription_referenced_by))
           .route("/inscription_referenced_by_number/:number", get(Self::inscription_referenced_by_number))
+          .route("/inscription_bootlegs/:inscription_id", get(Self::inscription_bootlegs))
+          .route("/inscription_bootlegs_number/:number", get(Self::inscription_bootlegs_number))
+          .route("/bootleg_edition/:inscription_id", get(Self::bootleg_edition))
+          .route("/bootleg_edition_number/:number", get(Self::bootleg_edition_number))
+          .route("/inscription_satribute_editions/:inscription_id", get(Self::inscription_satribute_editions))
+          .route("/inscription_satribute_editions_number/:number", get(Self::inscription_satribute_editions_number)) 
           .route("/inscriptions_in_block/:block", get(Self::inscriptions_in_block))
           .route("/inscriptions", get(Self::inscriptions))
           .route("/random_inscription", get(Self::random_inscription))
@@ -3610,6 +3637,111 @@ impl Vermilion {
     ).into_response()
   }
 
+  async fn inscription_bootlegs(Path(inscription_id): Path<InscriptionId>, params: Query<PaginationParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let delegates = match Self::get_inscription_bootlegs(server_config.deadpool, inscription_id.to_string(), params.0).await {
+      Ok(delegates) => delegates,
+      Err(error) => {
+        log::warn!("Error getting /inscription_delegates: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving delegates for {}", inscription_id.to_string()),
+        ).into_response();
+      }
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(delegates),
+    ).into_response()
+  }
+
+  async fn inscription_bootlegs_number(Path(number): Path<i64>, params: Query<PaginationParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let delegates = match Self::get_inscription_bootlegs_by_number(server_config.deadpool, number, params.0).await {
+      Ok(delegates) => delegates,
+      Err(error) => {
+        log::warn!("Error getting /inscription_delegates_number: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving delegates for {}", number),
+        ).into_response();
+      }
+    
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(delegates),
+    ).into_response()
+  }
+
+  async fn bootleg_edition(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let edition = match Self::get_bootleg_edition(server_config.deadpool, inscription_id.to_string()).await {
+      Ok(edition) => edition,
+      Err(error) => {
+        log::warn!("Error getting /bootleg_edition: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving bootleg edition for {}", inscription_id.to_string()),
+        ).into_response();
+      }
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(edition),
+    ).into_response()
+  }
+
+  async fn bootleg_edition_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let edition = match Self::get_bootleg_edition_by_number(server_config.deadpool, number).await {
+      Ok(edition) => edition,
+      Err(error) => {
+        log::warn!("Error getting /bootleg_edition_number: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving bootleg edition for {}", number),
+        ).into_response();
+      }
+    
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(edition),
+    ).into_response()
+  }
+
+  async fn inscription_satribute_editions(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let editions = match Self::get_inscription_satribute_editions(server_config.deadpool, inscription_id.to_string()).await {
+      Ok(editions) => editions,
+      Err(error) => {
+        log::warn!("Error getting /inscription_satribute_editions: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving satribute editions for {}", inscription_id.to_string()),
+        ).into_response();
+      }
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(editions),
+    ).into_response()
+  }
+
+  async fn inscription_satribute_editions_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let editions = match Self::get_inscription_satribute_editions_by_number(server_config.deadpool, number).await {
+      Ok(editions) => editions,
+      Err(error) => {
+        log::warn!("Error getting /inscription_satribute_editions_number: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving satribute editions for {}", number),
+        ).into_response();
+      }
+    
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(editions),
+    ).into_response()
+  }
+
   async fn inscriptions_in_block(Path(block): Path<i64>, params: Query<InscriptionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     let parsed_params = match Self::parse_and_validate_inscription_params(params.0) {
       Ok(parsed_params) => parsed_params,
@@ -4770,6 +4902,140 @@ impl Vermilion {
     let id: String = result.get(0);
     let inscriptions = Self::get_inscription_referenced_by(pool, id, params).await;
     inscriptions
+  }
+
+  async fn get_inscription_bootlegs(pool: deadpool, inscription_id: String, params: PaginationParams) -> anyhow::Result<Vec<BootlegEdition>> {
+    let conn = pool.get().await?;
+    let page_size = params.page_size.unwrap_or(10);
+    let offset = params.page_number.unwrap_or(0) * page_size;
+    let mut query = "select d.*, t.total from delegates d left join delegates_total t on d.delegate_id=t.delegate_id WHERE d.delegate_id=$1".to_string();
+    if page_size > 0 {
+      query.push_str(format!(" LIMIT {}", page_size).as_str());
+    }
+    if offset > 0 {
+      query.push_str(format!(" OFFSET {}", offset).as_str());
+    }
+    let result = conn.query(
+      query.as_str(), 
+      &[&inscription_id]
+    ).await?;
+    let mut bootlegs = Vec::new();
+    for row in result {
+      bootlegs.push(BootlegEdition {
+        delegate_id: row.get("delegate_id"),
+        bootleg_id: row.get("bootleg_id"),
+        bootleg_number: row.get("bootleg_number"),
+        bootleg_sequence_number: row.get("bootleg_sequence_number"),
+        bootleg_edition: row.get("edition"),
+        total: row.get("total")
+      });
+    }
+    Ok(bootlegs)
+  }
+
+  async fn get_inscription_bootlegs_by_number(pool: deadpool, number: i64, params: PaginationParams) -> anyhow::Result<Vec<BootlegEdition>> {
+    let conn = pool.get().await?;
+    let page_size = params.page_size.unwrap_or(10);
+    let offset = params.page_number.unwrap_or(0) * page_size;
+    let mut query = "select d.*, t.total from delegates d left join delegates_total t on d.delegate_id=t.delegate_id WHERE d.delegate_id=(SELECT id FROM ordinals WHERE number=$1 LIMIT 1)".to_string();
+    if page_size > 0 {
+      query.push_str(format!(" LIMIT {}", page_size).as_str());
+    }
+    if offset > 0 {
+      query.push_str(format!(" OFFSET {}", offset).as_str());
+    }
+    let result = conn.query(
+      query.as_str(), 
+      &[&number]
+    ).await?;
+    let mut bootlegs = Vec::new();
+    for row in result {
+      bootlegs.push(BootlegEdition {
+        delegate_id: row.get("delegate_id"),
+        bootleg_id: row.get("bootleg_id"),
+        bootleg_number: row.get("bootleg_number"),
+        bootleg_sequence_number: row.get("bootleg_sequence_number"),
+        bootleg_edition: row.get("edition"),
+        total: row.get("total")
+      });
+    }
+    Ok(bootlegs)
+  }
+
+  async fn get_bootleg_edition(pool: deadpool, inscription_id: String) -> anyhow::Result<BootlegEdition> {
+    let conn = pool.get().await?;
+    let result = conn.query_one(
+      "select d.*, t.total from delegates d left join delegates_total t on d.delegate_id=t.delegate_id WHERE d.bootleg_id=$1", 
+      &[&inscription_id]
+    ).await?;
+    let edition = BootlegEdition {
+      delegate_id: result.get("delegate_id"),
+      bootleg_id: result.get("bootleg_id"),
+      bootleg_number: result.get("bootleg_number"),
+      bootleg_sequence_number: result.get("bootleg_sequence_number"),
+      bootleg_edition: result.get("edition"),
+      total: result.get("total")
+    };
+    Ok(edition)
+  }
+
+  async fn get_bootleg_edition_by_number(pool: deadpool, number: i64) -> anyhow::Result<BootlegEdition> {
+    let conn = pool.get().await?;
+    let result = conn.query_one(
+      "select d.*, t.total from delegates d left join delegates_total t on d.delegate_id=t.delegate_id WHERE d.bootleg_id=(SELECT id FROM ordinals WHERE number=$1 LIMIT 1)", 
+      &[&number]
+    ).await?;
+    let edition = BootlegEdition {
+      delegate_id: result.get("delegate_id"),
+      bootleg_id: result.get("bootleg_id"),
+      bootleg_number: result.get("bootleg_number"),
+      bootleg_sequence_number: result.get("bootleg_sequence_number"),
+      bootleg_edition: result.get("edition"),
+      total: result.get("total")
+    };
+    Ok(edition)
+  }
+
+  async fn get_inscription_satribute_editions(pool: deadpool, inscription_id: String) -> anyhow::Result<Vec<SatributeEdition>> {
+    let conn = pool.get().await?;
+    let result = conn.query(
+      "select s.*, t.total from inscription_satributes s left join inscription_satributes_total t on s.satribute=t.satribute where s.inscription_id=$1",
+      &[&inscription_id]
+    ).await?;
+    let mut editions = Vec::new();
+    for row in result {
+      editions.push(SatributeEdition {
+        satribute: row.get("satribute"),
+        sat: row.get("sat"),
+        inscription_id: row.get("inscription_id"),
+        inscription_number: row.get("inscription_number"),
+        inscription_sequence_number: row.get("inscription_sequence_number"),
+        satribute_edition: row.get("edition"),
+        total: row.get("total")
+      });
+    }
+    Ok(editions)
+  }
+
+  async fn get_inscription_satribute_editions_by_number(pool: deadpool, number: i64) -> anyhow::Result<Vec<SatributeEdition>> {
+    let conn = pool.get().await?;
+    let result = conn.query(
+      "select s.*, t.total from inscription_satributes s left join inscription_satributes_total t on s.satribute=t.satribute where s.inscription_number=$1",
+      &[&number]
+    ).await?;
+    let mut editions = Vec::new();
+    for row in result {
+      editions.push(SatributeEdition {
+        satribute: row.get("satribute"),
+        sat: row.get("sat"),
+        inscription_id: row.get("inscription_id"),
+        inscription_number: row.get("inscription_number"),
+        inscription_sequence_number: row.get("inscription_sequence_number"),
+        satribute_edition: row.get("edition"),
+        total: row.get("total")
+      });
+    }
+    Ok(editions)
   }
 
   async fn get_inscriptions_within_block(pool: deadpool, block: i64, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<FullMetadata>> {
