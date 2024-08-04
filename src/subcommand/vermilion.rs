@@ -5010,7 +5010,7 @@ impl Vermilion {
         inscription_id: row.get("inscription_id"),
         inscription_number: row.get("inscription_number"),
         inscription_sequence_number: row.get("inscription_sequence_number"),
-        satribute_edition: row.get("edition"),
+        satribute_edition: row.get("satribute_edition"),
         total: row.get("total")
       });
     }
@@ -5031,7 +5031,7 @@ impl Vermilion {
         inscription_id: row.get("inscription_id"),
         inscription_number: row.get("inscription_number"),
         inscription_sequence_number: row.get("inscription_sequence_number"),
-        satribute_edition: row.get("edition"),
+        satribute_edition: row.get("satribute_edition"),
         total: row.get("total")
       });
     }
