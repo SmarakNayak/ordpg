@@ -2003,6 +2003,21 @@ impl Index {
     Ok(blocks_indexed)
   }
 
+  pub(crate) fn get_spaced_rune_by_sequence_number(&self, sequence_number: u32) -> Result<Option<SpacedRune>> {
+    let rtx = self.database.begin_read()?;
+    let rune = if let Some(rune_id) = rtx
+      .open_table(SEQUENCE_NUMBER_TO_RUNE_ID)?
+      .get(sequence_number)?
+    {
+      let rune_id_to_rune_entry = rtx.open_table(RUNE_ID_TO_RUNE_ENTRY)?;
+      let entry = rune_id_to_rune_entry.get(&rune_id.value())?.unwrap();
+      Some(RuneEntry::load(entry.value()).spaced_rune)
+    } else {
+      None
+    };
+    Ok(rune)
+  }
+
   pub(crate) fn inscription_info(
     &self,
     query: query::Inscription,

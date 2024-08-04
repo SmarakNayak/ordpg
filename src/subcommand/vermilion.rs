@@ -162,7 +162,8 @@ pub struct Metadata {
   is_json: bool,
   is_maybe_json: bool,
   is_bitmap_style: bool,
-  is_recursive: bool
+  is_recursive: bool,
+  spaced_rune: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -251,7 +252,8 @@ pub struct TransferWithMetadata {
   is_json: bool,
   is_maybe_json: bool,
   is_bitmap_style: bool,
-  is_recursive: bool
+  is_recursive: bool,
+  spaced_rune: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -520,6 +522,7 @@ pub struct MetadataWithCollectionMetadata {
   is_maybe_json: bool,
   is_bitmap_style: bool,
   is_recursive: bool,
+  spaced_rune: Option<String>,
   collection_symbol: String,
   off_chain_metadata: serde_json::Value,
 }
@@ -553,6 +556,7 @@ pub struct FullMetadata {
   is_maybe_json: bool,
   is_bitmap_style: bool,
   is_recursive: bool,
+  spaced_rune: Option<String>,
   collection_symbol: Option<String>,
   off_chain_metadata: Option<serde_json::Value>,
   collection_name: Option<String>
@@ -2193,6 +2197,7 @@ impl Vermilion {
       .filter(|charm| charm.is_set(entry.charms))
       .map(|charm| charm.to_string())
       .collect();
+    let rune = index.get_spaced_rune_by_sequence_number(entry.sequence_number)?;
     let metadata = Metadata {
       id: inscription_id.to_string(),
       content_length: content_length,
@@ -2220,7 +2225,8 @@ impl Vermilion {
       is_json: is_json,
       is_maybe_json: is_maybe_json,
       is_bitmap_style: is_bitmap_style,
-      is_recursive: is_recursive
+      is_recursive: is_recursive,
+      spaced_rune: rune.map(|rune| rune.to_string()),
     };
     let t2 = Instant::now();
     let sat_metadata = match entry.sat {
@@ -2320,7 +2326,8 @@ impl Vermilion {
         is_json boolean,
         is_maybe_json boolean,
         is_bitmap_style boolean,
-        is_recursive boolean
+        is_recursive boolean,
+        spaced_rune varchar(50)
       )").await?;
     conn.simple_query(r"
       CREATE INDEX IF NOT EXISTS index_metadata_id ON ordinals (id);
@@ -2631,7 +2638,8 @@ impl Vermilion {
       is_json, 
       is_maybe_json, 
       is_bitmap_style, 
-      is_recursive) FROM STDIN BINARY"#;
+      is_recursive,
+      spaced_rune) FROM STDIN BINARY"#;
     let col_types = vec![
       Type::INT8,
       Type::VARCHAR,
@@ -2659,7 +2667,8 @@ impl Vermilion {
       Type::BOOL,
       Type::BOOL,
       Type::BOOL,
-      Type::BOOL
+      Type::BOOL,
+      Type::VARCHAR
     ];
     let sink = tx.copy_in(copy_stm).await?;
     let writer = BinaryCopyInWriter::new(sink, &col_types);
@@ -2698,6 +2707,7 @@ impl Vermilion {
       row.push(&m.is_maybe_json);
       row.push(&m.is_bitmap_style);
       row.push(&m.is_recursive);
+      row.push(&m.spaced_rune);
       writer.as_mut().write(&row).await?;
     }
   
@@ -4578,7 +4588,8 @@ impl Vermilion {
       is_json: row.get("is_json"),
       is_maybe_json: row.get("is_maybe_json"),
       is_bitmap_style: row.get("is_bitmap_style"),
-      is_recursive: row.get("is_recursive")
+      is_recursive: row.get("is_recursive"),
+      spaced_rune: row.get("spaced_rune"),
     }
   }
 
@@ -4611,6 +4622,7 @@ impl Vermilion {
       is_maybe_json: row.get("is_maybe_json"),
       is_bitmap_style: row.get("is_bitmap_style"),
       is_recursive: row.get("is_recursive"),
+      spaced_rune: row.get("spaced_rune"),
       collection_symbol: row.get("collection_symbol"),
       off_chain_metadata: row.get("off_chain_metadata"),      
       collection_name: row.get("collection_name"),
@@ -5145,7 +5157,8 @@ impl Vermilion {
         is_json: row.get("is_json"),
         is_maybe_json: row.get("is_maybe_json"),
         is_bitmap_style: row.get("is_bitmap_style"),
-        is_recursive: row.get("is_recursive")
+        is_recursive: row.get("is_recursive"),
+        spaced_rune: row.get("spaced_rune"),
       });
     }
     Ok(transfers)
@@ -5538,6 +5551,7 @@ impl Vermilion {
         is_maybe_json: row.get("is_maybe_json"),
         is_bitmap_style: row.get("is_bitmap_style"),
         is_recursive: row.get("is_recursive"),
+        spaced_rune: row.get("spaced_rune"),
         collection_symbol: row.get("collection_symbol"),
         off_chain_metadata: row.get("off_chain_metadata")
       };
