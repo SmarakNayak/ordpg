@@ -59,6 +59,7 @@ use futures::pin_mut;
 
 mod rune_indexer;
 mod database;
+mod social;
 
 #[derive(Debug, Parser, Clone)]
 pub(crate) struct Vermilion {
