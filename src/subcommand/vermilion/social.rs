@@ -1,8 +1,7 @@
 use super::*;
-use self::database;
 
-
-struct User {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct User {
   user_id: Option<i64>,
   user_name: String,
   user_addresses: Vec<String>,
@@ -14,19 +13,22 @@ struct User {
   created_at: Option<i64>,
 }
 
-struct Follow {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Follow {
   follower_id: i64,
   following_id: i64,
   created_at: Option<i64>,
 }
 
-struct Like {  
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Like {  
   inscription_id: String,
   user_id: i64,
   created_at: Option<i64>,
 }
 
-struct Comment {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Comment {
   comment_id: i64,
   inscription_id: String,
   user_id: i64,
@@ -35,7 +37,8 @@ struct Comment {
   created_at: Option<i64>,
 }
 
-struct PlaylistInfo {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PlaylistInfo {
   playlist_id: Option<i64>,
   user_id: i64,
   playlist_name: String,
@@ -47,13 +50,14 @@ struct PlaylistInfo {
   created_at: Option<i64>,
 }
 
-struct PlaylistInscriptions {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PlaylistInscription {
   playlist_id: i64,
   inscription_id: String,
   added_at: Option<i64>,
 }
 
-async fn initialize_social_tables(pool: deadpool) -> anyhow::Result<()> {
+pub async fn initialize_social_tables(pool: deadpool) -> anyhow::Result<()> {
   create_users_table(pool.clone()).await.context("Failed to create users table")?;
   create_follows_table(pool.clone()).await.context("Failed to create follows table")?;
   create_likes_table(pool.clone()).await.context("Failed to create likes table")?;
@@ -147,7 +151,7 @@ async fn create_playlist_inscriptions_table(pool: deadpool) -> anyhow::Result<()
   Ok(())
 }
 
-async fn insert_user(pool: &deadpool, user: &User) -> anyhow::Result<i64> {
+pub async fn insert_user(pool: &deadpool, user: &User) -> anyhow::Result<i64> {
   let conn = pool.get().await?;
   let row = conn.query_one(r"
       INSERT INTO users (user_name, user_addresses, user_picture, user_bio, user_twitter, user_discord, user_website, created_at)
@@ -157,7 +161,7 @@ async fn insert_user(pool: &deadpool, user: &User) -> anyhow::Result<i64> {
   Ok(row.get(0))
 }
 
-async fn insert_follow(pool: &deadpool, follow: &Follow) -> anyhow::Result<()> {
+pub async fn insert_follow(pool: &deadpool, follow: &Follow) -> anyhow::Result<()> {
   let conn = pool.get().await?;
   conn.execute(r"
       INSERT INTO follows (follower_id, following_id, created_at)
@@ -166,7 +170,7 @@ async fn insert_follow(pool: &deadpool, follow: &Follow) -> anyhow::Result<()> {
   Ok(())
 }
 
-async fn insert_like(pool: &deadpool, like: &Like) -> anyhow::Result<()> {
+pub async fn insert_like(pool: &deadpool, like: &Like) -> anyhow::Result<()> {
   let conn = pool.get().await?;
   conn.execute(r"
       INSERT INTO likes (inscription_id, user_id, created_at)
@@ -175,7 +179,7 @@ async fn insert_like(pool: &deadpool, like: &Like) -> anyhow::Result<()> {
   Ok(())
 }
 
-async fn insert_comment(pool: &deadpool, comment: &Comment) -> anyhow::Result<i64> {
+pub async fn insert_comment(pool: &deadpool, comment: &Comment) -> anyhow::Result<i64> {
   let conn = pool.get().await?;
   let row = conn.query_one(r"
       INSERT INTO comments (inscription_id, user_id, comment, parent_comment_id, created_at)
@@ -185,7 +189,7 @@ async fn insert_comment(pool: &deadpool, comment: &Comment) -> anyhow::Result<i6
   Ok(row.get(0))
 }
 
-async fn insert_playlist_info(pool: &deadpool, playlist_info: &PlaylistInfo) -> anyhow::Result<i64> {
+pub async fn insert_playlist_info(pool: &deadpool, playlist_info: &PlaylistInfo) -> anyhow::Result<i64> {
   let conn = pool.get().await?;
   let row = conn.query_one(r"
       INSERT INTO playlist_info (user_id, playlist_name, playlist_picture, playlist_description, playlist_twitter, playlist_discord, playlist_website, created_at)
@@ -195,7 +199,7 @@ async fn insert_playlist_info(pool: &deadpool, playlist_info: &PlaylistInfo) -> 
   Ok(row.get(0))
 }
 
-async fn insert_playlist_inscription(pool: &deadpool, playlist_inscription: &PlaylistInscriptions) -> anyhow::Result<()> {
+pub async fn insert_playlist_inscription(pool: &deadpool, playlist_inscription: &PlaylistInscription) -> anyhow::Result<()> {
   let conn = pool.get().await?;
   conn.execute(r"
       INSERT INTO playlist_inscriptions (playlist_id, inscription_id, added_at)
@@ -205,7 +209,7 @@ async fn insert_playlist_inscription(pool: &deadpool, playlist_inscription: &Pla
 }
 
 // User updates and deletes
-async fn update_user(pool: &deadpool, user: &User) -> anyhow::Result<()> {
+pub async fn update_user(pool: &deadpool, user: &User) -> anyhow::Result<()> {
   let conn = pool.get().await?;
   conn.execute(r"
       UPDATE users SET 
@@ -217,14 +221,14 @@ async fn update_user(pool: &deadpool, user: &User) -> anyhow::Result<()> {
   Ok(())
 }
 
-async fn delete_user(pool: &deadpool, user_id: i64) -> anyhow::Result<()> {
+pub async fn delete_user(pool: &deadpool, user_id: i64) -> anyhow::Result<()> {
   let conn = pool.get().await?;
   conn.execute("DELETE FROM users WHERE user_id = $1", &[&user_id]).await?;
   Ok(())
 }
 
 // Follow deletes (no update as it's a simple relationship)
-async fn delete_follow(pool: &deadpool, follower_id: i64, following_id: i64) -> anyhow::Result<()> {
+pub async fn delete_follow(pool: &deadpool, follower_id: i64, following_id: i64) -> anyhow::Result<()> {
   let conn = pool.get().await?;
   conn.execute("DELETE FROM follows WHERE follower_id = $1 AND following_id = $2", 
                &[&follower_id, &following_id]).await?;
@@ -232,7 +236,7 @@ async fn delete_follow(pool: &deadpool, follower_id: i64, following_id: i64) -> 
 }
 
 // Like deletes (no update as it's a simple relationship)
-async fn delete_like(pool: &deadpool, inscription_id: String, user_id: i64) -> anyhow::Result<()> {
+pub async fn delete_like(pool: &deadpool, inscription_id: String, user_id: i64) -> anyhow::Result<()> {
   let conn = pool.get().await?;
   conn.execute("DELETE FROM likes WHERE inscription_id = $1 AND user_id = $2", 
                &[&inscription_id, &user_id]).await?;
@@ -240,7 +244,7 @@ async fn delete_like(pool: &deadpool, inscription_id: String, user_id: i64) -> a
 }
 
 // Comment updates and deletes
-async fn update_comment(pool: &deadpool, comment: &Comment) -> anyhow::Result<()> {
+pub async fn update_comment(pool: &deadpool, comment: &Comment) -> anyhow::Result<()> {
   let conn = pool.get().await?;
   conn.execute(r"
       UPDATE comments SET 
@@ -251,14 +255,14 @@ async fn update_comment(pool: &deadpool, comment: &Comment) -> anyhow::Result<()
   Ok(())
 }
 
-async fn delete_comment(pool: &deadpool, comment_id: i64) -> anyhow::Result<()> {
+pub async fn delete_comment(pool: &deadpool, comment_id: i64) -> anyhow::Result<()> {
   let conn = pool.get().await?;
   conn.execute("DELETE FROM comments WHERE comment_id = $1", &[&comment_id]).await?;
   Ok(())
 }
 
 // PlaylistInfo updates and deletes
-async fn update_playlist_info(pool: &deadpool, playlist_info: &PlaylistInfo) -> anyhow::Result<()> {
+pub async fn update_playlist_info(pool: &deadpool, playlist_info: &PlaylistInfo) -> anyhow::Result<()> {
   let conn = pool.get().await?;
   conn.execute(r"
       UPDATE playlist_info SET 
@@ -272,16 +276,126 @@ async fn update_playlist_info(pool: &deadpool, playlist_info: &PlaylistInfo) -> 
   Ok(())
 }
 
-async fn delete_playlist_info(pool: &deadpool, playlist_id: i64) -> anyhow::Result<()> {
+pub async fn delete_playlist_info(pool: &deadpool, playlist_id: i64) -> anyhow::Result<()> {
   let conn = pool.get().await?;
   conn.execute("DELETE FROM playlist_info WHERE playlist_id = $1", &[&playlist_id]).await?;
   Ok(())
 }
 
 // PlaylistInscriptions deletes (no update as it's a simple relationship)
-async fn delete_playlist_inscription(pool: &deadpool, playlist_id: i64, inscription_id: &str) -> anyhow::Result<()> {
+pub async fn delete_playlist_inscription(pool: &deadpool, playlist_id: i64, inscription_id: &str) -> anyhow::Result<()> {
   let conn = pool.get().await?;
   conn.execute("DELETE FROM playlist_inscriptions WHERE playlist_id = $1 AND inscription_id = $2", 
                &[&playlist_id, &inscription_id]).await?;
   Ok(())
+}
+
+pub async fn get_user(pool: &deadpool, user_id: i64) -> anyhow::Result<User> {
+  let conn = pool.get().await?;
+  let row = conn.query_one("SELECT * FROM users WHERE user_id = $1", &[&user_id]).await?;
+  Ok(User {
+    user_id: Some(row.get("user_id")),
+    user_name: row.get("user_name"),
+    user_addresses: row.get("user_addresses"),
+    user_picture: row.get("user_picture"),
+    user_bio: row.get("user_bio"),
+    user_twitter: row.get("user_twitter"),
+    user_discord: row.get("user_discord"),
+    user_website: row.get("user_website"),
+    created_at: row.get("created_at"),
+  })
+}
+
+pub async fn get_follows(pool: &deadpool, follower_id: i64) -> anyhow::Result<Vec<Follow>> {
+  let conn = pool.get().await?;
+  let rows = conn.query("SELECT * FROM follows WHERE follower_id = $1", &[&follower_id]).await?;
+  let mut follows = Vec::new();
+  for row in rows {
+    follows.push(Follow {
+      follower_id: row.get("follower_id"),
+      following_id: row.get("following_id"),
+      created_at: row.get("created_at"),
+    });
+  }
+  Ok(follows)
+}
+
+pub async fn get_followers(pool: &deadpool, following_id: i64) -> anyhow::Result<Vec<Follow>> {
+  let conn = pool.get().await?;
+  let rows = conn.query("SELECT * FROM follows WHERE following_id = $1", &[&following_id]).await?;
+  let mut follows = Vec::new();
+  for row in rows {
+    follows.push(Follow {
+      follower_id: row.get("follower_id"),
+      following_id: row.get("following_id"),
+      created_at: row.get("created_at"),
+    });
+  }
+  Ok(follows)
+}
+
+pub async fn get_likes(pool: &deadpool, inscription_id: &str) -> anyhow::Result<Vec<Like>> {
+  let conn = pool.get().await?;
+  let rows = conn.query("SELECT * FROM likes WHERE inscription_id = $1", &[&inscription_id]).await?;
+  let mut likes = Vec::new();
+  for row in rows {
+    likes.push(Like {
+      inscription_id: row.get("inscription_id"),
+      user_id: row.get("user_id"),
+      created_at: row.get("created_at"),
+    });
+  }
+  Ok(likes)
+}
+
+pub async fn get_comments(pool: &deadpool, inscription_id: &str) -> anyhow::Result<Vec<Comment>> {
+  let conn = pool.get().await?;
+  let rows = conn.query("SELECT * FROM comments WHERE inscription_id = $1", &[&inscription_id]).await?;
+  let mut comments = Vec::new();
+  for row in rows {
+    comments.push(Comment {
+      comment_id: row.get("comment_id"),
+      inscription_id: row.get("inscription_id"),
+      user_id: row.get("user_id"),
+      comment: row.get("comment"),
+      parent_comment_id: row.get("parent_comment_id"),
+      created_at: row.get("created_at"),
+    });
+  }
+  Ok(comments)
+}
+
+pub async fn get_playlists(pool: &deadpool, user_id: i64) -> anyhow::Result<Vec<PlaylistInfo>> {
+  let conn = pool.get().await?;
+  let rows = conn.query("SELECT * FROM playlist_info WHERE user_id = $1", &[&user_id]).await?;
+  let mut playlists = Vec::new();
+  for row in rows {
+    playlists.push(PlaylistInfo {
+      playlist_id: Some(row.get("playlist_id")),
+      user_id: row.get("user_id"),
+      playlist_name: row.get("playlist_name"),
+      playlist_picture: row.get("playlist_picture"),
+      playlist_description: row.get("playlist_description"),
+      playlist_twitter: row.get("playlist_twitter"),
+      playlist_discord: row.get("playlist_discord"),
+      playlist_website: row.get("playlist_website"),
+      created_at: row.get("created_at"),
+    });
+  }
+  Ok(playlists)
+}
+
+pub async fn get_playlist_inscriptions(pool: &deadpool, playlist_id: i64) -> anyhow::Result<Vec<PlaylistInscription>> {
+  let conn = pool.get().await?;
+  let rows = conn.query("SELECT * FROM playlist_inscriptions WHERE playlist_id = $1", 
+                        &[&playlist_id]).await?;
+  let mut inscriptions = Vec::new();
+  for row in rows {
+    inscriptions.push(PlaylistInscription {
+      playlist_id: row.get("playlist_id"),
+      inscription_id: row.get("inscription_id"),
+      added_at: row.get("added_at"),
+    });
+  }
+  Ok(inscriptions)
 }

@@ -1,9 +1,9 @@
-use self::migrate::Migrator;
-
 use super::*;
 use axum_server::Handle;
 use rune_indexer::run_runes_indexer;
 use serde_aux::prelude::*;
+use social::initialize_social_tables;
+use social_api::social_router;
 use tokio::io::AsyncReadExt;
 use crate::subcommand::server;
 use crate::index::fetcher;
@@ -60,6 +60,7 @@ use futures::pin_mut;
 mod rune_indexer;
 mod database;
 mod social;
+mod social_api;
 
 #[derive(Debug, Parser, Clone)]
 pub(crate) struct Vermilion {
@@ -1565,6 +1566,7 @@ impl Vermilion {
           .route("/search/:search_by_query", get(Self::search_by_query))
           .route("/block_icon/:block", get(Self::block_icon))
           .route("/sat_block_icon/:block", get(Self::sat_block_icon))
+          .merge(social_router())
           .layer(map_response(Self::set_header))
           .layer(
             TraceLayer::new_for_http()
@@ -2313,6 +2315,8 @@ impl Vermilion {
     Self::create_transfer_insert_trigger(pool.clone()).await.context("Failed to create transfer trigger")?;
 
     Self::create_ordinals_full_view(pool.clone()).await.context("Failed to create ordinals full view")?;
+
+    initialize_social_tables(pool.clone()).await.context("Failed to create social tables")?;
     Ok(())
   }
 
