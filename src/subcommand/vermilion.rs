@@ -5686,11 +5686,72 @@ impl Vermilion {
   async fn get_inscriptions_in_collection(pool: deadpool, collection_symbol: String, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
     //1. build query
-    let base_query = "SELECT o.* FROM ordinals_full_v o WHERE o.collection_symbol=$1".to_string();
-    let full_query = Self::create_inscription_query_string(base_query, params);
-    println!("Query: {}", full_query);
+    let mut query = "with m as MATERIALIZED (SELECT o.*, c.collection_symbol, c.off_chain_metadata, c.collection_name from ordinals o left join collections c on o.number=c.number where c.collection_symbol=$1".to_string();
+    if params.content_types.len() > 0 {
+      query.push_str(" AND (");
+      for (i, content_type) in params.content_types.iter().enumerate() {
+        if content_type == "text" {
+          query.push_str("o.content_category = 'text'");
+        } else if content_type == "image" {
+          query.push_str("o.content_category = 'image'");
+        } else if content_type == "gif" {
+          query.push_str("o.content_category = 'gif'");
+        } else if content_type == "audio" {
+          query.push_str("o.content_category = 'audio'");
+        } else if content_type == "video" {
+          query.push_str("o.content_category = 'video'");
+        } else if content_type == "html" {
+          query.push_str("o.content_category = 'html'");
+        } else if content_type == "json" {
+          query.push_str("o.content_category = 'json'");
+        } else if content_type == "namespace" {
+          query.push_str("o.content_category = 'namespace'");
+        } else if content_type == "javascript" {
+          query.push_str("o.content_category = 'javascript'");
+        }
+        if i < params.content_types.len() - 1 {
+          query.push_str(" OR ");
+        }
+      }
+      query.push_str(")");
+    }
+    if params.satributes.len() > 0 {
+      query.push_str(format!(" AND (o.satributes && array['{}'::varchar])", params.satributes.join("'::varchar,'")).as_str());
+    }
+    if params.charms.len() > 0 {
+      query.push_str(format!(" AND (o.charms && array['{}'::varchar])", params.charms.join("'::varchar,'")).as_str());
+    }
+    if params.sort_by == "newest" {
+      query.push_str(" ORDER BY o.sequence_number DESC");
+    } else if params.sort_by == "oldest" {
+      query.push_str(" ORDER BY o.sequence_number ASC");
+    } else if params.sort_by == "newest_sat" {
+      query.push_str(" ORDER BY o.sat DESC");
+    } else if params.sort_by == "oldest_sat" {
+      query.push_str(" ORDER BY o.sat ASC");
+    } else if params.sort_by == "rarest_sat" {
+      //query.push_str(" ORDER BY o.sat ASC");
+    } else if params.sort_by == "commonest_sat" {
+      //query.push_str(" ORDER BY o.sat DESC");
+    } else if params.sort_by == "biggest" {
+      query.push_str(" ORDER BY o.content_length DESC");
+    } else if params.sort_by == "smallest" {
+      query.push_str(" ORDER BY o.content_length ASC");
+    } else if params.sort_by == "highest_fee" {
+      query.push_str(" ORDER BY o.genesis_fee DESC");
+    } else if params.sort_by == "lowest_fee" {
+      query.push_str(" ORDER BY o.genesis_fee ASC");
+    }
+    query.push_str(") SELECT * from m");
+    if params.page_size > 0 {
+      query.push_str(format!(" LIMIT {}", params.page_size).as_str());
+    }
+    if params.page_number > 0 {
+      query.push_str(format!(" OFFSET {}", params.page_number * params.page_size).as_str());
+    }
+    println!("Query: {}", query);
     let result = conn.query(
-      full_query.as_str(), 
+      query.as_str(), 
       &[&collection_symbol]
     ).await?;
     let mut inscriptions = Vec::new();
