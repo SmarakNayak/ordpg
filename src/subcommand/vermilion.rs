@@ -3965,7 +3965,7 @@ impl Vermilion {
         ).into_response();
       }
     };
-    let inscriptions: Vec<TransferWithMetadata> = match Self::get_inscriptions_by_address(server_config.deadpool, address.clone(), parsed_params).await {
+    let inscriptions = match Self::get_inscriptions_by_address(server_config.deadpool, address.clone(), parsed_params).await {
       Ok(inscriptions) => inscriptions,
       Err(error) => {
         log::warn!("Error getting /inscriptions_in_address: {}", error);
@@ -5382,57 +5382,19 @@ impl Vermilion {
     Ok(transfers)
   }
 
-  async fn get_inscriptions_by_address(pool: deadpool, address: String, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<TransferWithMetadata>> {
+  async fn get_inscriptions_by_address(pool: deadpool, address: String, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
-    let base_query = "SELECT a.*, o.* FROM addresses a LEFT JOIN ordinals o ON a.id=o.id WHERE a.address=$1".to_string();
+    let base_query = " SELECT o.* FROM addresses a LEFT JOIN ordinals_full_v o ON a.id=o.id WHERE a.address=$1".to_string();
     let full_query = Self::create_inscription_query_string(base_query, params);
     let result = conn.query(
       full_query.as_str(), 
       &[&address]
     ).await?;
-    let mut transfers = Vec::new();
+    let mut inscriptions = Vec::new();
     for row in result {
-      transfers.push(TransferWithMetadata {
-        id: row.get("id"),
-        block_number: row.get("block_number"),
-        block_timestamp: row.get("block_timestamp"),
-        satpoint: row.get("satpoint"),
-        tx_offset: row.get("tx_offset"),
-        transaction: row.get("transaction"),
-        vout: row.get("vout"),
-        offset: row.get("satpoint_offset"),
-        address: row.get("address"),
-        is_genesis: row.get("is_genesis"),
-        content_length: row.get("content_length"),
-        content_type: row.get("content_type"),
-        content_encoding: row.get("content_encoding"),
-        content_category: row.get("content_category"),
-        genesis_fee: row.get("genesis_fee"),
-        genesis_height: row.get("genesis_height"),
-        genesis_transaction: row.get("genesis_transaction"),
-        pointer: row.get("pointer"),
-        number: row.get("number"),
-        sequence_number: row.get("sequence_number"),
-        parents: row.get("parents"),
-        delegate: row.get("delegate"),
-        metaprotocol: row.get("metaprotocol"),
-        on_chain_metadata: row.get("on_chain_metadata"),
-        sat: row.get("sat"),
-        sat_block: row.get("sat_block"),
-        satributes: row.get("satributes"),
-        charms: row.get("charms"),
-        timestamp: row.get("timestamp"),
-        sha256: row.get("sha256"),
-        text: row.get("text"),
-        referenced_ids: row.get("referenced_ids"),
-        is_json: row.get("is_json"),
-        is_maybe_json: row.get("is_maybe_json"),
-        is_bitmap_style: row.get("is_bitmap_style"),
-        is_recursive: row.get("is_recursive"),
-        spaced_rune: row.get("spaced_rune"),
-      });
+      inscriptions.push(Self::map_row_to_fullmetadata(row));
     }
-    Ok(transfers)
+    Ok(inscriptions)
   }
 
   async fn get_inscriptions_on_sat(pool: deadpool, sat: i64) -> anyhow::Result<Vec<FullMetadata>> {
@@ -5721,10 +5683,10 @@ impl Vermilion {
     Ok(collections)
   }
 
-  async fn get_inscriptions_in_collection(pool: deadpool, collection_symbol: String, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<MetadataWithCollectionMetadata>> {
+  async fn get_inscriptions_in_collection(pool: deadpool, collection_symbol: String, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
     //1. build query
-    let mut query = "with m as MATERIALIZED (SELECT o.*, c.collection_symbol, c.off_chain_metadata from ordinals o left join collections c on o.number=c.number where c.collection_symbol=$1".to_string();
+    let mut query = "with m as MATERIALIZED (SELECT o.*, c.collection_symbol, c.off_chain_metadata, c.collection_name from ordinals o left join collections c on o.number=c.number where c.collection_symbol=$1".to_string();
     if params.content_types.len() > 0 {
       query.push_str(" AND (");
       for (i, content_type) in params.content_types.iter().enumerate() {
@@ -5794,38 +5756,7 @@ impl Vermilion {
     ).await?;
     let mut inscriptions = Vec::new();
     for row in result {
-      let inscription = MetadataWithCollectionMetadata {
-        id: row.get("id"),
-        content_length: row.get("content_length"),
-        content_type: row.get("content_type"), 
-        content_encoding: row.get("content_encoding"),
-        content_category: row.get("content_category"),
-        genesis_fee: row.get("genesis_fee"),
-        genesis_height: row.get("genesis_height"),
-        genesis_transaction: row.get("genesis_transaction"),
-        pointer: row.get("pointer"),
-        number: row.get("number"),
-        sequence_number: row.get("sequence_number"),
-        parents: row.get("parents"),
-        delegate: row.get("delegate"),
-        metaprotocol: row.get("metaprotocol"),
-        on_chain_metadata: row.get("on_chain_metadata"),
-        sat: row.get("sat"),
-        sat_block: row.get("sat_block"),
-        satributes: row.get("satributes"),
-        charms: row.get("charms"),
-        timestamp: row.get("timestamp"),
-        sha256: row.get("sha256"),
-        text: row.get("text"),
-        referenced_ids: row.get("referenced_ids"),
-        is_json: row.get("is_json"),
-        is_maybe_json: row.get("is_maybe_json"),
-        is_bitmap_style: row.get("is_bitmap_style"),
-        is_recursive: row.get("is_recursive"),
-        spaced_rune: row.get("spaced_rune"),
-        collection_symbol: row.get("collection_symbol"),
-        off_chain_metadata: row.get("off_chain_metadata")
-      };
+      let inscription = Self::map_row_to_fullmetadata(row);
       inscriptions.push(inscription);
     }
     Ok(inscriptions)
