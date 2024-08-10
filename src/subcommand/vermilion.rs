@@ -954,8 +954,11 @@ impl Vermilion {
           let satribute_insert_result = Self::bulk_insert_satributes(&tx, satributes_vec).await;
           let t51c = Instant::now();
           //4.2 Upload content to db
-          let mut content_vec: Vec<ContentBlob> = Vec::new();
-          for inscription in inscriptions {
+          let number_inscriptions: Vec<_> = needed_numbers.clone().into_iter()
+            .zip(inscriptions.into_iter())
+            .collect();
+          let mut content_vec: Vec<(i64,ContentBlob)> = Vec::new();
+          for (number, inscription) in number_inscriptions {
             if let Some(content) = inscription.body() {
               let content_type = match inscription.content_type() {
                   Some(content_type) => content_type,
@@ -969,15 +972,10 @@ impl Vermilion {
                 content_type: content_type.to_string(),
                 content_encoding: content_encoding
               };
-              content_vec.push(content_blob);
+              content_vec.push((number as i64, content_blob));
             }
           }
-          let numbers_content = needed_numbers.clone()
-            .into_iter()
-            .zip(content_vec.into_iter())
-            .map(|(x, y)| (x as i64, y))
-            .collect::<Vec<_>>();
-          let content_result = Self::bulk_insert_content(&tx, numbers_content).await;
+          let content_result = Self::bulk_insert_content(&tx, content_vec).await;
           let commit_result = tx.commit().await;
           //4.3 Update status
           let t52 = Instant::now();
