@@ -2138,8 +2138,10 @@ impl Vermilion {
     };
     let referenced_ids = match text.clone() {
       Some(text) => {
-        let re = regex::Regex::new(r"content/([[:xdigit:]]{64}i\d+)").unwrap();
-        let referenced_ids = re.captures_iter(&text).map(|x| x[1].to_string()).collect::<Vec<String>>();
+        let re = regex::Regex::new(r"([[:xdigit:]]{64}i\d+)").unwrap();
+        let mut referenced_ids = re.captures_iter(&text).map(|x| x[1].to_string()).collect::<Vec<String>>();
+        referenced_ids.sort();
+        referenced_ids.dedup();
         referenced_ids
       },
       None => Vec::new()
@@ -5684,7 +5686,7 @@ impl Vermilion {
   async fn get_inscriptions_in_collection(pool: deadpool, collection_symbol: String, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
     //1. build query
-    let mut query = "with m as MATERIALIZED (SELECT o.*, c.collection_symbol, c.off_chain_metadata, NULL as collection_name from ordinals o left join collections c on o.number=c.number where c.collection_symbol=$1".to_string();
+    let mut query = "with m as MATERIALIZED (SELECT o.*, c.collection_symbol, c.off_chain_metadata, '' as collection_name from ordinals o left join collections c on o.number=c.number where c.collection_symbol=$1".to_string();
     if params.content_types.len() > 0 {
       query.push_str(" AND (");
       for (i, content_type) in params.content_types.iter().enumerate() {
