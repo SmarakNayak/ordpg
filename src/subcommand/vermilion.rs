@@ -1743,6 +1743,10 @@ impl Vermilion {
     }
 
     let data: JsonValue = response.json().await?;
+    if symbol == "btc-name" {      
+      print!("btc-name: {:?}", data);
+    }
+
     if let Some(tokens) = data["tokens"].as_array() {
       if let Some(first_token) = tokens.first() {
         if let Some(item_type) = first_token.get("itemType") {
@@ -1751,6 +1755,7 @@ impl Vermilion {
           }
         }
         if let Some(_domain) = first_token.get("domain") { //Skip domain collections
+          println!("Skipping domain collection: {}", symbol);
           return Ok(None);
         }
         if let Some(collection) = first_token.get("collection") {
