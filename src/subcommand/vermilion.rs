@@ -2357,7 +2357,7 @@ impl Vermilion {
         is_maybe_json boolean,
         is_bitmap_style boolean,
         is_recursive boolean,
-        spaced_rune varchar(50)
+        spaced_rune varchar(100)
       )").await?;
     conn.simple_query(r"
       CREATE INDEX IF NOT EXISTS index_metadata_id ON ordinals (id);
