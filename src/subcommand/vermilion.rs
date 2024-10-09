@@ -1750,6 +1750,9 @@ impl Vermilion {
             return Ok(None);
           }
         }
+        if let Some(_domain) = first_token.get("domain") { //Skip domain collections
+          return Ok(None);
+        }
         if let Some(collection) = first_token.get("collection") {
           if let Some(_brc20) = collection.get("brc20") { //Skip brc20 collections
             return Ok(None);
