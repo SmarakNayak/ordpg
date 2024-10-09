@@ -164,7 +164,7 @@ async fn create_runes_table(pool: deadpool) -> anyhow::Result<()> {
       mints NUMERIC(39, 0),
       number bigint,
       premine NUMERIC(39, 0),
-      spaced_rune varchar(50),
+      spaced_rune varchar(100),
       unspaced_rune varchar(40),
       rune_u128 varchar(39),
       spacers bigint,
