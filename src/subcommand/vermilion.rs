@@ -1840,6 +1840,10 @@ impl Vermilion {
     let client = reqwest::Client::new();
 
     loop {
+      // break if ctrl-c is received
+      if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
+        return Err("Shutting down".into());
+      }
       let url = format!(
         "https://api-mainnet.magiceden.dev/v2/ord/btc/tokens?limit=100&offset={}&sortBy=inscriptionNumberAsc&collectionSymbol={}",
         offset, symbol
