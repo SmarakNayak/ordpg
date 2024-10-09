@@ -269,8 +269,8 @@ async fn bulk_insert_runes(pool: deadpool, data: Vec<RuneRow>) -> anyhow::Result
     row.push(&m.parent);
     writer.as_mut().write(&row).await?;
   }
-  let x = writer.finish().await?;
-  println!("Finished writing metadata: {:?}", x);
+  let _x = writer.finish().await?;
+  //println!("Finished writing metadata: {:?}", x);
   Ok(())
 }
 
