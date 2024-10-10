@@ -1685,7 +1685,7 @@ impl Vermilion {
       let response = reqwest::get(&url).await?;
 
       if response.status() != 200 {
-        println!("Error: {}", response.status());
+        println!("Error getting recently traded collections: {}", response.status());
         println!("{}", response.text().await?);
         break;
       }
@@ -1737,16 +1737,12 @@ impl Vermilion {
     );
 
     if response.status() != 200 {
-      println!("Error: {}", response.status());
+      println!("Error getting collection metadata for {}: {}", symbol, response.status());
       println!("{}", response.text().await?);
       return Err("Error occurred, 200 not returned".into());
     }
 
     let data: JsonValue = response.json().await?;
-    if symbol == "btc-name" {      
-      print!("btc-name: {:?}", data);
-    }
-
     if let Some(tokens) = data["tokens"].as_array() {
       if let Some(first_token) = tokens.first() {
         if let Some(item_type) = first_token.get("itemType") {
@@ -1870,7 +1866,7 @@ impl Vermilion {
       );
 
       if response.status() != 200 {
-        println!("Error: {}", response.status());
+        println!("Error getting tokens for {}: {}", symbol, response.status());
         println!("{}", response.text().await?);
         return Err("Error occurred, 200 not returned".into());
       }
@@ -1918,15 +1914,16 @@ impl Vermilion {
 
     let traded_collections = Self::get_recently_traded_collection_metadata(settings.clone(), recently_traded_collections.clone()).await?;
     let new_symbols = Self::get_new_collection_symbols(pool.clone(), settings.clone(), traded_collections.clone()).await?;
-    for symbol in new_symbols {
+    for (i, symbol) in new_symbols.iter().enumerate() {
       let new_tokens = Self::get_tokens(settings.clone(), &symbol).await?;
-      let collection_metadata = traded_collections.iter().find(|item| item.collection_symbol == symbol).ok_or("Collection metadata not found")?;
+      let collection_metadata = traded_collections.iter().find(|item| item.collection_symbol == symbol.clone()).ok_or("Collection metadata not found")?;
       let mut conn = pool.get().await?;
       let tx = conn.transaction().await?;
       Self::insert_collection_list(&tx, vec![collection_metadata.clone()]).await?;
       Self::remove_collection_symbol(&tx, symbol.clone()).await?;
       Self::insert_collections(&tx, new_tokens).await?;
       tx.commit().await?;
+      log::info!("Inserted tokens for {} in db. {} of {} updated", symbol, i+1, new_symbols.len());
     }
     Self::insert_recently_traded_collections(pool.clone(), recently_traded_collections).await?;
     Self::update_collection_summary(pool).await?;
