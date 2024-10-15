@@ -2650,6 +2650,29 @@ impl Vermilion {
     Ok(())
   }
 
+  //on chain collections
+  pub(crate) async fn create_on_chain_collection_summary_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
+      r"CREATE TABLE IF NOT EXISTS on_chain_collection_summary (
+        parents_hash int not null primary key,
+        parents varchar(80)[] not null,
+        total_inscription_fees bigint,
+        total_inscription_size bigint,
+        first_inscribed_date bigint,
+        last_inscribed_date bigint,
+        supply bigint,
+        range_start bigint,
+        range_end bigint,
+        total_volume bigint, 
+        transfer_fees bigint,
+        transfer_footprint bigint,
+        total_fees bigint,
+        total_on_chain_footprint bigint
+      )").await?;
+    Ok(())
+  }
+
   async fn bulk_insert_metadata(tx: &deadpool_postgres::Transaction<'_>, data: Vec<Metadata>) -> anyhow::Result<()> {
     //tx.simple_query("CREATE TEMP TABLE inserts_ordinals ON COMMIT DROP AS TABLE ordinals WITH NO DATA").await?;
     let copy_stm = r#"COPY ordinals (
@@ -6459,6 +6482,72 @@ impl Vermilion {
   async fn update_collection_summary(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
     conn.simple_query("CALL update_collection_summary()").await?;
+    Ok(())
+  }
+
+  async fn create_on_chain_collection_summary_procedure(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
+      r#"
+      CREATE OR REPLACE PROCEDURE update_on_chain_collection_summary()
+      LANGUAGE plpgsql
+      AS $$
+      BEGIN
+      LOCK TABLE transfers IN EXCLUSIVE MODE;
+      RAISE NOTICE 'update_on_chain_collection_summary: lock acquired';
+      WITH a AS
+        (SELECT hash_array(o.parents) as parents_hash,
+                o.parents,
+                count(*) AS supply,
+                sum(o.content_length) AS total_inscription_size,
+                sum(o.genesis_fee) AS total_inscription_fees,
+                min(o.timestamp) AS first_inscribed_date,
+                max(o.timestamp) AS last_inscribed_date,
+                min(o.number) AS range_start,
+                max(o.number) AS range_end
+        FROM ordinals o
+        WHERE array_length(parents, 1) > 0
+        GROUP BY parents),
+            b AS
+        (SELECT hash_array(o.parents) as parents_hash,
+                sum(price) AS total_volume,
+                sum(tx_fee) AS transfer_fees,
+                sum(tx_size) AS transfer_footprint
+        FROM ordinals o
+        LEFT JOIN transfers t ON o.id=t.id
+        WHERE NOT t.is_genesis
+          AND array_length(o.parents, 1) > 0
+        GROUP BY o.parents)
+      INSERT INTO on_chain_collection_summary (parents_hash, parents, supply, total_inscription_size, total_inscription_fees, first_inscribed_date, last_inscribed_date, range_start, range_end, total_volume, transfer_fees, transfer_footprint, total_fees, total_on_chain_footprint)
+      SELECT a.*,
+            coalesce(b.total_volume,0),
+            coalesce(b.transfer_fees,0),
+            coalesce(b.transfer_footprint,0),
+            a.total_inscription_fees + coalesce(b.transfer_fees,0),
+            a.total_inscription_size + coalesce(b.transfer_footprint,0)
+      FROM a
+      LEFT JOIN b ON a.parents_hash=b.parents_hash ON CONFLICT (parents_hash) DO
+      UPDATE
+      SET supply = EXCLUDED.supply,
+          total_inscription_size = EXCLUDED.total_inscription_size,
+          total_inscription_fees = EXCLUDED.total_inscription_fees,
+          first_inscribed_date = EXCLUDED.first_inscribed_date,
+          last_inscribed_date = EXCLUDED.last_inscribed_date,
+          range_start = EXCLUDED.range_start,
+          range_end = EXCLUDED.range_end,
+          total_volume = EXCLUDED.total_volume,
+          transfer_fees = EXCLUDED.transfer_fees,
+          transfer_footprint = EXCLUDED.transfer_footprint,
+          total_fees = EXCLUDED.total_fees,
+          total_on_chain_footprint = EXCLUDED.total_on_chain_footprint;
+            END;
+      $$;"#).await?;
+    Ok(())
+  }
+  
+  async fn update_on_chain_collection_summary(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query("CALL update_on_chain_collection_summary()").await?;
     Ok(())
   }
 
