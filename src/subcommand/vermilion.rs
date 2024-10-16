@@ -6204,7 +6204,7 @@ impl Vermilion {
     } else if params.sort_by == "lowest_fee" {
       query.push_str(" ORDER BY o.genesis_fee ASC");
     }
-    query.push_str(") SELECT * from m");
+    //query.push_str(") SELECT * from m");
     if params.page_size > 0 {
       query.push_str(format!(" LIMIT {}", params.page_size).as_str());
     }
