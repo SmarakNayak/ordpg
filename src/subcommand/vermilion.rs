@@ -1589,6 +1589,7 @@ impl Vermilion {
           .route("/on_chain_collections", get(Self::on_chain_collections))          
           .route("/on_chain_collection_summary/:parents", get(Self::on_chain_collection_summary))
           .route("/on_chain_collection_holders/:parents", get(Self::on_chain_collection_holders))
+          .route("/inscriptions_in_on_chain_collection/:parents", get(Self::inscriptions_in_on_chain_collection))
           .route("/search/:search_by_query", get(Self::search_by_query))
           .route("/block_icon/:block", get(Self::block_icon))
           .route("/sat_block_icon/:block", get(Self::sat_block_icon))
@@ -4272,10 +4273,10 @@ impl Vermilion {
     let collections = match Self::get_on_chain_collections(server_config.deadpool, params).await {
       Ok(collections) => collections,
       Err(error) => {
-        log::warn!("Error getting /collections: {}", error);
+        log::warn!("Error getting /on_chain_collections: {}", error);
         return (
           StatusCode::INTERNAL_SERVER_ERROR,
-          format!("Error retrieving collections"),
+          format!("Error retrieving on chain collections"),
         ).into_response();
       }
     };
@@ -4290,10 +4291,10 @@ impl Vermilion {
     let collection_summary = match Self::get_on_chain_collection_summary(server_config.deadpool, parents_vec.clone()).await {
       Ok(collection_summary) => collection_summary,
       Err(error) => {
-        log::warn!("Error getting /collection_summary: {}", error);
+        log::warn!("Error getting /on_chain_collection_summary: {}", error);
         return (
           StatusCode::INTERNAL_SERVER_ERROR,
-          format!("Error retrieving collection summary for {}", parents),
+          format!("Error retrieving on chain collection summary for {}", parents),
         ).into_response();
       }    
     };
@@ -4308,16 +4309,44 @@ impl Vermilion {
     let collection_holders = match Self::get_on_chain_collection_holders(server_config.deadpool, parents_vec.clone(), params.0).await {
       Ok(collection_holders) => collection_holders,
       Err(error) => {
-        log::warn!("Error getting /collection_holders: {}", error);
+        log::warn!("Error getting /on_chain_collection_holders: {}", error);
         return (
           StatusCode::INTERNAL_SERVER_ERROR,
-          format!("Error retrieving collection_holders summary for {}", parents),
+          format!("Error retrieving on_chain_collection_holders summary for {}", parents),
         ).into_response();
       }    
     };
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(collection_holders),
+    ).into_response()
+  }
+
+  async fn inscriptions_in_on_chain_collection(Path(parents): Path<String>, params: Query<InscriptionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let parents_vec: Vec<String> = parents.split(",").map(|s| s.to_string()).collect();
+    let parsed_params = match Self::parse_and_validate_inscription_params(params.0) {
+      Ok(parsed_params) => parsed_params,
+      Err(error) => {
+        log::warn!("Error getting /inscriptions_in_on_chain_collection: {}", error);
+        return (
+          StatusCode::BAD_REQUEST,
+          format!("Error parsing and validating params: {}", error),
+        ).into_response();
+      }
+    };
+    let inscriptions = match Self::get_inscriptions_in_on_chain_collection(server_config.deadpool, parents_vec, parsed_params).await {
+      Ok(inscriptions) => inscriptions,
+      Err(error) => {
+        log::warn!("Error getting /inscriptions_in_on_chain_collection: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving inscriptions in on chain collection"),
+        ).into_response();
+      }
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(inscriptions),
     ).into_response()
   }
 
@@ -6053,7 +6082,7 @@ impl Vermilion {
         s.transfer_footprint,
         s.total_fees,
         s.total_on_chain_footprint
-      from on_chain_collection_summary s WHERE s.parents=$1 LIMIT 1";
+      from on_chain_collection_summary s WHERE s.parents <@ $1 and $1 <@ s.parents LIMIT 1";
     let result = conn.query_one(
       query, 
       &[&parents]
@@ -6089,7 +6118,7 @@ impl Vermilion {
       from ordinals o 
       left join addresses a 
       on o.id = a.id 
-      where o.parents = $1
+      where o.parents <@ $1 and $1 <@ o.parents
       group by a.address, o.parents_hash 
       order by count(*) desc".to_string();
     if page_size > 0 {
@@ -6115,6 +6144,86 @@ impl Vermilion {
     }
     Ok(holders)
   }
+
+  async fn get_inscriptions_in_on_chain_collection(pool: deadpool, parents: Vec<String>, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<FullMetadata>> {
+    let conn = pool.get().await?;
+    //1. build query
+    let mut query = "SELECT * from ordinals_full_v o where o.parents <@ $1 AND $1 <@ o.parents".to_string();
+    if params.content_types.len() > 0 {
+      query.push_str(" AND (");
+      for (i, content_type) in params.content_types.iter().enumerate() {
+        if content_type == "text" {
+          query.push_str("o.content_category = 'text'");
+        } else if content_type == "image" {
+          query.push_str("o.content_category = 'image'");
+        } else if content_type == "gif" {
+          query.push_str("o.content_category = 'gif'");
+        } else if content_type == "audio" {
+          query.push_str("o.content_category = 'audio'");
+        } else if content_type == "video" {
+          query.push_str("o.content_category = 'video'");
+        } else if content_type == "html" {
+          query.push_str("o.content_category = 'html'");
+        } else if content_type == "json" {
+          query.push_str("o.content_category = 'json'");
+        } else if content_type == "namespace" {
+          query.push_str("o.content_category = 'namespace'");
+        } else if content_type == "javascript" {
+          query.push_str("o.content_category = 'javascript'");
+        }
+        if i < params.content_types.len() - 1 {
+          query.push_str(" OR ");
+        }
+      }
+      query.push_str(")");
+    }
+    if params.satributes.len() > 0 {
+      query.push_str(format!(" AND (o.satributes && array['{}'::varchar])", params.satributes.join("'::varchar,'")).as_str());
+    }
+    if params.charms.len() > 0 {
+      query.push_str(format!(" AND (o.charms && array['{}'::varchar])", params.charms.join("'::varchar,'")).as_str());
+    }
+    if params.sort_by == "newest" {
+      query.push_str(" ORDER BY o.sequence_number DESC");
+    } else if params.sort_by == "oldest" {
+      query.push_str(" ORDER BY o.sequence_number ASC");
+    } else if params.sort_by == "newest_sat" {
+      query.push_str(" ORDER BY o.sat DESC");
+    } else if params.sort_by == "oldest_sat" {
+      query.push_str(" ORDER BY o.sat ASC");
+    } else if params.sort_by == "rarest_sat" {
+      //query.push_str(" ORDER BY o.sat ASC");
+    } else if params.sort_by == "commonest_sat" {
+      //query.push_str(" ORDER BY o.sat DESC");
+    } else if params.sort_by == "biggest" {
+      query.push_str(" ORDER BY o.content_length DESC");
+    } else if params.sort_by == "smallest" {
+      query.push_str(" ORDER BY o.content_length ASC");
+    } else if params.sort_by == "highest_fee" {
+      query.push_str(" ORDER BY o.genesis_fee DESC");
+    } else if params.sort_by == "lowest_fee" {
+      query.push_str(" ORDER BY o.genesis_fee ASC");
+    }
+    query.push_str(") SELECT * from m");
+    if params.page_size > 0 {
+      query.push_str(format!(" LIMIT {}", params.page_size).as_str());
+    }
+    if params.page_number > 0 {
+      query.push_str(format!(" OFFSET {}", params.page_number * params.page_size).as_str());
+    }
+    println!("Query: {}", query);
+    let result = conn.query(
+      query.as_str(), 
+      &[&parents]
+    ).await?;
+    let mut inscriptions = Vec::new();
+    for row in result {
+      let inscription = Self::map_row_to_fullmetadata(row);
+      inscriptions.push(inscription);
+    }
+    Ok(inscriptions)
+  }
+
 
   async fn get_block_statistics(pool: deadpool, block: i64) -> anyhow::Result<CombinedBlockStats> {
     let conn = pool.get().await?;
