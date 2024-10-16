@@ -6119,7 +6119,7 @@ impl Vermilion {
       left join addresses a 
       on o.id = a.id 
       where o.parents <@ $1 and $1 <@ o.parents
-      group by a.address, o.parents_hash 
+      group by a.address, o.parents
       order by count(*) desc".to_string();
     if page_size > 0 {
       query.push_str(format!(" LIMIT {}", page_size).as_str());        
