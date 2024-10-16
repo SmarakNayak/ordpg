@@ -517,6 +517,31 @@ pub struct InscriptionCollectionData {
 }
 
 #[derive(Serialize)]
+pub struct OnChainCollectionSummary {
+  parents: Vec<String>,
+  total_inscription_fees: Option<i64>,
+  total_inscription_size: Option<i64>,
+  first_inscribed_date: Option<i64>,
+  last_inscribed_date: Option<i64>,
+  supply: Option<i64>,
+  range_start: Option<i64>,
+  range_end: Option<i64>,
+  total_volume: Option<i64>,
+  transfer_fees: Option<i64>,
+  transfer_footprint: Option<i64>,
+  total_fees: Option<i64>,
+  total_on_chain_footprint: Option<i64>
+}
+
+#[derive(Serialize)]
+pub struct OnChainCollectionHolders {
+  parents: Vec<String>,
+  collection_holder_count: Option<i64>,
+  address: Option<String>,
+  address_count: Option<i64>,
+}
+
+#[derive(Serialize)]
 pub struct MetadataWithCollectionMetadata {  
   sequence_number: i64,
   id: String,
@@ -1556,11 +1581,14 @@ impl Vermilion {
           .route("/inscription_collection_data_number/:number", get(Self::inscription_collection_data_number))
           .route("/block_statistics/:block", get(Self::block_statistics))
           .route("/sat_block_statistics/:block", get(Self::sat_block_statistics))
-          .route("/blocks", get(Self::blocks))
+          .route("/blocks", get(Self::blocks))          
+          .route("/collections", get(Self::collections))
           .route("/collection_summary/:collection_symbol", get(Self::collection_summary))          
           .route("/collection_holders/:collection_symbol", get(Self::collection_holders))
-          .route("/collections", get(Self::collections))
           .route("/inscriptions_in_collection/:collection_symbol", get(Self::inscriptions_in_collection))
+          .route("/on_chain_collections", get(Self::on_chain_collections))          
+          .route("/on_chain_collection_summary/:parents", get(Self::on_chain_collection_summary))
+          .route("/on_chain_collection_holders/:parents", get(Self::on_chain_collection_holders))
           .route("/search/:search_by_query", get(Self::search_by_query))
           .route("/block_icon/:block", get(Self::block_icon))
           .route("/sat_block_icon/:block", get(Self::sat_block_icon))
@@ -2670,6 +2698,7 @@ impl Vermilion {
         total_fees bigint,
         total_on_chain_footprint bigint
       )").await?;
+    conn.simple_query("CREATE INDEX IF NOT EXISTS index_on_chain_collection_summary_parents ON on_chain_collection_summary USING GIN (parents);").await?;
     Ok(())
   }
 
@@ -4091,40 +4120,6 @@ impl Vermilion {
     ).into_response()
   }
 
-  async fn collection_summary(Path(collection_symbol): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let collection_summary = match Self::get_collection_summary(server_config.deadpool, collection_symbol.clone()).await {
-      Ok(collection_summary) => collection_summary,
-      Err(error) => {
-        log::warn!("Error getting /collection_summary: {}", error);
-        return (
-          StatusCode::INTERNAL_SERVER_ERROR,
-          format!("Error retrieving collection summary for {}", collection_symbol),
-        ).into_response();
-      }    
-    };
-    (
-      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
-      Json(collection_summary),
-    ).into_response()
-  }
-
-  async fn collection_holders(Path(collection_symbol): Path<String>, params: Query<PaginationParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let collection_holders = match Self::get_collection_holders(server_config.deadpool, collection_symbol.clone(), params.0).await {
-      Ok(collection_holders) => collection_holders,
-      Err(error) => {
-        log::warn!("Error getting /collection_holders: {}", error);
-        return (
-          StatusCode::INTERNAL_SERVER_ERROR,
-          format!("Error retrieving collection_holders summary for {}", collection_symbol),
-        ).into_response();
-      }    
-    };
-    (
-      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
-      Json(collection_holders),
-    ).into_response()
-  }
-
   async fn collections(params: Query<CollectionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     //1. parse params
     let params = params.0;
@@ -4157,6 +4152,40 @@ impl Vermilion {
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(collections),
+    ).into_response()
+  }
+
+  async fn collection_summary(Path(collection_symbol): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let collection_summary = match Self::get_collection_summary(server_config.deadpool, collection_symbol.clone()).await {
+      Ok(collection_summary) => collection_summary,
+      Err(error) => {
+        log::warn!("Error getting /collection_summary: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving collection summary for {}", collection_symbol),
+        ).into_response();
+      }    
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(collection_summary),
+    ).into_response()
+  }
+
+  async fn collection_holders(Path(collection_symbol): Path<String>, params: Query<PaginationParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let collection_holders = match Self::get_collection_holders(server_config.deadpool, collection_symbol.clone(), params.0).await {
+      Ok(collection_holders) => collection_holders,
+      Err(error) => {
+        log::warn!("Error getting /collection_holders: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving collection_holders summary for {}", collection_symbol),
+        ).into_response();
+      }    
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(collection_holders),
     ).into_response()
   }
 
@@ -4218,6 +4247,77 @@ impl Vermilion {
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(inscriptions),
+    ).into_response()
+  }
+
+  async fn on_chain_collections(params: Query<CollectionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    //1. parse params
+    let params = params.0;
+    let sort_by = params.clone().sort_by.unwrap_or("biggest_on_chain_footprint".to_string());
+    //2. validate params
+    if ![
+      "biggest_on_chain_footprint", "smallest_on_chain_footprint",
+      "most_volume", "least_volume",
+      "biggest_file_size", "smallest_file_size",
+      "biggest_creation_fee", "smallest_creation_fee",
+      "earliest_first_inscribed_date", "latest_first_inscribed_date",
+      "earliest_last_inscribed_date", "latest_last_inscribed_date",
+      "biggest_supply", "smallest_supply",
+    ].contains(&sort_by.as_str()) {
+      return (
+        StatusCode::BAD_REQUEST,
+        format!("Invalid sort_by: {}", sort_by),
+      ).into_response();
+    }
+    let collections = match Self::get_on_chain_collections(server_config.deadpool, params).await {
+      Ok(collections) => collections,
+      Err(error) => {
+        log::warn!("Error getting /collections: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving collections"),
+        ).into_response();
+      }
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(collections),
+    ).into_response()
+  }
+
+  async fn on_chain_collection_summary(Path(parents): Path<String>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let parents_vec: Vec<String> = parents.split(",").map(|s| s.to_string()).collect();
+    let collection_summary = match Self::get_on_chain_collection_summary(server_config.deadpool, parents_vec.clone()).await {
+      Ok(collection_summary) => collection_summary,
+      Err(error) => {
+        log::warn!("Error getting /collection_summary: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving collection summary for {}", parents),
+        ).into_response();
+      }    
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(collection_summary),
+    ).into_response()
+  }
+
+  async fn on_chain_collection_holders(Path(parents): Path<String>, params: Query<PaginationParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let parents_vec: Vec<String> = parents.split(",").map(|s| s.to_string()).collect();
+    let collection_holders = match Self::get_on_chain_collection_holders(server_config.deadpool, parents_vec.clone(), params.0).await {
+      Ok(collection_holders) => collection_holders,
+      Err(error) => {
+        log::warn!("Error getting /collection_holders: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving collection_holders summary for {}", parents),
+        ).into_response();
+      }    
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(collection_holders),
     ).into_response()
   }
 
@@ -5541,91 +5641,6 @@ impl Vermilion {
     Ok(satributes)
   }
 
-  async fn get_collection_summary(pool: deadpool, collection_symbol: String) -> anyhow::Result<CollectionSummary> {
-    let conn = pool.get().await?;
-    let query = r"
-      SELECT 
-        l.collection_symbol, l.name, l.description, l.twitter, l.discord, l.website,
-        s.total_inscription_fees,
-        s.total_inscription_size,
-        s.first_inscribed_date,
-        s.last_inscribed_date,
-        s.supply,
-        s.range_start,
-        s.range_end,
-        s.total_volume,
-        s.transfer_fees,
-        s.transfer_footprint,
-        s.total_fees,
-        s.total_on_chain_footprint
-      from collection_list l left join collection_summary s on l.collection_symbol=s.collection_symbol WHERE s.collection_symbol=$1 LIMIT 1";
-    let result = conn.query_one(
-      query, 
-      &[&collection_symbol]
-    ).await?;
-    let collection = CollectionSummary {
-      collection_symbol: result.get("collection_symbol"),
-      name: result.get("name"),
-      description: result.get("description"),
-      twitter: result.get("twitter"),
-      discord: result.get("discord"),
-      website: result.get("website"),
-      total_inscription_fees: result.get("total_inscription_fees"),
-      total_inscription_size: result.get("total_inscription_size"),
-      first_inscribed_date: result.get("first_inscribed_date"),
-      last_inscribed_date: result.get("last_inscribed_date"),
-      supply: result.get("supply"),
-      range_start: result.get("range_start"),
-      range_end: result.get("range_end"),
-      total_volume: result.get("total_volume"),
-      transfer_fees: result.get("transfer_fees"),
-      transfer_footprint: result.get("transfer_footprint"),
-      total_fees: result.get("total_fees"),
-      total_on_chain_footprint: result.get("total_on_chain_footprint")
-    };
-    Ok(collection)
-  }
-
-  async fn get_collection_holders(pool: deadpool, collection_symbol: String, params: PaginationParams) -> anyhow::Result<Vec<CollectionHolders>> {
-    let conn = pool.get().await?;
-    let page_size = params.page_size.unwrap_or(10);
-    let offset = params.page_number.unwrap_or(0) * page_size;
-    let mut query = r"
-      select 
-        collection_symbol, 
-        COUNT(address) OVER () AS collection_holder_count, 
-        address, 
-        count(*) as address_count
-      from collections c 
-      left join addresses a 
-      on c.id = a.id 
-      where c.collection_symbol = $1 
-      group by a.address, c.collection_symbol 
-      order by count(*) desc".to_string();
-    if page_size > 0 {
-      query.push_str(format!(" LIMIT {}", page_size).as_str());        
-    }
-    if offset > 0 {
-      query.push_str(format!(" OFFSET {}", offset).as_str());
-    }
-    
-    let result = conn.query(
-      query.as_str(), 
-      &[&collection_symbol]
-    ).await?;
-    let mut holders = Vec::new();
-    for row in result {
-      let holder = CollectionHolders {
-        collection_symbol: row.get("collection_symbol"),
-        collection_holder_count: row.get("collection_holder_count"),
-        address: row.get("address"),
-        address_count: row.get("address_count")
-      };
-      holders.push(holder);
-    }
-    Ok(holders)
-  }
-
   async fn get_collections(pool: deadpool, params: CollectionQueryParams) -> anyhow::Result<Vec<CollectionSummary>> {
     let conn = pool.get().await?;
     let sort_by = params.sort_by.unwrap_or("oldest".to_string());
@@ -5713,6 +5728,91 @@ impl Vermilion {
       collections.push(collection);
     }
     Ok(collections)
+  }
+
+  async fn get_collection_summary(pool: deadpool, collection_symbol: String) -> anyhow::Result<CollectionSummary> {
+    let conn = pool.get().await?;
+    let query = r"
+      SELECT 
+        l.collection_symbol, l.name, l.description, l.twitter, l.discord, l.website,
+        s.total_inscription_fees,
+        s.total_inscription_size,
+        s.first_inscribed_date,
+        s.last_inscribed_date,
+        s.supply,
+        s.range_start,
+        s.range_end,
+        s.total_volume,
+        s.transfer_fees,
+        s.transfer_footprint,
+        s.total_fees,
+        s.total_on_chain_footprint
+      from collection_list l left join collection_summary s on l.collection_symbol=s.collection_symbol WHERE s.collection_symbol=$1 LIMIT 1";
+    let result = conn.query_one(
+      query, 
+      &[&collection_symbol]
+    ).await?;
+    let collection = CollectionSummary {
+      collection_symbol: result.get("collection_symbol"),
+      name: result.get("name"),
+      description: result.get("description"),
+      twitter: result.get("twitter"),
+      discord: result.get("discord"),
+      website: result.get("website"),
+      total_inscription_fees: result.get("total_inscription_fees"),
+      total_inscription_size: result.get("total_inscription_size"),
+      first_inscribed_date: result.get("first_inscribed_date"),
+      last_inscribed_date: result.get("last_inscribed_date"),
+      supply: result.get("supply"),
+      range_start: result.get("range_start"),
+      range_end: result.get("range_end"),
+      total_volume: result.get("total_volume"),
+      transfer_fees: result.get("transfer_fees"),
+      transfer_footprint: result.get("transfer_footprint"),
+      total_fees: result.get("total_fees"),
+      total_on_chain_footprint: result.get("total_on_chain_footprint")
+    };
+    Ok(collection)
+  }
+
+  async fn get_collection_holders(pool: deadpool, collection_symbol: String, params: PaginationParams) -> anyhow::Result<Vec<CollectionHolders>> {
+    let conn = pool.get().await?;
+    let page_size = params.page_size.unwrap_or(10);
+    let offset = params.page_number.unwrap_or(0) * page_size;
+    let mut query = r"
+      select 
+        collection_symbol, 
+        COUNT(address) OVER () AS collection_holder_count, 
+        address, 
+        count(*) as address_count
+      from collections c 
+      left join addresses a 
+      on c.id = a.id 
+      where c.collection_symbol = $1 
+      group by a.address, c.collection_symbol 
+      order by count(*) desc".to_string();
+    if page_size > 0 {
+      query.push_str(format!(" LIMIT {}", page_size).as_str());        
+    }
+    if offset > 0 {
+      query.push_str(format!(" OFFSET {}", offset).as_str());
+    }
+    
+    let result = conn.query(
+      query.as_str(), 
+      &[&collection_symbol]
+    ).await?;
+    let mut holders = Vec::new();
+    for row in result {
+      let holder = CollectionHolders {
+        collection_symbol: row.get("collection_symbol"),
+        collection_holder_count: row.get("collection_holder_count"),
+        address: row.get("address"),
+        address_count: row.get("address_count")
+      };
+      holders.push(holder);
+    }
+    Ok(holders)
   }
 
   async fn get_inscriptions_in_collection(pool: deadpool, collection_symbol: String, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<FullMetadata>> {
@@ -5850,6 +5950,170 @@ impl Vermilion {
       });
     }
     Ok(collection_data)
+  }
+
+  async fn get_on_chain_collections(pool: deadpool, params: CollectionQueryParams) -> anyhow::Result<Vec<OnChainCollectionSummary>> {
+    let conn = pool.get().await?;
+    let sort_by = params.sort_by.unwrap_or("oldest".to_string());
+    let page_size = std::cmp::min(params.page_size.unwrap_or(20), 100);
+    let page_number = params.page_number.unwrap_or(0);
+    //1. build query
+    let mut query = r"
+      SELECT 
+        s.parents,
+        s.total_inscription_fees,
+        s.total_inscription_size,
+        s.first_inscribed_date,
+        s.last_inscribed_date,
+        s.supply,
+        s.range_start,
+        s.range_end,
+        s.total_volume,
+        s.transfer_fees,
+        s.transfer_footprint,
+        s.total_fees,
+        s.total_on_chain_footprint
+      from on_chain_collection_summary s".to_string();
+    if sort_by == "biggest_on_chain_footprint" {
+      query.push_str(" ORDER BY s.total_on_chain_footprint DESC NULLS LAST");
+    } else if sort_by == "smallest_on_chain_footprint" {
+      query.push_str(" ORDER BY s.total_on_chain_footprint ASC");
+    } else if sort_by == "most_volume" {
+      query.push_str(" ORDER BY s.total_volume DESC NULLS LAST");
+    } else if sort_by == "least_volume" {
+      query.push_str(" ORDER BY s.total_volume ASC");
+    } else if sort_by == "biggest_file_size" {
+      query.push_str(" ORDER BY s.total_inscription_size DESC NULLS LAST");
+    } else if sort_by == "smallest_file_size" {
+      query.push_str(" ORDER BY s.total_inscription_size ASC");
+    } else if sort_by == "biggest_creation_fee" {
+      query.push_str(" ORDER BY s.total_inscription_fees DESC NULLS LAST");
+    } else if sort_by == "smallest_creation_fee" {
+      query.push_str(" ORDER BY s.total_inscription_fees ASC");
+    } else if sort_by == "earliest_first_inscribed_date" {
+      query.push_str(" ORDER BY s.first_inscribed_date ASC");
+    } else if sort_by == "latest_first_inscribed_date" {
+      query.push_str(" ORDER BY s.first_inscribed_date DESC NULLS LAST");
+    } else if sort_by == "earliest_last_inscribed_date" {
+      query.push_str(" ORDER BY s.last_inscribed_date ASC");
+    } else if sort_by == "latest_last_inscribed_date" {
+      query.push_str(" ORDER BY s.last_inscribed_date DESC NULLS LAST");
+    } else if sort_by == "biggest_supply" {
+      query.push_str(" ORDER BY s.supply DESC NULLS LAST");
+    } else if sort_by == "smallest_supply" {
+      query.push_str(" ORDER BY s.supply ASC");
+    }
+    if page_size > 0 {
+      query.push_str(format!(" LIMIT {}", page_size).as_str());
+    }
+    if page_number > 0 {
+      query.push_str(format!(" OFFSET {}", page_number * page_size).as_str());
+    }
+    println!("Query: {}", query);
+    let result = conn.query(
+      query.as_str(), 
+      &[]
+    ).await?;
+    let mut collections = Vec::new();
+    for row in result {
+      let collection = OnChainCollectionSummary {
+        parents: row.get("parents"),
+        total_inscription_fees: row.get("total_inscription_fees"),
+        total_inscription_size: row.get("total_inscription_size"),
+        first_inscribed_date: row.get("first_inscribed_date"),
+        last_inscribed_date: row.get("last_inscribed_date"),
+        supply: row.get("supply"),
+        range_start: row.get("range_start"),
+        range_end: row.get("range_end"),
+        total_volume: row.get("total_volume"),
+        transfer_fees: row.get("transfer_fees"),
+        transfer_footprint: row.get("transfer_footprint"),
+        total_fees: row.get("total_fees"),
+        total_on_chain_footprint: row.get("total_on_chain_footprint")
+      };
+      collections.push(collection);
+    }
+    Ok(collections)
+  }
+
+  async fn get_on_chain_collection_summary(pool: deadpool, parents: Vec<String>) -> anyhow::Result<OnChainCollectionSummary> {
+    let conn = pool.get().await?;
+    let query = r"
+      SELECT 
+        s.parents,
+        s.total_inscription_fees,
+        s.total_inscription_size,
+        s.first_inscribed_date,
+        s.last_inscribed_date,
+        s.supply,
+        s.range_start,
+        s.range_end,
+        s.total_volume,
+        s.transfer_fees,
+        s.transfer_footprint,
+        s.total_fees,
+        s.total_on_chain_footprint
+      from on_chain_collection_summary s WHERE s.parents=$1 LIMIT 1";
+    let result = conn.query_one(
+      query, 
+      &[&parents]
+    ).await?;
+    let collection = OnChainCollectionSummary {
+      parents: result.get("parents"),
+      total_inscription_fees: result.get("total_inscription_fees"),
+      total_inscription_size: result.get("total_inscription_size"),
+      first_inscribed_date: result.get("first_inscribed_date"),
+      last_inscribed_date: result.get("last_inscribed_date"),
+      supply: result.get("supply"),
+      range_start: result.get("range_start"),
+      range_end: result.get("range_end"),
+      total_volume: result.get("total_volume"),
+      transfer_fees: result.get("transfer_fees"),
+      transfer_footprint: result.get("transfer_footprint"),
+      total_fees: result.get("total_fees"),
+      total_on_chain_footprint: result.get("total_on_chain_footprint")
+    };
+    Ok(collection)
+  }
+
+  async fn get_on_chain_collection_holders(pool: deadpool, parents: Vec<String>, params: PaginationParams) -> anyhow::Result<Vec<OnChainCollectionHolders>> {
+    let conn = pool.get().await?;
+    let page_size = params.page_size.unwrap_or(10);
+    let offset = params.page_number.unwrap_or(0) * page_size;
+    let mut query = r"
+      select 
+        parents, 
+        COUNT(address) OVER () AS collection_holder_count, 
+        address, 
+        count(*) as address_count
+      from ordinals o 
+      left join addresses a 
+      on o.id = a.id 
+      where o.parents = $1
+      group by a.address, o.parents_hash 
+      order by count(*) desc".to_string();
+    if page_size > 0 {
+      query.push_str(format!(" LIMIT {}", page_size).as_str());        
+    }
+    if offset > 0 {
+      query.push_str(format!(" OFFSET {}", offset).as_str());
+    }
+    
+    let result = conn.query(
+      query.as_str(), 
+      &[&parents]
+    ).await?;
+    let mut holders = Vec::new();
+    for row in result {
+      let holder: OnChainCollectionHolders = OnChainCollectionHolders {
+        parents: row.get("parents"),
+        collection_holder_count: row.get("collection_holder_count"),
+        address: row.get("address"),
+        address_count: row.get("address_count")
+      };
+      holders.push(holder);
+    }
+    Ok(holders)
   }
 
   async fn get_block_statistics(pool: deadpool, block: i64) -> anyhow::Result<CombinedBlockStats> {
@@ -6496,7 +6760,7 @@ impl Vermilion {
       LOCK TABLE transfers IN EXCLUSIVE MODE;
       RAISE NOTICE 'update_on_chain_collection_summary: lock acquired';
       WITH a AS
-        (SELECT hash_array(o.parents) as parents_hash,
+        (SELECT hash_array(ARRAY(SELECT unnest(o.parents) ORDER BY 1)) as parents_hash,
                 o.parents,
                 count(*) AS supply,
                 sum(o.content_length) AS total_inscription_size,
@@ -6509,7 +6773,7 @@ impl Vermilion {
         WHERE array_length(parents, 1) > 0
         GROUP BY parents),
             b AS
-        (SELECT hash_array(o.parents) as parents_hash,
+        (SELECT hash_array(ARRAY(SELECT unnest(o.parents) ORDER BY 1)) as parents_hash,
                 sum(price) AS total_volume,
                 sum(tx_fee) AS transfer_fees,
                 sum(tx_size) AS transfer_footprint
@@ -6519,28 +6783,28 @@ impl Vermilion {
           AND array_length(o.parents, 1) > 0
         GROUP BY o.parents)
       INSERT INTO on_chain_collection_summary (parents_hash, parents, supply, total_inscription_size, total_inscription_fees, first_inscribed_date, last_inscribed_date, range_start, range_end, total_volume, transfer_fees, transfer_footprint, total_fees, total_on_chain_footprint)
-      SELECT a.*,
-            coalesce(b.total_volume,0),
-            coalesce(b.transfer_fees,0),
-            coalesce(b.transfer_footprint,0),
-            a.total_inscription_fees + coalesce(b.transfer_fees,0),
-            a.total_inscription_size + coalesce(b.transfer_footprint,0)
-      FROM a
-      LEFT JOIN b ON a.parents_hash=b.parents_hash ON CONFLICT (parents_hash) DO
-      UPDATE
-      SET supply = EXCLUDED.supply,
-          total_inscription_size = EXCLUDED.total_inscription_size,
-          total_inscription_fees = EXCLUDED.total_inscription_fees,
-          first_inscribed_date = EXCLUDED.first_inscribed_date,
-          last_inscribed_date = EXCLUDED.last_inscribed_date,
-          range_start = EXCLUDED.range_start,
-          range_end = EXCLUDED.range_end,
-          total_volume = EXCLUDED.total_volume,
-          transfer_fees = EXCLUDED.transfer_fees,
-          transfer_footprint = EXCLUDED.transfer_footprint,
-          total_fees = EXCLUDED.total_fees,
-          total_on_chain_footprint = EXCLUDED.total_on_chain_footprint;
-            END;
+        SELECT a.*,
+              coalesce(b.total_volume,0),
+              coalesce(b.transfer_fees,0),
+              coalesce(b.transfer_footprint,0),
+              a.total_inscription_fees + coalesce(b.transfer_fees,0),
+              a.total_inscription_size + coalesce(b.transfer_footprint,0)
+        FROM a
+        LEFT JOIN b ON a.parents_hash=b.parents_hash ON CONFLICT (parents_hash) DO
+        UPDATE
+        SET supply = EXCLUDED.supply,
+            total_inscription_size = EXCLUDED.total_inscription_size,
+            total_inscription_fees = EXCLUDED.total_inscription_fees,
+            first_inscribed_date = EXCLUDED.first_inscribed_date,
+            last_inscribed_date = EXCLUDED.last_inscribed_date,
+            range_start = EXCLUDED.range_start,
+            range_end = EXCLUDED.range_end,
+            total_volume = EXCLUDED.total_volume,
+            transfer_fees = EXCLUDED.transfer_fees,
+            transfer_footprint = EXCLUDED.transfer_footprint,
+            total_fees = EXCLUDED.total_fees,
+            total_on_chain_footprint = EXCLUDED.total_on_chain_footprint;
+      END;
       $$;"#).await?;
     Ok(())
   }
