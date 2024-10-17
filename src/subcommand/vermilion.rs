@@ -519,6 +519,7 @@ pub struct InscriptionCollectionData {
 #[derive(Serialize)]
 pub struct OnChainCollectionSummary {
   parents: Vec<String>,
+  parent_numbers: Vec<i64>,
   total_inscription_fees: Option<i64>,
   total_inscription_size: Option<i64>,
   first_inscribed_date: Option<i64>,
@@ -536,6 +537,7 @@ pub struct OnChainCollectionSummary {
 #[derive(Serialize)]
 pub struct OnChainCollectionHolders {
   parents: Vec<String>,
+  parent_numbers: Vec<i64>,
   collection_holder_count: Option<i64>,
   address: Option<String>,
   address_count: Option<i64>,
@@ -5993,6 +5995,11 @@ impl Vermilion {
     let mut query = r"
       SELECT 
         s.parents,
+        array(
+          SELECT io.number
+          FROM unnest(s.parents) p
+          LEFT JOIN ordinals io ON p = io.id
+        ) AS parent_numbers,
         s.total_inscription_fees,
         s.total_inscription_size,
         s.first_inscribed_date,
@@ -6050,6 +6057,7 @@ impl Vermilion {
     for row in result {
       let collection = OnChainCollectionSummary {
         parents: row.get("parents"),
+        parent_numbers: row.get("parent_numbers"),
         total_inscription_fees: row.get("total_inscription_fees"),
         total_inscription_size: row.get("total_inscription_size"),
         first_inscribed_date: row.get("first_inscribed_date"),
@@ -6073,6 +6081,11 @@ impl Vermilion {
     let query = r"
       SELECT 
         s.parents,
+        array(
+          SELECT io.number
+          FROM unnest(s.parents) p
+          LEFT JOIN ordinals io ON p = io.id
+        ) AS parent_numbers,
         s.total_inscription_fees,
         s.total_inscription_size,
         s.first_inscribed_date,
@@ -6092,6 +6105,7 @@ impl Vermilion {
     ).await?;
     let collection = OnChainCollectionSummary {
       parents: result.get("parents"),
+      parent_numbers: result.get("parent_numbers"),
       total_inscription_fees: result.get("total_inscription_fees"),
       total_inscription_size: result.get("total_inscription_size"),
       first_inscribed_date: result.get("first_inscribed_date"),
@@ -6115,6 +6129,11 @@ impl Vermilion {
     let mut query = r"
       select 
         parents, 
+        array(
+          SELECT io.number
+          FROM unnest(parents) p
+          LEFT JOIN ordinals io ON p = io.id
+        ) AS parent_numbers,
         COUNT(address) OVER () AS collection_holder_count, 
         address, 
         count(*) as address_count
@@ -6139,6 +6158,7 @@ impl Vermilion {
     for row in result {
       let holder: OnChainCollectionHolders = OnChainCollectionHolders {
         parents: row.get("parents"),
+        parent_numbers: row.get("parent_numbers"),
         collection_holder_count: row.get("collection_holder_count"),
         address: row.get("address"),
         address_count: row.get("address_count")
