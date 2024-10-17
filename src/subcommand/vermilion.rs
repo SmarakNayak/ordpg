@@ -2342,11 +2342,14 @@ impl Vermilion {
     Self::create_collections_table(pool.clone()).await.context("Failed to create collections table")?;
     Self::create_collections_summary_table(pool.clone()).await.context("Failed to create collections summary table")?;
     Self::create_recently_traded_collection_table(pool.clone()).await.context("Failed to create recently traded collection table")?;
+    Self::create_on_chain_collection_summary_table(pool.clone()).await.context("Failed to create on chain collection summary table")?;
     
     Self::create_procedure_log(pool.clone()).await.context("Failed to create proc log")?;
     Self::create_collection_summary_procedure(pool.clone()).await.context("Failed to create collection summary proc")?;
     Self::create_edition_procedure(pool.clone()).await.context("Failed to create edition proc")?;
     Self::create_weights_procedure(pool.clone()).await.context("Failed to create weights proc")?;
+    Self::create_on_chain_collection_summary_procedure(pool.clone()).await.context("Failed to create on chain collection summary proc")?;
+    Self::create_single_on_chain_collection_summary_function(pool.clone()).await.context("Failed to create single on chain collection summary function")?;
 
     Self::create_edition_insert_trigger(pool.clone()).await.context("Failed to create edition trigger")?;
     Self::create_metadata_insert_trigger(pool.clone()).await.context("Failed to create metadata trigger")?;
@@ -6512,6 +6515,12 @@ impl Vermilion {
           ON CONFLICT DO NOTHING;
         END LOOP;
 
+        -- 4. Update on chain collection summary
+        -- Complete update of a whole collection as opposed to a simple delta, because transfers may be ahead of inscriptions (and thus the summary would be missing some transfer data)
+        IF array_length(NEW.parents, 1) > 0 THEN
+          update_single_on_chain_collection_summary(NEW.parents);
+        END IF;
+
         RETURN NEW;
       END;
       $$ LANGUAGE plpgsql;").await?;
@@ -6527,10 +6536,13 @@ impl Vermilion {
     let conn = pool.get().await?;
     conn.simple_query(r"CREATE OR REPLACE FUNCTION before_transfer_insert() RETURNS TRIGGER AS $$
       DECLARE v_collection_symbol TEXT;
+      DECLARE v_parents VARCHAR(80)[];
       BEGIN
         -- RAISE NOTICE 'insert_transfers: waiting for lock';
         LOCK TABLE transfers IN EXCLUSIVE MODE;
         -- RAISE NOTICE 'insert_transfers: lock acquired';
+
+        -- 1. Update off chain collections
         SELECT collection_symbol INTO v_collection_symbol FROM collections WHERE id = NEW.id;
         IF EXISTS (SELECT 1 FROM collections WHERE id = NEW.id) AND NEW.is_genesis = false THEN
           UPDATE collection_summary
@@ -6541,6 +6553,19 @@ impl Vermilion {
               total_on_chain_footprint = coalesce(total_on_chain_footprint, 0) + NEW.tx_size
             WHERE collection_symbol = v_collection_symbol;
         END IF;
+
+        --2. Update on chain collections
+        SELECT parents INTO v_parents FROM ordinals WHERE id = NEW.id;
+        IF array_length(v_parents, 1) > 0 THEN
+          UPDATE on_chain_collection_summary
+          SET total_volume = coalesce(total_volume, 0) + new.price,
+              transfer_fees = coalesce(transfer_fees, 0) + NEW.tx_fee,
+              transfer_footprint = coalesce(transfer_footprint, 0) + NEW.tx_size,
+              total_fees = coalesce(total_fees, 0) + NEW.tx_fee,
+              total_on_chain_footprint = coalesce(total_on_chain_footprint, 0) + NEW.tx_size
+            WHERE parents <@ v_parents AND v_parents <@ parents;
+        END IF;
+
         RETURN NEW;
       END;
       $$ LANGUAGE plpgsql;").await?;
@@ -6865,7 +6890,8 @@ impl Vermilion {
       CREATE OR REPLACE PROCEDURE update_on_chain_collection_summary()
       LANGUAGE plpgsql
       AS $$
-      BEGIN
+      BEGIN      
+      LOCK TABLE ordinals IN EXCLUSIVE MODE;
       LOCK TABLE transfers IN EXCLUSIVE MODE;
       RAISE NOTICE 'update_on_chain_collection_summary: lock acquired';
       WITH a AS
@@ -6917,10 +6943,64 @@ impl Vermilion {
       $$;"#).await?;
     Ok(())
   }
-  
-  async fn update_on_chain_collection_summary(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+
+  async fn create_single_on_chain_collection_summary_function(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
-    conn.simple_query("CALL update_on_chain_collection_summary()").await?;
+    conn.simple_query(
+      r#"
+        CREATE OR REPLACE FUNCTION update_single_on_chain_collection_summary(parents varchar(80)[])
+        RETURNS void AS $$
+        BEGIN
+          LOCK TABLE transfers IN EXCLUSIVE MODE;
+          RAISE NOTICE 'update_single_on_chain_collection_summary: lock acquired';
+
+          WITH a AS
+            (SELECT hash_array(ARRAY(SELECT unnest(o.parents) ORDER BY 1)) as parents_hash,
+                    o.parents,
+                    count(*) AS supply,
+                    sum(o.content_length) AS total_inscription_size,
+                    sum(o.genesis_fee) AS total_inscription_fees,
+                    min(o.timestamp) AS first_inscribed_date,
+                    max(o.timestamp) AS last_inscribed_date,
+                    min(o.number) AS range_start,
+                    max(o.number) AS range_end
+            FROM ordinals o
+            WHERE o.parents @> parents AND o.parents <@ parents),
+                b AS
+            (SELECT hash_array(ARRAY(SELECT unnest(o.parents) ORDER BY 1)) as parents_hash,
+                    sum(price) AS total_volume,
+                    sum(tx_fee) AS transfer_fees,
+                    sum(tx_size) AS transfer_footprint
+            FROM ordinals o
+            LEFT JOIN transfers t ON o.id=t.id
+            WHERE NOT t.is_genesis
+              AND o.parents @> parents AND o.parents <@ parents)
+          INSERT INTO on_chain_collection_summary (parents_hash, parents, supply, total_inscription_size, total_inscription_fees, first_inscribed_date, last_inscribed_date, range_start, range_end, total_volume, transfer_fees, transfer_footprint, total_fees, total_on_chain_footprint)
+            SELECT a.*,
+                  coalesce(b.total_volume,0),
+                  coalesce(b.transfer_fees,0),
+                  coalesce(b.transfer_footprint,0),
+                  a.total_inscription_fees + coalesce(b.transfer_fees,0),
+                  a.total_inscription_size + coalesce(b.transfer_footprint,0)
+            FROM a
+            LEFT JOIN b ON a.parents_hash=b.parents_hash ON CONFLICT (parents_hash) DO
+            UPDATE
+            SET supply = EXCLUDED.supply,
+                total_inscription_size = EXCLUDED.total_inscription_size,
+                total_inscription_fees = EXCLUDED.total_inscription_fees,
+                first_inscribed_date = EXCLUDED.first_inscribed_date,
+                last_inscribed_date = EXCLUDED.last_inscribed_date,
+                range_start = EXCLUDED.range_start,
+                range_end = EXCLUDED.range_end,
+                total_volume = EXCLUDED.total_volume,
+                transfer_fees = EXCLUDED.transfer_fees,
+                transfer_footprint = EXCLUDED.transfer_footprint,
+                total_fees = EXCLUDED.total_fees,
+                total_on_chain_footprint = EXCLUDED.total_on_chain_footprint;
+
+        END;
+      "#
+    ).await?;
     Ok(())
   }
 
