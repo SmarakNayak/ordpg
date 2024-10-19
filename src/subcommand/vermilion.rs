@@ -1956,8 +1956,8 @@ impl Vermilion {
       tx.commit().await?;
       log::info!("Inserted tokens for {} in db. {} of {} updated", symbol, i+1, new_symbols.len());
     }
-    Self::insert_recently_traded_collections(pool.clone(), recently_traded_collections).await?;
-    Self::update_collection_summary(pool).await?;
+    Self::update_collection_summary(pool.clone()).await?;    
+    Self::insert_recently_traded_collections(pool, recently_traded_collections).await?;
     Ok(())
   }
 
@@ -2351,7 +2351,7 @@ impl Vermilion {
     Self::create_edition_procedure(pool.clone()).await.context("Failed to create edition proc")?;
     Self::create_weights_procedure(pool.clone()).await.context("Failed to create weights proc")?;
     Self::create_on_chain_collection_summary_procedure(pool.clone()).await.context("Failed to create on chain collection summary proc")?;
-    Self::create_single_on_chain_collection_summary_procedure(pool.clone()).await.context("Failed to create single on chain collection summary function")?;
+    Self::create_single_on_chain_collection_summary_procedure(pool.clone()).await.context("Failed to create single on chain collection summary proc")?;
 
     Self::create_edition_insert_trigger(pool.clone()).await.context("Failed to create edition trigger")?;
     Self::create_metadata_insert_trigger(pool.clone()).await.context("Failed to create metadata trigger")?;
@@ -6968,7 +6968,7 @@ impl Vermilion {
     let conn = pool.get().await?;
     conn.simple_query(
       r#"
-        CREATE OR REPLACE PROCEDURE update_single_on_chain_collection_summary(parents varchar(80)[])
+        CREATE OR REPLACE PROCEDURE update_single_on_chain_collection_summary(v_parents varchar(80)[])
         LANGUAGE plpgsql
         AS $$
         BEGIN
@@ -6986,7 +6986,8 @@ impl Vermilion {
                     min(o.number) AS range_start,
                     max(o.number) AS range_end
             FROM ordinals o
-            WHERE o.parents @> parents AND o.parents <@ parents),
+            WHERE o.parents @> v_parents AND o.parents <@ v_parents
+            GROUP BY o.parents),
                 b AS
             (SELECT hash_array(ARRAY(SELECT unnest(o.parents) ORDER BY 1)) as parents_hash,
                     sum(price) AS total_volume,
@@ -6995,7 +6996,8 @@ impl Vermilion {
             FROM ordinals o
             LEFT JOIN transfers t ON o.id=t.id
             WHERE NOT t.is_genesis
-              AND o.parents @> parents AND o.parents <@ parents)
+              AND o.parents @> v_parents AND o.parents <@ v_parents
+            GROUP BY o.parents)
           INSERT INTO on_chain_collection_summary (parents_hash, parents, supply, total_inscription_size, total_inscription_fees, first_inscribed_date, last_inscribed_date, range_start, range_end, total_volume, transfer_fees, transfer_footprint, total_fees, total_on_chain_footprint)
             SELECT a.*,
                   coalesce(b.total_volume,0),
