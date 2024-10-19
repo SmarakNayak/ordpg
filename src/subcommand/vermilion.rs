@@ -6098,7 +6098,7 @@ impl Vermilion {
         s.transfer_footprint,
         s.total_fees,
         s.total_on_chain_footprint
-      from on_chain_collection_summary s WHERE s.parents <@ $1 and $1 <@ s.parents LIMIT 1";
+      from on_chain_collection_summary s WHERE s.parents = $1 LIMIT 1";
     let result = conn.query_one(
       query, 
       &[&parents]
@@ -6140,7 +6140,7 @@ impl Vermilion {
       from ordinals o 
       left join addresses a 
       on o.id = a.id 
-      where o.parents <@ $1 and $1 <@ o.parents
+      where o.parents = $1
       group by a.address, o.parents
       order by count(*) desc".to_string();
     if page_size > 0 {
@@ -6171,7 +6171,7 @@ impl Vermilion {
   async fn get_inscriptions_in_on_chain_collection(pool: deadpool, parents: Vec<String>, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
     //1. build query
-    let mut query = "SELECT * from ordinals_full_v o where o.parents <@ $1 AND $1 <@ o.parents".to_string();
+    let mut query = "SELECT * from ordinals_full_v o where o.parents = $1".to_string();
     if params.content_types.len() > 0 {
       query.push_str(" AND (");
       for (i, content_type) in params.content_types.iter().enumerate() {
@@ -6583,7 +6583,7 @@ impl Vermilion {
               transfer_footprint = coalesce(transfer_footprint, 0) + NEW.tx_size,
               total_fees = coalesce(total_fees, 0) + NEW.tx_fee,
               total_on_chain_footprint = coalesce(total_on_chain_footprint, 0) + NEW.tx_size
-            WHERE parents <@ v_parents AND v_parents <@ parents;
+            WHERE parents = v_parents;
         END IF;
 
         RETURN NEW;
@@ -6986,7 +6986,7 @@ impl Vermilion {
                     min(o.number) AS range_start,
                     max(o.number) AS range_end
             FROM ordinals o
-            WHERE o.parents @> v_parents AND o.parents <@ v_parents
+            WHERE o.parents = v_parents
             GROUP BY o.parents),
                 b AS
             (SELECT hash_array(ARRAY(SELECT unnest(o.parents) ORDER BY 1)) as parents_hash,
@@ -6996,7 +6996,7 @@ impl Vermilion {
             FROM ordinals o
             LEFT JOIN transfers t ON o.id=t.id
             WHERE NOT t.is_genesis
-              AND o.parents @> v_parents AND o.parents <@ v_parents
+              AND o.parents = v_parents
             GROUP BY o.parents)
           INSERT INTO on_chain_collection_summary (parents_hash, parents, supply, total_inscription_size, total_inscription_fees, first_inscribed_date, last_inscribed_date, range_start, range_end, total_volume, transfer_fees, transfer_footprint, total_fees, total_on_chain_footprint)
             SELECT a.*,
