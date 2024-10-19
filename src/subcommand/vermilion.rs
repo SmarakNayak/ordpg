@@ -7019,6 +7019,7 @@ impl Vermilion {
                 total_on_chain_footprint = EXCLUDED.total_on_chain_footprint;
 
         END;
+        $$;
       "#
     ).await?;
     Ok(())
