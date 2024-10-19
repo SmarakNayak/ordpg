@@ -2351,7 +2351,7 @@ impl Vermilion {
     Self::create_edition_procedure(pool.clone()).await.context("Failed to create edition proc")?;
     Self::create_weights_procedure(pool.clone()).await.context("Failed to create weights proc")?;
     Self::create_on_chain_collection_summary_procedure(pool.clone()).await.context("Failed to create on chain collection summary proc")?;
-    Self::create_single_on_chain_collection_summary_function(pool.clone()).await.context("Failed to create single on chain collection summary function")?;
+    Self::create_single_on_chain_collection_summary_procedure(pool.clone()).await.context("Failed to create single on chain collection summary function")?;
 
     Self::create_edition_insert_trigger(pool.clone()).await.context("Failed to create edition trigger")?;
     Self::create_metadata_insert_trigger(pool.clone()).await.context("Failed to create metadata trigger")?;
@@ -6538,7 +6538,7 @@ impl Vermilion {
         -- 4. Update on chain collection summary
         -- Complete update of a whole collection as opposed to a simple delta, because transfers may be ahead of inscriptions (and thus the summary would be missing some transfer data)
         IF array_length(NEW.parents, 1) > 0 THEN
-          update_single_on_chain_collection_summary(NEW.parents);
+          CALL update_single_on_chain_collection_summary(NEW.parents);
         END IF;
 
         RETURN NEW;
@@ -6964,12 +6964,13 @@ impl Vermilion {
     Ok(())
   }
 
-  async fn create_single_on_chain_collection_summary_function(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+  async fn create_single_on_chain_collection_summary_procedure(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
     conn.simple_query(
       r#"
-        CREATE OR REPLACE FUNCTION update_single_on_chain_collection_summary(parents varchar(80)[])
-        RETURNS void AS $$
+        CREATE OR REPLACE PROCEDURE update_single_on_chain_collection_summary(parents varchar(80)[])
+        LANGUAGE plpgsql
+        AS $$
         BEGIN
           LOCK TABLE transfers IN EXCLUSIVE MODE;
           RAISE NOTICE 'update_single_on_chain_collection_summary: lock acquired';
@@ -7019,7 +7020,7 @@ impl Vermilion {
                 total_on_chain_footprint = EXCLUDED.total_on_chain_footprint;
 
         END;
-        $$ LANGUAGE plpgsql;
+        $$;
       "#
     ).await?;
     Ok(())
