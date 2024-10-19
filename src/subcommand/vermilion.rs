@@ -7019,7 +7019,7 @@ impl Vermilion {
                 total_on_chain_footprint = EXCLUDED.total_on_chain_footprint;
 
         END;
-        $$;
+        $$ LANGUAGE plpgsql;
       "#
     ).await?;
     Ok(())
