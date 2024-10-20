@@ -2333,6 +2333,7 @@ impl Vermilion {
 
   pub(crate) async fn initialize_db_tables(pool: deadpool_postgres::Pool) -> anyhow::Result<()> {
     Self::create_metadata_table(pool.clone()).await.context("Failed to create metadata table")?;
+    Self::create_full_metadata_table(pool.clone()).await.context("Failed to create full metadata table")?;
     Self::create_sat_table(pool.clone()).await.context("Failed to create sat table")?;
     Self::create_content_table(pool.clone()).await.context("Failed to create content table")?;
     Self::create_edition_table(pool.clone()).await.context("Failed to create editions table")?;
@@ -2440,6 +2441,81 @@ impl Vermilion {
       CREATE INDEX IF NOT EXISTS index_metadata_category_satribute on ordinals USING GIN(content_category, satributes);
       CREATE INDEX IF NOT EXISTS index_metadata_category_charm on ordinals USING GIN(content_category, charms);
       CREATE INDEX IF NOT EXISTS index_metadata_json on ordinals(is_json, is_maybe_json, is_bitmap_style);
+    ").await?;
+  
+    Ok(())
+  }
+  
+  
+  pub(crate) async fn create_full_metadata_table(pool: deadpool_postgres::Pool) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
+      r"CREATE TABLE IF NOT EXISTS ordinals_full_t (
+        sequence_number bigint not null primary key,
+        id varchar(80) not null,
+        content_length bigint,
+        content_type text,
+        content_encoding text,
+        content_category varchar(20),
+        genesis_fee bigint,
+        genesis_height bigint,
+        genesis_transaction varchar(80),
+        pointer bigint,
+        number bigint,          
+        parents varchar(80)[],
+        delegate varchar(80),
+        metaprotocol text,
+        on_chain_metadata jsonb,
+        sat bigint,
+        sat_block bigint,
+        satributes varchar(30)[],
+        charms varchar(15)[],
+        timestamp bigint,
+        sha256 varchar(64),
+        text text,
+        referenced_ids varchar(80)[],
+        is_json boolean,
+        is_maybe_json boolean,
+        is_bitmap_style boolean,
+        is_recursive boolean,
+        spaced_rune varchar(100),
+        collection_symbol varchar(50),
+        off_chain_metadata jsonb,
+        collection_name text,
+      )").await?;
+    conn.simple_query(r"
+      CREATE INDEX IF NOT EXISTS index_metadata_full_id ON ordinals_full_t (id);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_number ON ordinals_full_t (number);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_block ON ordinals_full_t (genesis_height);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_sha256 ON ordinals_full_t (sha256);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_sat ON ordinals_full_t (sat);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_sat_block ON ordinals_full_t (sat_block);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_satributes on ordinals_full_t USING GIN (satributes);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_charms on ordinals_full_t USING GIN (charms);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_parents ON ordinals_full_t USING GIN (parents);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_delegate ON ordinals_full_t (delegate);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_fee ON ordinals_full_t (genesis_fee);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_size ON ordinals_full_t (content_length);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_type ON ordinals_full_t (content_type);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_category ON ordinals_full_t (content_category);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_metaprotocol ON ordinals_full_t (metaprotocol);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_text ON ordinals_full_t USING GIN (to_tsvector('english', left(text, 1048575)));
+      CREATE INDEX IF NOT EXISTS index_metadata_full_referenced_ids ON ordinals_full_t USING GIN (referenced_ids);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_collection_symbol ON ordinals_full_t (collection_symbol);
+    ").await?;
+    conn.simple_query(r"
+      CREATE INDEX IF NOT EXISTS index_metadata_full_sat_block_sat on ordinals_full_t (sat_block, sat);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_sat_block_sequence on ordinals_full_t (sat_block, sequence_number);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_sat_block_fee on ordinals_full_t (sat_block, genesis_fee);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_sat_block_size on ordinals_full_t (sat_block, content_length);
+    ").await?;
+    conn.simple_query(r"
+      CREATE EXTENSION IF NOT EXISTS btree_gin;
+      CREATE INDEX IF NOT EXISTS index_metadata_full_type_satribute on ordinals_full_t USING GIN(content_type, satributes);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_type_charm on ordinals_full_t USING GIN(content_type, charms);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_category_satribute on ordinals_full_t USING GIN(content_category, satributes);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_category_charm on ordinals_full_t USING GIN(content_category, charms);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_json on ordinals_full_t(is_json, is_maybe_json, is_bitmap_style);
     ").await?;
   
     Ok(())
@@ -7104,13 +7180,20 @@ impl Vermilion {
     let conn = pool.get().await?;
     conn.simple_query(
       r"CREATE OR REPLACE VIEW ordinals_full_v AS
-        SELECT o.*, 
-               c.collection_symbol, 
-               c.off_chain_metadata, 
-               l.name as collection_name 
-        FROM ordinals o 
-        left join collections c on o.id=c.id 
-        left join collection_list l on c.collection_symbol=l.collection_symbol").await?;
+        WITH joined_collections AS (
+          SELECT c.id,
+            c.collection_symbol,
+            c.off_chain_metadata,
+            l.name as collection_name
+          FROM collections c
+          LEFT JOIN collection_list l ON c.collection_symbol = l.collection_symbol
+        )
+        SELECT o.*,
+          jc.collection_symbol,
+          jc.off_chain_metadata,
+          jc.collection_name
+        FROM ordinals o
+        LEFT JOIN joined_collections jc ON o.id = jc.id;").await?;
     Ok(())
   }
   
