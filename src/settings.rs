@@ -455,13 +455,13 @@ impl Settings {
 
     let bitcoin_credentials = self.bitcoin_credentials()?;
 
-    log::info!(
+    log::debug!(
       "Connecting to Bitcoin Core at {}",
       self.bitcoin_rpc_url(None)
     );
 
     if let Auth::CookieFile(cookie_file) = &bitcoin_credentials {
-      log::info!(
+      log::debug!(
         "Using credentials from cookie file at `{}`",
         cookie_file.display()
       );

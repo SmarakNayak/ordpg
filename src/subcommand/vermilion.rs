@@ -1601,10 +1601,16 @@ impl Vermilion {
             TraceLayer::new_for_http()
               .make_span_with(DefaultMakeSpan::new().level(TraceLevel::INFO))
               .on_request(|req: &Request<Body>, _span: &Span| {
-                tracing::event!(TraceLevel::INFO, "Started processing request {}", req.uri().path());
+                tracing::event!(TraceLevel::DEBUG, "Started processing request {}", req.uri().path());
               })
               .on_response(|res: &Response<BoxBody>, latency: Duration, _span: &Span| {
-                tracing::event!(TraceLevel::INFO, "Finished processing request latency={:?} status={:?}", latency, res.status());
+                if !res.status().is_success() {
+                  tracing::event!(TraceLevel::WARN, "Finished processing FAILED request latency={:?} status={:?}", latency, res.status());                    
+                } else if latency.as_millis() > 10 {
+                  tracing::event!(TraceLevel::INFO, "Finished processing SLOW request latency={:?} status={:?}", latency, res.status());                    
+                } else {                    
+                  tracing::event!(TraceLevel::DEBUG, "Finished processing request latency={:?} status={:?}", latency, res.status());
+                }
               })
           )
           .layer(
@@ -3864,7 +3870,7 @@ impl Vermilion {
   async fn random_inscriptions(n: Query<QueryNumber>, State(server_config): State<ApiServerConfig>, session: Session<SessionNullPool>) -> impl axum::response::IntoResponse {
     let bands: Vec<(f64, f64)> = session.get("bands_seen").unwrap_or(Vec::new());
     for band in bands.iter() {
-        println!("Band: {:?}", band);
+      log::debug!("Band: {:?}", band);
     }
     let n = n.0.n;
     let (inscription_numbers, new_bands) = match Self::get_random_inscriptions(server_config.deadpool, n, bands).await {
