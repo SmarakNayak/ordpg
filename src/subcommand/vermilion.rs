@@ -6543,9 +6543,9 @@ impl Vermilion {
 
         -- 4. Update on chain collection summary
         -- Add delta for a single inscription and all transfers (so far)
-        LOCK TABLE transfers IN EXCLUSIVE MODE;
-        RAISE NOTICE 'insert_metadata (on chain summary): transfers lock acquired';
-        IF array_length(NEW.parents, 1) > 0 THEN
+        IF array_length(NEW.parents, 1) > 0 THEN          
+          LOCK TABLE transfers IN EXCLUSIVE MODE;
+          RAISE NOTICE 'insert_metadata (on chain summary): transfers lock acquired';
           WITH a AS (
             SELECT 
               SUM(price) AS total_volume,
