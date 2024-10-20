@@ -6555,7 +6555,7 @@ impl Vermilion {
             WHERE id = NEW.id
             AND is_genesis = false
           )
-          INSERT INTO on_chain_collection_summary (
+          INSERT INTO on_chain_collection_summary AS ocs (
             parents_hash,
             parents,
             total_inscription_fees,
@@ -6588,18 +6588,18 @@ impl Vermilion {
             NEW.content_length + a.transfer_footprint
           FROM a
           ON CONFLICT (parents_hash) DO UPDATE SET
-            total_inscription_fees = coalesce(total_inscription_fees, 0) + EXCLUDED.total_inscription_fees,
-            total_inscription_size = coalesce(total_inscription_size, 0) + EXCLUDED.total_inscription_size,
-            first_inscribed_date = LEAST(first_inscribed_date, EXCLUDED.first_inscribed_date),
-            last_inscribed_date = GREATEST(last_inscribed_date, EXCLUDED.last_inscribed_date),
-            supply = coalesce(supply, 0) + 1,
-            range_start = LEAST(range_start, EXCLUDED.range_start),
-            range_end = GREATEST(range_end, EXCLUDED.range_end),
-            total_volume = coalesce(total_volume, 0) + EXCLUDED.total_volume,
-            transfer_fees = coalesce(transfer_fees, 0) + EXCLUDED.transfer_fees,
-            transfer_footprint = coalesce(transfer_footprint, 0) + EXCLUDED.transfer_footprint,
-            total_fees = coalesce(total_fees, 0) + EXCLUDED.total_fees,
-            total_on_chain_footprint = coalesce(total_on_chain_footprint, 0) + EXCLUDED.total_on_chain_footprint;
+            total_inscription_fees = coalesce(ocs.total_inscription_fees, 0) + EXCLUDED.total_inscription_fees,
+            total_inscription_size = coalesce(ocs.total_inscription_size, 0) + EXCLUDED.total_inscription_size,
+            first_inscribed_date = LEAST(ocs.first_inscribed_date, EXCLUDED.first_inscribed_date),
+            last_inscribed_date = GREATEST(ocs.last_inscribed_date, EXCLUDED.last_inscribed_date),
+            supply = coalesce(ocs.supply, 0) + 1,
+            range_start = LEAST(ocs.range_start, EXCLUDED.range_start),
+            range_end = GREATEST(ocs.range_end, EXCLUDED.range_end),
+            total_volume = coalesce(ocs.total_volume, 0) + EXCLUDED.total_volume,
+            transfer_fees = coalesce(ocs.transfer_fees, 0) + EXCLUDED.transfer_fees,
+            transfer_footprint = coalesce(ocs.transfer_footprint, 0) + EXCLUDED.transfer_footprint,
+            total_fees = coalesce(ocs.total_fees, 0) + EXCLUDED.total_fees,
+            total_on_chain_footprint = coalesce(ocs.total_on_chain_footprint, 0) + EXCLUDED.total_on_chain_footprint;
         END IF;
 
         RETURN NEW;
