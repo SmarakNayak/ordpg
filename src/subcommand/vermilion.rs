@@ -2362,6 +2362,9 @@ impl Vermilion {
     Self::create_metadata_insert_trigger(pool.clone()).await.context("Failed to create metadata trigger")?;
     Self::create_transfer_insert_trigger(pool.clone()).await.context("Failed to create transfer trigger")?;
 
+    Self::create_metadata_full_insert_trigger(pool.clone()).await.context("Failed to create metadata full trigger")?;
+    Self::create_collection_insert_trigger(pool.clone()).await.context("Failed to create collection trigger")?;
+
     Self::create_ordinals_full_view(pool.clone()).await.context("Failed to create ordinals full view")?;
 
     initialize_social_tables(pool.clone()).await.context("Failed to create social tables")?;
@@ -6758,6 +6761,84 @@ impl Vermilion {
       BEFORE INSERT ON editions
       FOR EACH ROW
       EXECUTE PROCEDURE before_edition_insert();"#).await?;
+    Ok(())
+  }
+
+  async fn create_metadata_full_insert_trigger(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(r"CREATE OR REPLACE FUNCTION after_metadata_insert() RETURNS TRIGGER AS $$
+      BEGIN
+        INSERT INTO ordinals_full_t (
+          sequence_number,
+          id,
+          content_length,
+          content_type,
+          content_encoding ,
+          content_category,
+          genesis_fee,
+          genesis_height,
+          genesis_transaction,
+          pointer,
+          number,          
+          parents,
+          delegate,
+          metaprotocol,
+          on_chain_metadata,
+          sat,
+          sat_block,
+          satributes,
+          charms,
+          timestamp,
+          sha256,
+          text,
+          referenced_ids,
+          is_json,
+          is_maybe_json,
+          is_bitmap_style,
+          is_recursive,
+          spaced_rune,
+          collection_symbol,
+          off_chain_metadata,
+          collection_name
+        )
+        SELECT o.*, c.collection_symbol, c.off_chain_metadata, l.name as collection_name
+        FROM inserted_ordinals o
+        LEFT JOIN collections c ON o.id = c.id
+        LEFT JOIN collection_list l ON c.collection_symbol = l.collection_symbol;
+
+        RETURN NULL;
+      END;
+      $$ LANGUAGE plpgsql;").await?;
+    conn.simple_query(
+      r#"CREATE OR REPLACE TRIGGER after_metadata_insert
+      AFTER INSERT ON ordinals
+      REFERENCING NEW TABLE AS inserted_ordinals
+      FOR EACH STATEMENT
+      EXECUTE FUNCTION after_metadata_insert();"#).await?;
+    Ok(())
+  }
+
+  async fn create_collection_insert_trigger(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(r"CREATE OR REPLACE FUNCTION after_collection_insert() RETURNS TRIGGER AS $$
+      BEGIN
+        UPDATE ordinals_full of
+        SET collection_symbol = c.collection_symbol,
+            off_chain_metadata = c.off_chain_metadata,
+            collection_name = l.name
+        FROM inserted_collections c
+        LEFT JOIN collection_list l ON c.collection_symbol = l.collection_symbol
+        WHERE of.id = c.id;
+
+        RETURN NULL;
+      END;
+      $$ LANGUAGE plpgsql;").await?;
+    conn.simple_query(
+      r#"CREATE OR REPLACE TRIGGER after_collection_insert
+      AFTER INSERT ON collections
+      REFERENCING NEW TABLE AS inserted_collections
+      FOR EACH STATEMENT
+      EXECUTE FUNCTION after_collection_insert();"#).await?;
     Ok(())
   }
 
