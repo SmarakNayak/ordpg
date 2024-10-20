@@ -1604,9 +1604,7 @@ impl Vermilion {
                 tracing::event!(TraceLevel::DEBUG, "Started processing request {}", req.uri().path());
               })
               .on_response(|res: &Response<BoxBody>, latency: Duration, _span: &Span| {
-                if !res.status().is_success() {
-                  tracing::event!(TraceLevel::WARN, "Finished processing FAILED request latency={:?} status={:?}", latency, res.status());                    
-                } else if latency.as_millis() > 10 {
+                if latency.as_millis() > 10 {
                   tracing::event!(TraceLevel::INFO, "Finished processing SLOW request latency={:?} status={:?}", latency, res.status());                    
                 } else {                    
                   tracing::event!(TraceLevel::DEBUG, "Finished processing request latency={:?} status={:?}", latency, res.status());
