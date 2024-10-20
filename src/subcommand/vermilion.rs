@@ -2481,7 +2481,7 @@ impl Vermilion {
         spaced_rune varchar(100),
         collection_symbol varchar(50),
         off_chain_metadata jsonb,
-        collection_name text,
+        collection_name text
       )").await?;
     conn.simple_query(r"
       CREATE INDEX IF NOT EXISTS index_metadata_full_id ON ordinals_full_t (id);
