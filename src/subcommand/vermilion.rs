@@ -6542,10 +6542,64 @@ impl Vermilion {
         END LOOP;
 
         -- 4. Update on chain collection summary
-        -- Complete update of a whole collection as opposed to a simple delta, because transfers may be ahead of inscriptions (and thus the summary would be missing some transfer data)
+        -- Add delta for a single inscription and all transfers (so far)
+        LOCK TABLE transfers IN EXCLUSIVE MODE;
+        RAISE NOTICE 'insert_metadata (on chain summary): transfers lock acquired';
         IF array_length(NEW.parents, 1) > 0 THEN
-          -- RAISE NOTICE 'Parents array: %', array_to_string(NEW.parents, ', ');
-          -- CALL update_single_on_chain_collection_summary(NEW.parents);
+          WITH a AS (
+            SELECT 
+              SUM(price) AS total_volume,
+              SUM(tx_fee) AS transfer_fees,
+              SUM(tx_size) AS transfer_footprint
+            FROM transfers t
+            WHERE id = NEW.id
+            AND is_genesis = false
+          )
+          INSERT INTO on_chain_collection_summary (
+            parents_hash,
+            parents,
+            total_inscription_fees,
+            total_inscription_size,
+            first_inscribed_date,
+            last_inscribed_date,
+            supply,
+            range_start,
+            range_end,
+            total_volume,
+            transfer_fees,
+            transfer_footprint,
+            total_fees,
+            total_on_chain_footprint
+          ) 
+          SELECT
+            hash_array(ARRAY(SELECT unnest(NEW.parents) ORDER BY 1)) as parents_hash,
+            NEW.parents,
+            NEW.genesis_fee,
+            NEW.content_length,
+            NEW.block_timestamp,
+            NEW.block_timestamp,
+            1,
+            NEW.number,
+            NEW.number,
+            a.total_volume,
+            a.transfer_fees,
+            a.transfer_footprint,
+            NEW.genesis_fee + a.transfer_fees,
+            NEW.content_length + a.transfer_footprint
+          FROM a
+          ON CONFLICT (parents_hash) DO UPDATE SET
+            total_inscription_fees = coalesce(total_inscription_fees, 0) + EXCLUDED.total_inscription_fees,
+            total_inscription_size = coalesce(total_inscription_size, 0) + EXCLUDED.total_inscription_size,
+            first_inscribed_date = LEAST(first_inscribed_date, EXCLUDED.first_inscribed_date),
+            last_inscribed_date = GREATEST(last_inscribed_date, EXCLUDED.last_inscribed_date),
+            supply = coalesce(supply, 0) + 1,
+            range_start = LEAST(range_start, EXCLUDED.range_start),
+            range_end = GREATEST(range_end, EXCLUDED.range_end),
+            total_volume = coalesce(total_volume, 0) + EXCLUDED.total_volume,
+            transfer_fees = coalesce(transfer_fees, 0) + EXCLUDED.transfer_fees,
+            transfer_footprint = coalesce(transfer_footprint, 0) + EXCLUDED.transfer_footprint,
+            total_fees = coalesce(total_fees, 0) + EXCLUDED.total_fees,
+            total_on_chain_footprint = coalesce(total_on_chain_footprint, 0) + EXCLUDED.total_on_chain_footprint;
         END IF;
 
         RETURN NEW;
@@ -6583,7 +6637,7 @@ impl Vermilion {
 
         --2. Update on chain collections
         SELECT parents INTO v_parents FROM ordinals WHERE id = NEW.id;
-        IF array_length(v_parents, 1) > 0 THEN
+        IF array_length(v_parents, 1) > 0 AND NEW.is_genesis = false THEN
           UPDATE on_chain_collection_summary
           SET total_volume = coalesce(total_volume, 0) + new.price,
               transfer_fees = coalesce(transfer_fees, 0) + NEW.tx_fee,
