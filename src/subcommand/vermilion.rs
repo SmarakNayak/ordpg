@@ -6544,8 +6544,8 @@ impl Vermilion {
         -- 4. Update on chain collection summary
         -- Complete update of a whole collection as opposed to a simple delta, because transfers may be ahead of inscriptions (and thus the summary would be missing some transfer data)
         IF array_length(NEW.parents, 1) > 0 THEN
-          RAISE NOTICE 'Parents array: %', array_to_string(NEW.parents, ', ');
-          CALL update_single_on_chain_collection_summary(NEW.parents);
+          -- RAISE NOTICE 'Parents array: %', array_to_string(NEW.parents, ', ');
+          -- CALL update_single_on_chain_collection_summary(NEW.parents);
         END IF;
 
         RETURN NEW;
