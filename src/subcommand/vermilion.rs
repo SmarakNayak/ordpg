@@ -7180,20 +7180,13 @@ impl Vermilion {
     let conn = pool.get().await?;
     conn.simple_query(
       r"CREATE OR REPLACE VIEW ordinals_full_v AS
-        WITH joined_collections AS (
-          SELECT c.id,
-            c.collection_symbol,
-            c.off_chain_metadata,
-            l.name as collection_name
-          FROM collections c
-          LEFT JOIN collection_list l ON c.collection_symbol = l.collection_symbol
-        )
-        SELECT o.*,
-          jc.collection_symbol,
-          jc.off_chain_metadata,
-          jc.collection_name
-        FROM ordinals o
-        LEFT JOIN joined_collections jc ON o.id = jc.id;").await?;
+        SELECT o.*, 
+               c.collection_symbol, 
+               c.off_chain_metadata, 
+               l.name as collection_name 
+        FROM ordinals o 
+        left join collections c on o.id=c.id 
+        left join collection_list l on c.collection_symbol=l.collection_symbol").await?;
     Ok(())
   }
   
