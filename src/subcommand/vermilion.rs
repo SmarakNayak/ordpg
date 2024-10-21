@@ -5935,7 +5935,7 @@ impl Vermilion {
   async fn get_inscriptions_in_collection(pool: deadpool, collection_symbol: String, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
     //1. build query
-    let mut query = "with m as MATERIALIZED (SELECT o.*, c.collection_symbol, c.off_chain_metadata, '' as collection_name from ordinals o left join collections c on o.number=c.number where c.collection_symbol=$1".to_string();
+    let mut query = "with m as MATERIALIZED (SELECT o.* from ordinals_full_v o where o.collection_symbol=$1".to_string();
     if params.content_types.len() > 0 {
       query.push_str(" AND (");
       for (i, content_type) in params.content_types.iter().enumerate() {
@@ -6181,7 +6181,7 @@ impl Vermilion {
         s.transfer_footprint,
         s.total_fees,
         s.total_on_chain_footprint
-      from on_chain_collection_summary s WHERE s.parents = $1 LIMIT 1";
+      from on_chain_collection_summary s WHERE s.parents = $1";
     let result = conn.query_one(
       query, 
       &[&parents]
@@ -6254,7 +6254,7 @@ impl Vermilion {
   async fn get_inscriptions_in_on_chain_collection(pool: deadpool, parents: Vec<String>, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
     //1. build query
-    let mut query = "SELECT * from ordinals_full_v o where o.parents = $1".to_string();
+    let mut query = "with m as MATERIALIZED (SELECT o.* from ordinals_full_v o where o.parents=$1".to_string();
     if params.content_types.len() > 0 {
       query.push_str(" AND (");
       for (i, content_type) in params.content_types.iter().enumerate() {
@@ -6310,7 +6310,7 @@ impl Vermilion {
     } else if params.sort_by == "lowest_fee" {
       query.push_str(" ORDER BY o.genesis_fee ASC");
     }
-    //query.push_str(") SELECT * from m");
+    query.push_str(") SELECT * from m");
     if params.page_size > 0 {
       query.push_str(format!(" LIMIT {}", params.page_size).as_str());
     }
@@ -7259,15 +7259,18 @@ impl Vermilion {
 
   async fn create_ordinals_full_view(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
+    // conn.simple_query(
+    //   r"CREATE OR REPLACE VIEW ordinals_full_v AS
+    //     SELECT o.*, 
+    //            c.collection_symbol, 
+    //            c.off_chain_metadata, 
+    //            l.name as collection_name 
+    //     FROM ordinals o 
+    //     left join collections c on o.id=c.id 
+    //     left join collection_list l on c.collection_symbol=l.collection_symbol").await?;
     conn.simple_query(
       r"CREATE OR REPLACE VIEW ordinals_full_v AS
-        SELECT o.*, 
-               c.collection_symbol, 
-               c.off_chain_metadata, 
-               l.name as collection_name 
-        FROM ordinals o 
-        left join collections c on o.id=c.id 
-        left join collection_list l on c.collection_symbol=l.collection_symbol").await?;
+        SELECT * from ordinals_full_t;").await?;
     Ok(())
   }
   
