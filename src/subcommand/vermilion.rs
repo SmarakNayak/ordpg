@@ -2088,7 +2088,7 @@ impl Vermilion {
         }),
         CborValue::Float(float) => JsonValue::Number(JsonNumber::from_f64(float).unwrap()),
         CborValue::Array(vec) => JsonValue::Array(vec.into_iter().map(Self::cbor_to_json).collect()),
-        CborValue::Map(map) => JsonValue::Object(map.into_iter().map(|(k, v)| (Self::cbor_into_string(k).unwrap(), Self::cbor_to_json(v))).collect()),
+        CborValue::Map(map) => JsonValue::Object(map.into_iter().map(|(k, v)| (Self::cbor_into_string(k).unwrap_or_default(), Self::cbor_to_json(v))).collect()),
         CborValue::Bytes(bytes) => JsonValue::String(BASE64.encode(bytes)),
         CborValue::Tag(_tag, _value) => JsonValue::Null,
         _ => JsonValue::Null,
@@ -7053,6 +7053,136 @@ impl Vermilion {
     Ok(())
   }
   
+  async fn create_trending_weights_procedure(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    let query = r#"--
+      DROP TABLE IF EXISTS trending_delegates;
+      DROP TABLE IF EXISTS trending_parents;
+      DROP TABLE IF EXISTS trending_others;
+      DROP TABLE IF EXISTS trending_union;
+      DROP TABLE IF EXISTS trending_summary;
+
+      --delegates
+      CREATE TABLE trending_delegates AS
+      WITH max_height AS (
+          SELECT max(genesis_height) as max 
+          FROM ordinals
+      )
+      SELECT 
+          delegate,
+          sum(genesis_fee) as fee,
+          count(*)*580 as size,
+          (SELECT max FROM max_height) - max(genesis_height) as block_age,
+          count(*)
+      FROM ordinals
+      WHERE delegate IS NOT NULL 
+      AND parents = '{}'
+      AND genesis_height > ((SELECT max FROM max_height) - 1440)
+      AND content_category IN ('image', 'html')
+      GROUP BY delegate;
+
+      --parents
+      CREATE TABLE trending_parents AS
+      WITH max_height AS (
+          SELECT MAX(genesis_height) as max FROM ordinals
+      )
+      SELECT
+          parents,
+          SUM(genesis_fee) as fee,
+          SUM(CASE WHEN delegate is null THEN content_length ELSE 580 END) as size,
+          (SELECT max FROM max_height) - MAX(genesis_height) as block_age,
+          COUNT(*)
+      FROM ordinals
+      WHERE array_length(parents,1) > 0
+          AND genesis_height > ((SELECT max FROM max_height) - 1440)
+          AND content_category IN ('image', 'html')
+      GROUP BY parents;
+
+      --others
+      CREATE TABLE trending_others AS
+      WITH max_height AS (
+          SELECT MAX(genesis_height) as max FROM ordinals
+      ),
+      a AS (
+          SELECT
+              sha256,
+              SUM(genesis_fee) as fee,
+              SUM(CASE WHEN delegate is null THEN content_length ELSE 580 END) as size,
+              (SELECT max FROM max_height) - MAX(genesis_height) as block_age,
+              COUNT(*)
+          FROM ordinals
+          WHERE array_length(parents,1) IS NULL
+              AND delegate is NULL
+              AND genesis_height > ((SELECT max FROM max_height) - 1440)
+              AND content_category IN ('image', 'html')
+          GROUP BY sha256
+      ),
+      b as (
+          SELECT DISTINCT ON (o.sha256)
+              id,
+              sequence_number,
+              sha256
+          from ordinals o where o.sha256 in (SELECT sha256 from a)
+          order by o.sha256, sequence_number
+      )
+      SELECT a.*, b.id, b.sequence_number from a left join b on a.sha256=b.sha256;
+
+      --union
+      CREATE TABLE trending_union AS
+      SELECT
+          parents as ids,
+          fee,
+          size,
+          block_age,
+          count as child_count,
+          0 as delegate_count,
+          0 as edition_count
+      FROM trending_parents
+      UNION ALL
+      SELECT
+          ARRAY[delegate] as ids,
+          fee,
+          size,
+          block_age,
+          0 as child_count,
+          count as delegate_count,
+          0 as edition_count
+      FROM trending_delegates
+      UNION ALL
+      SELECT
+          ARRAY[id] as ids,
+          fee,
+          size,
+          block_age,
+          0 as child_count,
+          0 as delegate_count,
+          count as edition_count
+      FROM trending_others;
+
+      --summary
+      CREATE TABLE trending_summary AS
+      WITH A AS (
+          SELECT
+              ids,
+              sum(fee) as fee,
+              sum(size) as size,
+              min(block_age) as block_age,
+              sum(child_count) as child_count,
+              sum(delegate_count) as delegate_count,
+              sum(edition_count) as edition_count,
+              (30 * EXP(-0.05 * min(block_age)) + 10 * EXP(-0.001 * min(block_age))) * sum(fee) as weight
+          FROM trending_union
+          GROUP BY ids
+      )
+      SELECT 
+          *,
+          sum(weight) OVER(ORDER BY block_age)/sum(weight) OVER() AS band_end, 
+          coalesce(sum(weight) OVER(ORDER BY block_age ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS band_start
+      FROM a;
+      "#;
+    Ok(())
+  }
+
   async fn create_collection_summary_procedure(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
     conn.simple_query(
