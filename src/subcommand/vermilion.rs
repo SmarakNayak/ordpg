@@ -2355,6 +2355,7 @@ impl Vermilion {
     Self::create_collection_summary_procedure(pool.clone()).await.context("Failed to create collection summary proc")?;
     Self::create_edition_procedure(pool.clone()).await.context("Failed to create edition proc")?;
     Self::create_weights_procedure(pool.clone()).await.context("Failed to create weights proc")?;
+    Self::create_trending_weights_procedure(pool.clone()).await.context("Failed to create trending weights proc")?;
     Self::create_on_chain_collection_summary_procedure(pool.clone()).await.context("Failed to create on chain collection summary proc")?;
     Self::create_single_on_chain_collection_summary_procedure(pool.clone()).await.context("Failed to create single on chain collection summary proc")?;
 
@@ -6806,6 +6807,8 @@ impl Vermilion {
         LEFT JOIN collections c ON o.id = c.id
         LEFT JOIN collection_list l ON c.collection_symbol = l.collection_symbol;
 
+        CALL update_trending_weights();
+
         RETURN NULL;
       END;
       $$ LANGUAGE plpgsql;").await?;
@@ -7055,7 +7058,12 @@ impl Vermilion {
   
   async fn create_trending_weights_procedure(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
-    let query = r#"--
+    conn.simple_query(r"DROP PROCEDURE IF EXISTS update_trending_weights").await?;
+    conn.simple_query(r#"
+      CREATE OR REPLACE PROCEDURE update_trending_weights()
+      LANGUAGE plpgsql
+      AS $$
+      BEGIN
       DROP TABLE IF EXISTS trending_delegates;
       DROP TABLE IF EXISTS trending_parents;
       DROP TABLE IF EXISTS trending_others;
@@ -7179,7 +7187,8 @@ impl Vermilion {
           sum(weight) OVER(ORDER BY block_age)/sum(weight) OVER() AS band_end, 
           coalesce(sum(weight) OVER(ORDER BY block_age ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS band_start
       FROM a;
-      "#;
+      END;
+      $$;"#).await?;
     Ok(())
   }
 
