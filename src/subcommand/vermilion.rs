@@ -412,6 +412,24 @@ pub struct RandomInscriptionBand {
   end: f64
 }
 
+#[derive(Serialize)]
+pub struct TrendingItemActivity {
+  ids: Vec<String>,
+  block_age: i64,
+  most_recent_timestamp: i64,
+  child_count: i64,
+  delegate_count: i64,
+  edition_count: i64,
+  band_start: f64,
+  band_end: f64
+}
+
+#[derive(Serialize)]
+pub struct TrendingItem {
+  activity: TrendingItemActivity,
+  inscriptions: Vec<FullMetadata>
+}
+
 pub struct SequenceNumberStatus {
   sequence_number: u64,
   status: String
@@ -1570,6 +1588,7 @@ impl Vermilion {
           .route("/inscriptions", get(Self::inscriptions))
           .route("/random_inscription", get(Self::random_inscription))
           .route("/recent_inscriptions", get(Self::recent_inscriptions))
+          .route("/trending_feed", get(Self::trending_feed))
           .route("/inscription_last_transfer/:inscription_id", get(Self::inscription_last_transfer))
           .route("/inscription_last_transfer_number/:number", get(Self::inscription_last_transfer_number))
           .route("/inscription_transfers/:inscription_id", get(Self::inscription_transfers))
@@ -3986,6 +4005,33 @@ impl Vermilion {
     ).into_response()
   }
 
+  async fn trending_feed(n: Query<QueryNumber>, State(server_config): State<ApiServerConfig>, session: Session<SessionNullPool>) -> impl axum::response::IntoResponse {
+    let bands: Vec<(f64, f64)> = session.get("trending_bands_seen").unwrap_or(Vec::new());
+    for band in bands.iter() {
+      log::debug!("Trending Band: {:?}", band);
+    }
+    let n = n.0.n;
+    let trending_items = match Self::get_trending_feed_items(server_config.deadpool, n, bands).await {
+      Ok(trending_items) => trending_items,
+      Err(error) => {
+        log::warn!("Error getting /trending_feed: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving random inscriptions"),
+        ).into_response();
+      }
+    };
+    let band_tuples: Vec<(f64, f64)> = trending_items
+      .iter()
+      .map(|item| (item.activity.band_start, item.activity.band_end))
+      .collect();
+    session.set("trending_bands_seen", band_tuples);
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(trending_items),
+    ).into_response()
+  }
+
   async fn inscriptions(params: Query<InscriptionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     //1. parse params
     let params = ParsedInscriptionQueryParams::from(params.0);
@@ -5370,6 +5416,66 @@ impl Vermilion {
       inscriptions.push(Self::map_row_to_fullmetadata(row));
     }
     Ok(inscriptions)
+  }
+
+  async fn get_trending_feed_items(pool: deadpool, n: u32, bands: Vec<(f64, f64)>) -> anyhow::Result<Vec<TrendingItem>> {
+    let n = std::cmp::min(n, 100);
+    let mut rng = rand::rngs::StdRng::from_entropy();
+    let mut random_floats = Vec::new();
+    while random_floats.len() < n as usize {
+      let random_float = rng.gen::<f64>();
+      let mut already_seen = false;
+      for band in bands.iter() {
+        if random_float >= band.0 && random_float < band.1 {
+          already_seen = true;
+          break;
+        }
+      }
+      if !already_seen {
+        random_floats.push(random_float);
+      }
+    }
+
+    let mut set = JoinSet::new();
+    let mut trending_items = Vec::new();
+    for i in 0..n {
+      set.spawn(Self::get_trending_feed_item(pool.clone(), random_floats[i as usize]));
+    }
+    while let Some(res) = set.join_next().await {
+      let trending_item = res??;
+      trending_items.push(trending_item);
+    }
+    Ok(trending_items)
+  }
+
+  async fn get_trending_feed_item(pool: deadpool, random_float: f64) -> anyhow::Result<TrendingItem> {
+    let conn = pool.get().await?;
+    let random_inscription_band = conn.query_one(
+      "SELECT ids, block_age, most_recent_timestamp, child_count, delegate_count, edition_count, band_start, band_end from trending_summary where band_end>$1 order by band_end limit 1",
+      &[&random_float]
+    ).await?;
+    let trending_item_activity = TrendingItemActivity {
+      ids: random_inscription_band.get("ids"),
+      block_age: random_inscription_band.get("block_age"),
+      most_recent_timestamp: random_inscription_band.get("most_recent_timestamp"),
+      child_count: random_inscription_band.get("child_count"),
+      delegate_count: random_inscription_band.get("delegate_count"),
+      edition_count: random_inscription_band.get("edition_count"),
+      band_start: random_inscription_band.get("band_start"),
+      band_end: random_inscription_band.get("band_end")
+    };
+    let result = conn.query(
+      "SELECT * from ordinals_full_v where id=ANY($1)", 
+      &[&trending_item_activity.ids]
+    ).await?;
+    let mut inscriptions = Vec::new();
+    for row in result {
+      inscriptions.push(Self::map_row_to_fullmetadata(row));
+    }
+    Ok(TrendingItem {
+      inscriptions: inscriptions,
+      activity: trending_item_activity
+    })
   }
 
   fn create_inscription_query_string(base_query: String, params: ParsedInscriptionQueryParams) -> String {
@@ -7064,6 +7170,7 @@ impl Vermilion {
       LANGUAGE plpgsql
       AS $$
       BEGIN
+
       DROP TABLE IF EXISTS trending_delegates;
       DROP TABLE IF EXISTS trending_parents;
       DROP TABLE IF EXISTS trending_others;
@@ -7081,6 +7188,7 @@ impl Vermilion {
           sum(genesis_fee) as fee,
           count(*)*580 as size,
           (SELECT max FROM max_height) - max(genesis_height) as block_age,
+          max(timestamp) as most_recent_timestamp,
           count(*)
       FROM ordinals
       WHERE delegate IS NOT NULL 
@@ -7099,6 +7207,7 @@ impl Vermilion {
           SUM(genesis_fee) as fee,
           SUM(CASE WHEN delegate is null THEN content_length ELSE 580 END) as size,
           (SELECT max FROM max_height) - MAX(genesis_height) as block_age,
+          max(timestamp) as most_recent_timestamp,
           COUNT(*)
       FROM ordinals
       WHERE array_length(parents,1) > 0
@@ -7117,6 +7226,7 @@ impl Vermilion {
               SUM(genesis_fee) as fee,
               SUM(CASE WHEN delegate is null THEN content_length ELSE 580 END) as size,
               (SELECT max FROM max_height) - MAX(genesis_height) as block_age,
+              max(timestamp) as most_recent_timestamp,
               COUNT(*)
           FROM ordinals
           WHERE array_length(parents,1) IS NULL
@@ -7142,6 +7252,7 @@ impl Vermilion {
           fee,
           size,
           block_age,
+          most_recent_timestamp,
           count as child_count,
           0 as delegate_count,
           0 as edition_count
@@ -7152,6 +7263,7 @@ impl Vermilion {
           fee,
           size,
           block_age,
+          most_recent_timestamp,
           0 as child_count,
           count as delegate_count,
           0 as edition_count
@@ -7162,6 +7274,7 @@ impl Vermilion {
           fee,
           size,
           block_age,
+          most_recent_timestamp,
           0 as child_count,
           0 as delegate_count,
           count as edition_count
@@ -7175,6 +7288,7 @@ impl Vermilion {
               sum(fee) as fee,
               sum(size) as size,
               min(block_age) as block_age,
+              max(most_recent_timestamp) as most_recent_timestamp,
               sum(child_count) as child_count,
               sum(delegate_count) as delegate_count,
               sum(edition_count) as edition_count,
@@ -7187,7 +7301,7 @@ impl Vermilion {
           sum(weight) OVER(ORDER BY block_age, ids)/sum(weight) OVER() AS band_end, 
           coalesce(sum(weight) OVER(ORDER BY block_age, ids ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS band_start
       FROM a;
-      
+
       END;
       $$;"#).await?;
     Ok(())
