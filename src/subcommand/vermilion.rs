@@ -7184,9 +7184,10 @@ impl Vermilion {
       )
       SELECT 
           *,
-          sum(weight) OVER(ORDER BY block_age)/sum(weight) OVER() AS band_end, 
-          coalesce(sum(weight) OVER(ORDER BY block_age ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS band_start
+          sum(weight) OVER(ORDER BY block_age, ids)/sum(weight) OVER() AS band_end, 
+          coalesce(sum(weight) OVER(ORDER BY block_age, ids ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS band_start
       FROM a;
+      
       END;
       $$;"#).await?;
     Ok(())
