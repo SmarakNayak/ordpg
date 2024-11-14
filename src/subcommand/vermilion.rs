@@ -7285,13 +7285,13 @@ impl Vermilion {
       WITH A AS (
           SELECT
               ids,
-              sum(fee) as fee,
-              sum(size) as size,
-              min(block_age) as block_age,
+              CAST(sum(fee) AS INT8) as fee,
+              CAST(sum(size) AS INT8) as size,
+              min(block_age) AS INT8) as block_age,
               max(most_recent_timestamp) as most_recent_timestamp,
-              sum(child_count) as child_count,
-              sum(delegate_count) as delegate_count,
-              sum(edition_count) as edition_count,
+              CAST(sum(child_count) AS INT8) as child_count,
+              CAST(sum(delegate_count) AS INT8) as delegate_count,
+              CAST(sum(edition_count) AS INT8) as edition_count,
               (30 * EXP(-0.05 * min(block_age)) + 10 * EXP(-0.001 * min(block_age))) * sum(fee) as weight
           FROM trending_union
           GROUP BY ids
