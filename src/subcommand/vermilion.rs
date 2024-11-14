@@ -342,7 +342,10 @@ pub struct BootlegEdition {
   bootleg_number: i64,
   bootleg_sequence_number: i64,
   bootleg_edition: i64,
-  total: i64
+  total: i64,
+  address: String,
+  block_timestamp: i64,
+  block_number: i64
 }
 
 #[derive(Clone, Serialize)]
@@ -5209,7 +5212,17 @@ impl Vermilion {
     let conn = pool.get().await?;
     let page_size = params.page_size.unwrap_or(10);
     let offset = params.page_number.unwrap_or(0) * page_size;
-    let mut query = "select d.*, t.total from delegates d left join delegates_total t on d.delegate_id=t.delegate_id WHERE d.delegate_id=$1".to_string();
+    let mut query = r#"
+    select
+      d.*,
+      t.total,
+      a.address,
+      a.block_timestamp,
+      a.block_number
+    from delegates d
+    left join delegates_total t on d.delegate_id=t.delegate_id
+    left join addresses a on d.bootleg_id=a.id
+    WHERE d.delegate_id=$1"#.to_string();
     if page_size > 0 {
       query.push_str(format!(" LIMIT {}", page_size).as_str());
     }
@@ -5228,7 +5241,10 @@ impl Vermilion {
         bootleg_number: row.get("bootleg_number"),
         bootleg_sequence_number: row.get("bootleg_sequence_number"),
         bootleg_edition: row.get("bootleg_edition"),
-        total: row.get("total")
+        total: row.get("total"),
+        address: row.get("address"),
+        block_timestamp: row.get("block_timestamp"),
+        block_number: row.get("block_number")
       });
     }
     Ok(bootlegs)
@@ -5238,7 +5254,17 @@ impl Vermilion {
     let conn = pool.get().await?;
     let page_size = params.page_size.unwrap_or(10);
     let offset = params.page_number.unwrap_or(0) * page_size;
-    let mut query = "select d.*, t.total from delegates d left join delegates_total t on d.delegate_id=t.delegate_id WHERE d.delegate_id=(SELECT id FROM ordinals WHERE number=$1 LIMIT 1)".to_string();
+    let mut query = r#"
+    select
+      d.*,
+      t.total,
+      a.address,
+      a.block_timestamp,
+      a.block_number
+    from delegates d
+    left join delegates_total t on d.delegate_id=t.delegate_id
+    left join addresses a on d.bootleg_id=a.id
+    WHERE d.delegate_id=(SELECT id FROM ordinals WHERE number=$1 LIMIT 1)"#.to_string();
     if page_size > 0 {
       query.push_str(format!(" LIMIT {}", page_size).as_str());
     }
@@ -5257,7 +5283,10 @@ impl Vermilion {
         bootleg_number: row.get("bootleg_number"),
         bootleg_sequence_number: row.get("bootleg_sequence_number"),
         bootleg_edition: row.get("bootleg_edition"),
-        total: row.get("total")
+        total: row.get("total"),
+        address: row.get("address"),
+        block_timestamp: row.get("block_timestamp"),
+        block_number: row.get("block_number")
       });
     }
     Ok(bootlegs)
@@ -5265,8 +5294,19 @@ impl Vermilion {
 
   async fn get_bootleg_edition(pool: deadpool, inscription_id: String) -> anyhow::Result<BootlegEdition> {
     let conn = pool.get().await?;
+    let query = r#"
+    select
+      d.*,
+      t.total,
+      a.address,
+      a.block_timestamp,
+      a.block_number
+    from delegates d
+    left join delegates_total t on d.delegate_id=t.delegate_id
+    left join addresses a on d.bootleg_id=a.id
+    WHERE d.bootleg_id=$1"#;
     let result = conn.query_one(
-      "select d.*, t.total from delegates d left join delegates_total t on d.delegate_id=t.delegate_id WHERE d.bootleg_id=$1", 
+      query, 
       &[&inscription_id]
     ).await?;
     let edition = BootlegEdition {
@@ -5275,15 +5315,29 @@ impl Vermilion {
       bootleg_number: result.get("bootleg_number"),
       bootleg_sequence_number: result.get("bootleg_sequence_number"),
       bootleg_edition: result.get("bootleg_edition"),
-      total: result.get("total")
+      total: result.get("total"),
+      address: result.get("address"),
+      block_timestamp: result.get("block_timestamp"),
+      block_number: result.get("block_number")
     };
     Ok(edition)
   }
 
   async fn get_bootleg_edition_by_number(pool: deadpool, number: i64) -> anyhow::Result<BootlegEdition> {
     let conn = pool.get().await?;
+    let query = r#"
+    select
+      d.*,
+      t.total,
+      a.address,
+      a.block_timestamp,
+      a.block_number
+    from delegates d
+    left join delegates_total t on d.delegate_id=t.delegate_id
+    left join addresses a on d.bootleg_id=a.id
+    WHERE d.bootleg_id=(SELECT id FROM ordinals WHERE number=$1 LIMIT 1)"#;
     let result = conn.query_one(
-      "select d.*, t.total from delegates d left join delegates_total t on d.delegate_id=t.delegate_id WHERE d.bootleg_id=(SELECT id FROM ordinals WHERE number=$1 LIMIT 1)", 
+      query, 
       &[&number]
     ).await?;
     let edition = BootlegEdition {
@@ -5292,7 +5346,10 @@ impl Vermilion {
       bootleg_number: result.get("bootleg_number"),
       bootleg_sequence_number: result.get("bootleg_sequence_number"),
       bootleg_edition: result.get("bootleg_edition"),
-      total: result.get("total")
+      total: result.get("total"),
+      address: result.get("address"),
+      block_timestamp: result.get("block_timestamp"),
+      block_number: result.get("block_number")
     };
     Ok(edition)
   }
