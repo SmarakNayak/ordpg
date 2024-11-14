@@ -1601,6 +1601,8 @@ impl Vermilion {
           .route("/bootleg_edition_number/:number", get(Self::bootleg_edition_number))
           .route("/inscription_comments/:inscription_id", get(Self::inscription_comments))
           .route("/inscription_comments_number/:number", get(Self::inscription_comments_number))
+          .route("/comment/:inscription_id", get(Self::comment))
+          .route("/comment_number/:number", get(Self::comment_number))
           .route("/inscription_satribute_editions/:inscription_id", get(Self::inscription_satribute_editions))
           .route("/inscription_satribute_editions_number/:number", get(Self::inscription_satribute_editions_number)) 
           .route("/inscriptions_in_block/:block", get(Self::inscriptions_in_block))
@@ -3965,6 +3967,70 @@ impl Vermilion {
     ).into_response()
   }
 
+  async fn comment(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let content_blob = match Self::get_ordinal_comment(server_config.deadpool, inscription_id.to_string()).await {
+      Ok(content_blob) => content_blob,
+      Err(error) => {
+        log::warn!("Error getting /comment: {}", error);
+        if error.to_string().contains("unexpected number of rows"){
+          return (
+            StatusCode::NOT_FOUND,
+            format!("Inscription not found {}", inscription_id.to_string()),
+          ).into_response();
+        } else {
+          return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Error retrieving {}", inscription_id.to_string()),
+          ).into_response();
+        }
+      }
+    };
+    let bytes = content_blob.content;
+    let content_type = content_blob.content_type;
+    let content_encoding = content_blob.content_encoding;
+    let cache_control = if content_blob.sha256 == "NOT_INDEXED" {
+      "no-store, no-cache, must-revalidate, max-age=0"
+    } else {
+      "public, max-age=31536000"
+    };
+    let mut header_map = HeaderMap::new();
+    header_map.insert("content-type", content_type.parse().unwrap());
+    header_map.insert("cache-control", cache_control.parse().unwrap());
+    if let Some(encoding) = content_encoding {
+      header_map.insert("content-encoding", encoding.parse().unwrap());
+    }
+
+    (header_map, bytes).into_response()
+  }
+
+  async fn comment_number(Path(number): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let content_blob = match Self::get_ordinal_comment_by_number(server_config.deadpool,  number).await {
+      Ok(content_blob) => content_blob,
+      Err(error) => {
+        log::warn!("Error getting /comment_number: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving {}", number.to_string()),
+        ).into_response();
+      }
+    };
+    let bytes = content_blob.content;
+    let content_type = content_blob.content_type;
+    let content_encoding = content_blob.content_encoding;
+    let cache_control = if content_blob.sha256 == "NOT_INDEXED" {
+      "no-store, no-cache, must-revalidate, max-age=0"
+    } else {
+      "public, max-age=31536000"
+    };
+    let mut header_map = HeaderMap::new();
+    header_map.insert("content-type", content_type.parse().unwrap());
+    header_map.insert("cache-control", cache_control.parse().unwrap());
+    if let Some(encoding) = content_encoding {
+      header_map.insert("content-encoding", encoding.parse().unwrap());
+    }
+
+    (header_map, bytes).into_response()
+  }
 
   async fn inscription_satribute_editions(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     let editions = match Self::get_inscription_satribute_editions(server_config.deadpool, inscription_id.to_string()).await {
@@ -4995,6 +5061,34 @@ impl Vermilion {
       },
       None => {}
     }
+    let sha256 = sha256.ok_or(anyhow!("No sha256 found"))?;
+    let content = Self::get_ordinal_content_by_sha256(pool, sha256, content_type, content_encoding).await;
+    content
+  }
+
+  async fn get_ordinal_comment(pool: deadpool, inscription_id: String) -> anyhow::Result<ContentBlob> {
+    let conn = pool.clone().get().await?;
+    let row = conn.query_one(
+      "SELECT sha256, content_type, content_encoding FROM ordinals WHERE id=$1 LIMIT 1",
+      &[&inscription_id]
+    ).await?;
+    let sha256: Option<String> = row.get(0);
+    let content_type: Option<String> = row.get(1);
+    let content_encoding: Option<String> = row.get(2);
+    let sha256 = sha256.ok_or(anyhow!("No sha256 found"))?;
+    let content = Self::get_ordinal_content_by_sha256(pool, sha256, content_type, content_encoding).await;
+    content
+  }
+
+  async fn get_ordinal_comment_by_number(pool: deadpool, number: i64) -> anyhow::Result<ContentBlob> {
+    let conn = pool.clone().get().await?;
+    let row = conn.query_one(
+      "SELECT sha256, content_type, content_encoding FROM ordinals WHERE number=$1 LIMIT 1",
+      &[&number]
+    ).await?;
+    let sha256: Option<String> = row.get(0);
+    let content_type: Option<String> = row.get(1);
+    let content_encoding: Option<String> = row.get(2);
     let sha256 = sha256.ok_or(anyhow!("No sha256 found"))?;
     let content = Self::get_ordinal_content_by_sha256(pool, sha256, content_type, content_encoding).await;
     content
