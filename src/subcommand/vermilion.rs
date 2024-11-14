@@ -349,6 +349,19 @@ pub struct BootlegEdition {
 }
 
 #[derive(Clone, Serialize)]
+pub struct CommentEdition {
+  delegate_id: String,
+  comment_id: String,
+  comment_number: i64,
+  comment_sequence_number: i64,
+  comment_edition: i64,
+  total: i64,
+  address: String,
+  block_timestamp: i64,
+  block_number: i64
+}
+
+#[derive(Clone, Serialize)]
 pub struct InscriptionMetadataForBlock {
   id: String,
   content_length: Option<i64>,
@@ -1586,6 +1599,8 @@ impl Vermilion {
           .route("/inscription_bootlegs_number/:number", get(Self::inscription_bootlegs_number))
           .route("/bootleg_edition/:inscription_id", get(Self::bootleg_edition))
           .route("/bootleg_edition_number/:number", get(Self::bootleg_edition_number))
+          .route("/inscription_comments/:inscription_id", get(Self::inscription_comments))
+          .route("/inscription_comments_number/:number", get(Self::inscription_comments_number))
           .route("/inscription_satribute_editions/:inscription_id", get(Self::inscription_satribute_editions))
           .route("/inscription_satribute_editions_number/:number", get(Self::inscription_satribute_editions_number)) 
           .route("/inscriptions_in_block/:block", get(Self::inscriptions_in_block))
@@ -2362,6 +2377,8 @@ impl Vermilion {
     Self::create_editions_total_table(pool.clone()).await.context("Failed to create editions total table")?;
     Self::create_delegate_table(pool.clone()).await.context("Failed to create delegate table")?;
     Self::create_delegates_total_table(pool.clone()).await.context("Failed to create delegates total table")?;
+    Self::create_inscription_comments_table(pool.clone()).await.context("Failed to create inscription comments table")?;
+    Self::create_inscription_comments_total_table(pool.clone()).await.context("Failed to create inscription comments total table")?;
     Self::create_reference_table(pool.clone()).await.context("Failed to create reference table")?;
     Self::create_references_total_table(pool.clone()).await.context("Failed to create references total table")?;
     Self::create_inscription_satributes_table(pool.clone()).await.context("Failed to create inscription satributes table")?;
@@ -2636,6 +2653,34 @@ impl Vermilion {
     let conn = pool.get().await?;
     conn.simple_query(
       r"CREATE TABLE IF NOT EXISTS delegates_total (
+          delegate_id varchar(80) not null primary key,
+          total bigint
+      )").await?;
+    Ok(())
+  }
+
+  
+  pub(crate) async fn create_inscription_comments_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
+      r"CREATE TABLE IF NOT EXISTS inscription_comments (
+          delegate_id varchar(80),
+          comment_id varchar(80) not null primary key,
+          comment_number bigint,
+          comment_sequence_number bigint,
+          comment_edition bigint
+      )").await?;
+      conn.simple_query(r"
+        CREATE INDEX IF NOT EXISTS index_inscription_comments_number ON inscription_comments (comment_number);
+        CREATE INDEX IF NOT EXISTS index_inscription_comments_delegate_id ON inscription_comments (delegate_id);
+      ").await?;
+    Ok(())
+  }
+  
+  pub(crate) async fn create_inscription_comments_total_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
+      r"CREATE TABLE IF NOT EXISTS inscription_comments_total (
           delegate_id varchar(80) not null primary key,
           total bigint
       )").await?;
@@ -3819,10 +3864,10 @@ impl Vermilion {
     let delegates = match Self::get_inscription_bootlegs(server_config.deadpool, inscription_id.to_string(), params.0).await {
       Ok(delegates) => delegates,
       Err(error) => {
-        log::warn!("Error getting /inscription_delegates: {}", error);
+        log::warn!("Error getting /inscription_bootlegs: {}", error);
         return (
           StatusCode::INTERNAL_SERVER_ERROR,
-          format!("Error retrieving delegates for {}", inscription_id.to_string()),
+          format!("Error retrieving comments for {}", inscription_id.to_string()),
         ).into_response();
       }
     };
@@ -3836,10 +3881,10 @@ impl Vermilion {
     let delegates = match Self::get_inscription_bootlegs_by_number(server_config.deadpool, number, params.0).await {
       Ok(delegates) => delegates,
       Err(error) => {
-        log::warn!("Error getting /inscription_delegates_number: {}", error);
+        log::warn!("Error getting /inscription_bootlegs_number: {}", error);
         return (
           StatusCode::INTERNAL_SERVER_ERROR,
-          format!("Error retrieving delegates for {}", number),
+          format!("Error retrieving bootlegs for {}", number),
         ).into_response();
       }
     
@@ -3884,6 +3929,42 @@ impl Vermilion {
       Json(edition),
     ).into_response()
   }
+
+  async fn inscription_comments(Path(inscription_id): Path<InscriptionId>, params: Query<PaginationParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let delegates = match Self::get_inscription_comments(server_config.deadpool, inscription_id.to_string(), params.0).await {
+      Ok(delegates) => delegates,
+      Err(error) => {
+        log::warn!("Error getting /inscription_comments: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving comments for {}", inscription_id.to_string()),
+        ).into_response();
+      }
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(delegates),
+    ).into_response()
+  }
+
+  async fn inscription_comments_number(Path(number): Path<i64>, params: Query<PaginationParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let delegates = match Self::get_inscription_comments_by_number(server_config.deadpool, number, params.0).await {
+      Ok(delegates) => delegates,
+      Err(error) => {
+        log::warn!("Error getting /inscription_comments_number: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving comments for {}", number),
+        ).into_response();
+      }
+    
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(delegates),
+    ).into_response()
+  }
+
 
   async fn inscription_satribute_editions(Path(inscription_id): Path<InscriptionId>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     let editions = match Self::get_inscription_satribute_editions(server_config.deadpool, inscription_id.to_string()).await {
@@ -5354,6 +5435,90 @@ impl Vermilion {
     Ok(edition)
   }
 
+  async fn get_inscription_comments(pool: deadpool, inscription_id: String, params: PaginationParams) -> anyhow::Result<Vec<CommentEdition>> {
+    let conn = pool.get().await?;
+    let page_size = params.page_size.unwrap_or(10);
+    let offset = params.page_number.unwrap_or(0) * page_size;
+    let mut query = r#"
+    select
+      c.*,
+      t.total,
+      a.address,
+      a.block_timestamp,
+      a.block_number
+    from inscription_comments c
+    left join inscription_comments_total t on c.delegate_id=t.delegate_id
+    left join addresses a on c.comment_id=a.id
+    WHERE c.delegate_id=$1"#.to_string();
+    if page_size > 0 {
+      query.push_str(format!(" LIMIT {}", page_size).as_str());
+    }
+    if offset > 0 {
+      query.push_str(format!(" OFFSET {}", offset).as_str());
+    }
+    let result = conn.query(
+      query.as_str(), 
+      &[&inscription_id]
+    ).await?;
+    let mut comments = Vec::new();
+    for row in result {
+      comments.push(CommentEdition {
+        delegate_id: row.get("delegate_id"),
+        comment_id: row.get("comment_id"),
+        comment_number: row.get("comment_number"),
+        comment_sequence_number: row.get("comment_sequence_number"),
+        comment_edition: row.get("comment_edition"),
+        total: row.get("total"),
+        address: row.get("address"),
+        block_timestamp: row.get("block_timestamp"),
+        block_number: row.get("block_number")
+      });
+    }
+    Ok(comments)
+  }
+
+  async fn get_inscription_comments_by_number(pool: deadpool, number: i64, params: PaginationParams) -> anyhow::Result<Vec<CommentEdition>> {
+    let conn = pool.get().await?;
+    let page_size = params.page_size.unwrap_or(10);
+    let offset = params.page_number.unwrap_or(0) * page_size;
+    let mut query = r#"
+    select
+      c.*,
+      t.total,
+      a.address,
+      a.block_timestamp,
+      a.block_number
+    from inscription_comments c
+    left join inscription_comments_total t on c.delegate_id=t.delegate_id
+    left join addresses a on c.comment_id=a.id
+    WHERE c.delegate_id=(SELECT id FROM ordinals WHERE number=$1 LIMIT 1)"#.to_string();
+    if page_size > 0 {
+      query.push_str(format!(" LIMIT {}", page_size).as_str());
+    }
+    if offset > 0 {
+      query.push_str(format!(" OFFSET {}", offset).as_str());
+    }
+    let result = conn.query(
+      query.as_str(), 
+      &[&number]
+    ).await?;
+    let mut comments = Vec::new();
+    for row in result {
+      comments.push(CommentEdition {
+        delegate_id: row.get("delegate_id"),
+        comment_id: row.get("comment_id"),
+        comment_number: row.get("comment_number"),
+        comment_sequence_number: row.get("comment_sequence_number"),
+        comment_edition: row.get("comment_edition"),
+        total: row.get("total"),
+        address: row.get("address"),
+        block_timestamp: row.get("block_timestamp"),
+        block_number: row.get("block_number")
+      });
+    }
+    Ok(comments)
+  }
+
   async fn get_inscription_satribute_editions(pool: deadpool, inscription_id: String) -> anyhow::Result<Vec<SatributeEdition>> {
     let conn = pool.get().await?;
     let result = conn.query(
@@ -6494,7 +6659,6 @@ impl Vermilion {
     Ok(inscriptions)
   }
 
-
   async fn get_block_statistics(pool: deadpool, block: i64) -> anyhow::Result<CombinedBlockStats> {
     let conn = pool.get().await?;
     let result = conn.query_one(
@@ -6735,6 +6899,7 @@ impl Vermilion {
     let conn = pool.get().await?;
     conn.simple_query(r"CREATE OR REPLACE FUNCTION before_metadata_insert() RETURNS TRIGGER AS $$
       DECLARE previous_delegate_total INTEGER;
+      DECLARE previous_comment_total INTEGER;
       DECLARE ref_id VARCHAR(80);
       DECLARE previous_reference_total INTEGER;
       DECLARE inscription_satribute VARCHAR(30);
@@ -6744,7 +6909,7 @@ impl Vermilion {
         LOCK TABLE ordinals IN EXCLUSIVE MODE;
         -- RAISE NOTICE 'insert_metadata: lock acquired';
 
-        -- 1. Update delegates
+        -- 1a. Update delegates
         IF NEW.delegate IS NOT NULL THEN
           -- Get the previous total for the same delegate id
           SELECT total INTO previous_delegate_total FROM delegates_total WHERE delegate_id = NEW.delegate;
@@ -6753,6 +6918,18 @@ impl Vermilion {
           ON CONFLICT (delegate_id) DO UPDATE SET total = EXCLUDED.total;
           -- Insert the new delegate
           INSERT INTO delegates (delegate_id, bootleg_id, bootleg_number, bootleg_sequence_number, bootleg_edition) VALUES (NEW.delegate, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_delegate_total, 0) + 1)
+          ON CONFLICT DO NOTHING;
+        END IF;
+
+        -- 1b. Update comments
+        IF NEW.delegate IS NOT NULL AND NEW.content_length > 0 THEN
+          -- Get the previous total for the same delegate id
+          SELECT total INTO previous_comment_total FROM inscription_comments_total WHERE delegate_id = NEW.delegate;
+          -- Insert or update the total in inscription_comments_total
+          INSERT INTO inscription_comments_total (delegate_id, total) VALUES (NEW.delegate, COALESCE(previous_comment_total, 0) + 1)
+          ON CONFLICT (delegate_id) DO UPDATE SET total = EXCLUDED.total +1;
+          -- Insert the new delegate
+          INSERT INTO delegates (delegate_id, comment_id, comment_number, comment_sequence_number, comment_edition) VALUES (NEW.delegate, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_comment_total, 0) + 1)
           ON CONFLICT DO NOTHING;
         END IF;
 
