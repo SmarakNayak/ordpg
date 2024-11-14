@@ -3972,10 +3972,10 @@ impl Vermilion {
       Ok(content_blob) => content_blob,
       Err(error) => {
         log::warn!("Error getting /comment: {}", error);
-        if error.to_string().contains("unexpected number of rows"){
+        if error.to_string().contains("unexpected number of rows") || error.to_string().contains("not found") {
           return (
             StatusCode::NOT_FOUND,
-            format!("Inscription not found {}", inscription_id.to_string()),
+            format!("Comment not found {}", inscription_id.to_string()),
           ).into_response();
         } else {
           return (
@@ -4008,10 +4008,17 @@ impl Vermilion {
       Ok(content_blob) => content_blob,
       Err(error) => {
         log::warn!("Error getting /comment_number: {}", error);
-        return (
-          StatusCode::INTERNAL_SERVER_ERROR,
-          format!("Error retrieving {}", number.to_string()),
-        ).into_response();
+        if error.to_string().contains("unexpected number of rows") || error.to_string().contains("not found") {
+          return (
+            StatusCode::NOT_FOUND,
+            format!("Comment not found {}", number),
+          ).into_response();
+        } else {
+          return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Error retrieving {}", number),
+          ).into_response();
+        }
       }
     };
     let bytes = content_blob.content;
@@ -5069,13 +5076,15 @@ impl Vermilion {
   async fn get_ordinal_comment(pool: deadpool, inscription_id: String) -> anyhow::Result<ContentBlob> {
     let conn = pool.clone().get().await?;
     let row = conn.query_one(
-      "SELECT sha256, content_type, content_encoding FROM ordinals WHERE id=$1 LIMIT 1",
+      "SELECT sha256, content_type, content_encoding, delegate FROM ordinals WHERE id=$1 LIMIT 1",
       &[&inscription_id]
     ).await?;
     let sha256: Option<String> = row.get(0);
     let content_type: Option<String> = row.get(1);
     let content_encoding: Option<String> = row.get(2);
-    let sha256 = sha256.ok_or(anyhow!("No sha256 found"))?;
+    let delegate: Option<String> = row.get(3);
+    let _delegate = delegate.ok_or(anyhow!("Delegate not found"))?;
+    let sha256 = sha256.ok_or(anyhow!("Sha256 not found"))?;
     let content = Self::get_ordinal_content_by_sha256(pool, sha256, content_type, content_encoding).await;
     content
   }
@@ -5083,13 +5092,15 @@ impl Vermilion {
   async fn get_ordinal_comment_by_number(pool: deadpool, number: i64) -> anyhow::Result<ContentBlob> {
     let conn = pool.clone().get().await?;
     let row = conn.query_one(
-      "SELECT sha256, content_type, content_encoding FROM ordinals WHERE number=$1 LIMIT 1",
+      "SELECT sha256, content_type, content_encoding, delegate FROM ordinals WHERE number=$1 LIMIT 1",
       &[&number]
     ).await?;
     let sha256: Option<String> = row.get(0);
     let content_type: Option<String> = row.get(1);
     let content_encoding: Option<String> = row.get(2);
-    let sha256 = sha256.ok_or(anyhow!("No sha256 found"))?;
+    let delegate: Option<String> = row.get(3);
+    let _delegate = delegate.ok_or(anyhow!("Delegate not found"))?;
+    let sha256 = sha256.ok_or(anyhow!("Sha256 not found"))?;
     let content = Self::get_ordinal_content_by_sha256(pool, sha256, content_type, content_encoding).await;
     content
   }
