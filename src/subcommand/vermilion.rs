@@ -4017,7 +4017,7 @@ impl Vermilion {
         log::warn!("Error getting /trending_feed: {}", error);
         return (
           StatusCode::INTERNAL_SERVER_ERROR,
-          format!("Error retrieving random inscriptions"),
+          format!("Error retrieving trending feed"),
         ).into_response();
       }
     };
@@ -7298,8 +7298,8 @@ impl Vermilion {
       )
       SELECT 
           *,
-          sum(weight) OVER(ORDER BY block_age, ids)/sum(weight) OVER() AS band_end, 
-          coalesce(sum(weight) OVER(ORDER BY block_age, ids ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS band_start
+          CAST(sum(weight) OVER(ORDER BY block_age, ids)/sum(weight) OVER() AS FLOAT8) AS band_end, 
+          CAST(coalesce(sum(weight) OVER(ORDER BY block_age, ids ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS FLOAT8) AS band_start
       FROM a;
 
       END;
