@@ -1563,6 +1563,7 @@ impl Vermilion {
 
         let app = Router::new()
           .route("/random_inscriptions", get(Self::random_inscriptions))          
+          .route("/trending_feed", get(Self::trending_feed))
           .layer(SessionLayer::new(session_store))
           .route("/", get(Self::root))
           .route("/home", get(Self::home))
@@ -1588,7 +1589,6 @@ impl Vermilion {
           .route("/inscriptions", get(Self::inscriptions))
           .route("/random_inscription", get(Self::random_inscription))
           .route("/recent_inscriptions", get(Self::recent_inscriptions))
-          .route("/trending_feed", get(Self::trending_feed))
           .route("/inscription_last_transfer/:inscription_id", get(Self::inscription_last_transfer))
           .route("/inscription_last_transfer_number/:number", get(Self::inscription_last_transfer_number))
           .route("/inscription_transfers/:inscription_id", get(Self::inscription_transfers))
