@@ -5403,11 +5403,12 @@ impl Vermilion {
       d.*,
       t.total,
       a.address,
-      a.block_timestamp,
-      a.block_number
+      o.timestamp as block_timestamp,
+      o.genesis_height as block_number
     from delegates d
     left join delegates_total t on d.delegate_id=t.delegate_id
     left join addresses a on d.bootleg_id=a.id
+    left join ordinals o on d.bootleg_id=o.id
     WHERE d.delegate_id=$1"#.to_string();
     if page_size > 0 {
       query.push_str(format!(" LIMIT {}", page_size).as_str());
@@ -5445,11 +5446,12 @@ impl Vermilion {
       d.*,
       t.total,
       a.address,
-      a.block_timestamp,
-      a.block_number
+      o.timestamp as block_timestamp,
+      o.genesis_height as block_number
     from delegates d
     left join delegates_total t on d.delegate_id=t.delegate_id
     left join addresses a on d.bootleg_id=a.id
+    left join ordinals o on d.bootleg_id=o.id
     WHERE d.delegate_id=(SELECT id FROM ordinals WHERE number=$1 LIMIT 1)"#.to_string();
     if page_size > 0 {
       query.push_str(format!(" LIMIT {}", page_size).as_str());
@@ -5549,11 +5551,12 @@ impl Vermilion {
       c.*,
       t.total,
       a.address,
-      a.block_timestamp,
-      a.block_number
+      o.timestamp as block_timestamp,
+      o.genesis_height as block_number
     from inscription_comments c
     left join inscription_comments_total t on c.delegate_id=t.delegate_id
     left join addresses a on c.comment_id=a.id
+    left join ordinals o on c.comment_id=o.id
     WHERE c.delegate_id=$1"#.to_string();
     if page_size > 0 {
       query.push_str(format!(" LIMIT {}", page_size).as_str());
@@ -5591,11 +5594,12 @@ impl Vermilion {
       c.*,
       t.total,
       a.address,
-      a.block_timestamp,
-      a.block_number
+      o.timestamp as block_timestamp,
+      o.genesis_height as block_number
     from inscription_comments c
     left join inscription_comments_total t on c.delegate_id=t.delegate_id
     left join addresses a on c.comment_id=a.id
+    left join ordinals o on c.comment_id=o.id
     WHERE c.delegate_id=(SELECT id FROM ordinals WHERE number=$1 LIMIT 1)"#.to_string();
     if page_size > 0 {
       query.push_str(format!(" LIMIT {}", page_size).as_str());
