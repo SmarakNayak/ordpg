@@ -7641,11 +7641,11 @@ impl Vermilion {
           SELECT
               ids,
               id,
-              sum(fee) as fee,
-              sum(size) as size,
+              CAST(sum(fee) AS INT8) as fee,
+              CAST(sum(size) AS INT8) as size,
               min(block_age) as block_age,
               max(most_recent_timestamp) as most_recent_timestamp,
-              (15 * EXP(-0.01 * min(block_age)) + 25 * EXP(-0.0005 * min(block_age))) * sum(fee) * (sum(orphan_delegate_count) + 1) as weight
+              CAST((15 * EXP(-0.01 * min(block_age)) + 25 * EXP(-0.0005 * min(block_age))) * sum(fee) * (sum(orphan_delegate_count) + 1) AS FLOAT8) as weight
           FROM trending_union
           GROUP BY ids, id
       ), children AS (
@@ -7658,11 +7658,11 @@ impl Vermilion {
       )
       SELECT 
           a.*,
-          c.children_count,
-          d.total as delegate_count,
-          ic.total as comment_count,
-          sum(weight) OVER(ORDER BY block_age, ids)/sum(weight) OVER() AS band_end, 
-          coalesce(sum(weight) OVER(ORDER BY block_age, ids ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS band_start
+          CAST(c.children_count AS INT8),
+          CAST(d.total AS INT8) as delegate_count,
+          CAST(ic.total AS INT8) as comment_count,
+          CAST(sum(weight) OVER(ORDER BY block_age, ids)/sum(weight) OVER() AS FLOAT8) AS band_end, 
+          CAST(coalesce(sum(weight) OVER(ORDER BY block_age, ids ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS FLOAT8) AS band_start
       FROM a
       left join delegates_total d on d.delegate_id=a.id
       left join inscription_comments_total ic on ic.delegate_id=a.id
