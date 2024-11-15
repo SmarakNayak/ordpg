@@ -7635,7 +7635,7 @@ impl Vermilion {
           0 as orphan_delegate_count
       FROM trending_others;
 
-      --summary
+      --summary (sum(orphan_delegate_count) + 1)
       CREATE TABLE trending_summary AS
       WITH A AS (
           SELECT
@@ -7645,7 +7645,7 @@ impl Vermilion {
               CAST(sum(size) AS INT8) as size,
               min(block_age) as block_age,
               max(most_recent_timestamp) as most_recent_timestamp,
-              CAST((15 * EXP(-0.01 * min(block_age)) + 25 * EXP(-0.0005 * min(block_age))) * sum(fee) * (sum(orphan_delegate_count) + 1) AS FLOAT8) as weight
+              CAST((15 * EXP(-0.01 * min(block_age)) + 25 * EXP(-0.0005 * min(block_age))) * sum(fee) AS FLOAT8) as weight
           FROM trending_union
           GROUP BY ids, id
       ), children AS (
