@@ -7658,9 +7658,9 @@ impl Vermilion {
       )
       SELECT 
           a.*,
-          CAST(c.children_count AS INT8),
-          CAST(d.total AS INT8) as delegate_count,
-          CAST(ic.total AS INT8) as comment_count,
+          CAST(coalesce(c.children_count, 0) AS INT8) as children_count,
+          CAST(coalesce(d.total, 0) AS INT8) as delegate_count,
+          CAST(coalesce(ic.total, 0) AS INT8) as comment_count,
           CAST(sum(weight) OVER(ORDER BY block_age, ids)/sum(weight) OVER() AS FLOAT8) AS band_end, 
           CAST(coalesce(sum(weight) OVER(ORDER BY block_age, ids ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS FLOAT8) AS band_start
       FROM a
