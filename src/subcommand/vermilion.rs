@@ -433,9 +433,9 @@ pub struct TrendingItemActivity {
   ids: Vec<String>,
   block_age: i64,
   most_recent_timestamp: i64,
-  child_count: i64,
+  children_count: i64,
   delegate_count: i64,
-  edition_count: i64,
+  comment_count: i64,
   band_start: f64,
   band_end: f64
 }
@@ -5782,16 +5782,16 @@ impl Vermilion {
   async fn get_trending_feed_item(pool: deadpool, random_float: f64) -> anyhow::Result<TrendingItem> {
     let conn = pool.get().await?;
     let random_inscription_band = conn.query_one(
-      "SELECT ids, block_age, most_recent_timestamp, child_count, delegate_count, edition_count, band_start, band_end from trending_summary where band_end>$1 order by band_end limit 1",
+      "SELECT ids, block_age, most_recent_timestamp, children_count, delegate_count, comment_count, band_start, band_end from trending_summary where band_end>$1 order by band_end limit 1",
       &[&random_float]
     ).await?;
     let trending_item_activity = TrendingItemActivity {
       ids: random_inscription_band.get("ids"),
       block_age: random_inscription_band.get("block_age"),
       most_recent_timestamp: random_inscription_band.get("most_recent_timestamp"),
-      child_count: random_inscription_band.get("child_count"),
+      children_count: random_inscription_band.get("children_count"),
       delegate_count: random_inscription_band.get("delegate_count"),
-      edition_count: random_inscription_band.get("edition_count"),
+      comment_count: random_inscription_band.get("comment_count"),
       band_start: random_inscription_band.get("band_start"),
       band_end: random_inscription_band.get("band_end")
     };
@@ -7525,20 +7525,35 @@ impl Vermilion {
       WITH max_height AS (
           SELECT max(genesis_height) as max 
           FROM ordinals
+      ), a AS (
+          SELECT 
+              o1.delegate,
+              sum(o1.genesis_fee) as fee,
+              sum(o1.content_length) as size,
+              (SELECT max FROM max_height) - max(o1.genesis_height) as block_age,
+              max(o1.timestamp) as most_recent_timestamp
+          FROM ordinals o1
+          LEFT JOIN ordinals o2
+          ON o1.delegate=o2.id
+          WHERE o1.delegate IS NOT NULL 
+          AND o1.parents = '{}'
+          AND o1.genesis_height > ((SELECT max FROM max_height) - 2016)
+          AND o2.content_category IN ('image', 'html')
+          GROUP BY o1.delegate
+      ), b AS (
+          SELECT 
+              delegate, 
+              count(*) as orphan_delegate_count
+          from ordinals
+          where delegate in (SELECT delegate from a)
+          AND parents = '{}'
+          group by delegate
       )
       SELECT 
-          delegate,
-          sum(genesis_fee) as fee,
-          count(*)*580 as size,
-          (SELECT max FROM max_height) - max(genesis_height) as block_age,
-          max(timestamp) as most_recent_timestamp,
-          count(*)
-      FROM ordinals
-      WHERE delegate IS NOT NULL 
-      AND parents = '{}'
-      AND genesis_height > ((SELECT max FROM max_height) - 1440)
-      AND content_category IN ('image', 'html')
-      GROUP BY delegate;
+          a.*, 
+          b.orphan_delegate_count
+      FROM a 
+      LEFT JOIN b ON a.delegate=b.delegate;
 
       --parents
       CREATE TABLE trending_parents AS
@@ -7550,11 +7565,10 @@ impl Vermilion {
           SUM(genesis_fee) as fee,
           SUM(CASE WHEN delegate is null THEN content_length ELSE 580 END) as size,
           (SELECT max FROM max_height) - MAX(genesis_height) as block_age,
-          max(timestamp) as most_recent_timestamp,
-          COUNT(*)
+          max(timestamp) as most_recent_timestamp
       FROM ordinals
       WHERE array_length(parents,1) > 0
-          AND genesis_height > ((SELECT max FROM max_height) - 1440)
+          AND genesis_height > ((SELECT max FROM max_height) - 2016)
           AND content_category IN ('image', 'html')
       GROUP BY parents;
 
@@ -7569,12 +7583,11 @@ impl Vermilion {
               SUM(genesis_fee) as fee,
               SUM(CASE WHEN delegate is null THEN content_length ELSE 580 END) as size,
               (SELECT max FROM max_height) - MAX(genesis_height) as block_age,
-              max(timestamp) as most_recent_timestamp,
-              COUNT(*)
+              max(timestamp) as most_recent_timestamp
           FROM ordinals
           WHERE array_length(parents,1) IS NULL
               AND delegate is NULL
-              AND genesis_height > ((SELECT max FROM max_height) - 1440)
+              AND genesis_height > ((SELECT max FROM max_height) - 2016)
               AND content_category IN ('image', 'html')
           GROUP BY sha256
       ),
@@ -7592,35 +7605,34 @@ impl Vermilion {
       CREATE TABLE trending_union AS
       SELECT
           parents as ids,
+          CASE 
+              WHEN array_length(parents, 1) = 1 THEN parents[1] ELSE NULL
+          END as id,
           fee,
           size,
           block_age,
           most_recent_timestamp,
-          count as child_count,
-          0 as delegate_count,
-          0 as edition_count
+          0 as orphan_delegate_count
       FROM trending_parents
       UNION ALL
       SELECT
           ARRAY[delegate] as ids,
+          delegate as id,
           fee,
           size,
           block_age,
           most_recent_timestamp,
-          0 as child_count,
-          count as delegate_count,
-          0 as edition_count
+          orphan_delegate_count
       FROM trending_delegates
       UNION ALL
       SELECT
           ARRAY[id] as ids,
+          id,
           fee,
           size,
           block_age,
           most_recent_timestamp,
-          0 as child_count,
-          0 as delegate_count,
-          count as edition_count
+          0 as orphan_delegate_count
       FROM trending_others;
 
       --summary
@@ -7628,22 +7640,33 @@ impl Vermilion {
       WITH A AS (
           SELECT
               ids,
-              CAST(sum(fee) AS INT8) as fee,
-              CAST(sum(size) AS INT8) as size,
+              id,
+              sum(fee) as fee,
+              sum(size) as size,
               min(block_age) as block_age,
               max(most_recent_timestamp) as most_recent_timestamp,
-              CAST(sum(child_count) AS INT8) as child_count,
-              CAST(sum(delegate_count) AS INT8) as delegate_count,
-              CAST(sum(edition_count) AS INT8) as edition_count,
-              CAST((30 * EXP(-0.05 * min(block_age)) + 10 * EXP(-0.001 * min(block_age))) * sum(fee) AS INT8) as weight
+              (15 * EXP(-0.01 * min(block_age)) + 25 * EXP(-0.0005 * min(block_age))) * sum(fee) * (sum(orphan_delegate_count) + 1) as weight
           FROM trending_union
-          GROUP BY ids
+          GROUP BY ids, id
+      ), children AS (
+          SELECT
+              parents,
+              count(*) as children_count
+              from ordinals
+              WHERE parents in (SELECT ids from a)
+              group by parents
       )
       SELECT 
-          *,
-          CAST(sum(weight) OVER(ORDER BY block_age, ids)/sum(weight) OVER() AS FLOAT8) AS band_end, 
-          CAST(coalesce(sum(weight) OVER(ORDER BY block_age, ids ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS FLOAT8) AS band_start
-      FROM a;
+          a.*,
+          c.children_count,
+          d.total as delegate_count,
+          ic.total as comment_count,
+          sum(weight) OVER(ORDER BY block_age, ids)/sum(weight) OVER() AS band_end, 
+          coalesce(sum(weight) OVER(ORDER BY block_age, ids ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS band_start
+      FROM a
+      left join delegates_total d on d.delegate_id=a.id
+      left join inscription_comments_total ic on ic.delegate_id=a.id
+      left join children c on c.parents = a.ids;
 
       END;
       $$;"#).await?;
