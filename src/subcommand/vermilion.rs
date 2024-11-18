@@ -374,7 +374,7 @@ pub struct InscriptionMetadataForBlock {
 
 #[derive(Deserialize)]
 pub struct QueryNumber {
-  n: u32
+  n: Option<u32>
 }
 
 #[derive(Deserialize)]
@@ -4174,7 +4174,7 @@ impl Vermilion {
     for band in bands.iter() {
       log::debug!("Band: {:?}", band);
     }
-    let n = n.0.n;
+    let n = n.0.n.unwrap_or(20);
     let (inscription_numbers, new_bands) = match Self::get_random_inscriptions(server_config.deadpool, n, bands).await {
       Ok((inscription_numbers, new_bands)) => (inscription_numbers, new_bands),
       Err(error) => {
@@ -4193,7 +4193,7 @@ impl Vermilion {
   }
 
   async fn recent_inscriptions(n: Query<QueryNumber>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let n = n.0.n as i64;
+    let n = n.0.n.unwrap_or(20) as i64;
     let inscriptions = match Self::get_recent_inscriptions(server_config.deadpool, n).await {
       Ok(inscriptions) => inscriptions,
       Err(error) => {
@@ -4211,7 +4211,7 @@ impl Vermilion {
   }
 
   async fn recent_boosts(n: Query<QueryNumber>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let n = n.0.n as i64;
+    let n = n.0.n.unwrap_or(20) as i64;
     let boosts = match Self::get_recent_boosts(server_config.deadpool, n).await {
       Ok(boosts) => boosts,
       Err(error) => {
@@ -4250,7 +4250,7 @@ impl Vermilion {
     for band in bands.iter() {
       log::debug!("Trending Band: {:?}", band);
     }
-    let n = n.0.n;
+    let n = n.0.n.unwrap_or(20);
     let trending_items = match Self::get_trending_feed_items(server_config.deadpool, n, bands).await {
       Ok(trending_items) => trending_items,
       Err(error) => {
