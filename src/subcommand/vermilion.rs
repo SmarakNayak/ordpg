@@ -4193,7 +4193,7 @@ impl Vermilion {
   }
 
   async fn recent_inscriptions(n: Query<QueryNumber>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let n = n.0.n;
+    let n = n.0.n as i64;
     let inscriptions = match Self::get_recent_inscriptions(server_config.deadpool, n).await {
       Ok(inscriptions) => inscriptions,
       Err(error) => {
@@ -4211,7 +4211,7 @@ impl Vermilion {
   }
 
   async fn recent_boosts(n: Query<QueryNumber>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let n = n.0.n;
+    let n = n.0.n as i64;
     let boosts = match Self::get_recent_boosts(server_config.deadpool, n).await {
       Ok(boosts) => boosts,
       Err(error) => {
@@ -5789,7 +5789,7 @@ impl Vermilion {
   }
 
   async fn get_random_inscriptions(pool: deadpool, n: u32, mut bands: Vec<(f64, f64)>) -> anyhow::Result<(Vec<FullMetadata>, Vec<(f64, f64)>)> {
-    let n = std::cmp::min(n, 100);
+    let n: u32 = std::cmp::min(n, 100);
     let mut rng = rand::rngs::StdRng::from_entropy();
     let mut random_floats = Vec::new();
     while random_floats.len() < n as usize {
@@ -5819,7 +5819,7 @@ impl Vermilion {
     Ok((random_metadatas, bands))
   }
 
-  async fn get_recent_inscriptions(pool: deadpool, n: u32) -> anyhow::Result<Vec<FullMetadata>> {
+  async fn get_recent_inscriptions(pool: deadpool, n: i64) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
     let result = conn.query(
       "SELECT * FROM ordinals_full_v order by sequence_number desc limit $1", 
@@ -5832,7 +5832,7 @@ impl Vermilion {
     Ok(inscriptions)
   }
 
-  async fn get_recent_boosts(pool: deadpool, n: u32) -> anyhow::Result<Vec<BoostFullMetadata>> {
+  async fn get_recent_boosts(pool: deadpool, n: i64) -> anyhow::Result<Vec<BoostFullMetadata>> {
     let conn = pool.get().await?;
     let result = conn.query(
       "SELECT o.*, a.address, d.bootleg_edition from delegates d left join addresses a on d.bootleg_id=a.id left join ordinals o on o.id=d.bootleg_id order by d.bootleg_sequence_number desc limit $1", 
