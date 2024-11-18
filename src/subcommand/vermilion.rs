@@ -647,6 +647,43 @@ pub struct FullMetadata {
 }
 
 #[derive(Serialize)]
+pub struct BoostFullMetadata {  
+  sequence_number: i64,
+  id: String,
+  content_length: Option<i64>,
+  content_type: Option<String>,
+  content_encoding: Option<String>,
+  content_category: String,
+  genesis_fee: i64,
+  genesis_height: i64,
+  genesis_transaction: String,
+  pointer: Option<i64>,
+  number: i64,
+  parents: Vec<String>,
+  delegate: Option<String>,
+  metaprotocol: Option<String>,
+  on_chain_metadata: serde_json::Value,
+  sat: Option<i64>,
+  sat_block: Option<i64>,
+  satributes: Vec<String>,
+  charms: Vec<String>,
+  timestamp: i64,
+  sha256: Option<String>,
+  text: Option<String>,
+  referenced_ids: Vec<String>,
+  is_json: bool,
+  is_maybe_json: bool,
+  is_bitmap_style: bool,
+  is_recursive: bool,
+  spaced_rune: Option<String>,
+  collection_symbol: Option<String>,
+  off_chain_metadata: Option<serde_json::Value>,
+  collection_name: Option<String>,
+  address: Option<String>,
+  bootleg_edition: Option<i64>
+}
+
+#[derive(Serialize)]
 pub struct SearchResult {
   collections: Vec<CollectionSummary>,
   inscription: Option<FullMetadata>,
@@ -1609,6 +1646,7 @@ impl Vermilion {
           .route("/inscriptions", get(Self::inscriptions))
           .route("/random_inscription", get(Self::random_inscription))
           .route("/recent_inscriptions", get(Self::recent_inscriptions))
+          .route("/recent_boosts", get(Self::recent_boosts))
           .route("/inscription_last_transfer/:inscription_id", get(Self::inscription_last_transfer))
           .route("/inscription_last_transfer_number/:number", get(Self::inscription_last_transfer_number))
           .route("/inscription_transfers/:inscription_id", get(Self::inscription_transfers))
@@ -2642,11 +2680,14 @@ impl Vermilion {
           bootleg_id varchar(80) not null primary key,
           bootleg_number bigint,
           bootleg_sequence_number bigint,
+          bootleg_block_height bigint,
           bootleg_edition bigint
       )").await?;
       conn.simple_query(r"
         CREATE INDEX IF NOT EXISTS index_delegates_number ON delegates (bootleg_number);
         CREATE INDEX IF NOT EXISTS index_delegates_delegate_id ON delegates (delegate_id);
+        CREATE INDEX IF NOT EXISTS index_delegates_sequence_number ON delegates (bootleg_sequence_number);
+        CREATE INDEX IF NOT EXISTS index_delegates_block_height ON delegates (bootleg_block_height);
       ").await?;
     Ok(())
   }
@@ -4159,6 +4200,24 @@ impl Vermilion {
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(inscriptions),
+    ).into_response()
+  }
+
+  async fn recent_boosts(n: Query<QueryNumber>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let n = n.0.n;
+    let boosts = match Self::get_recent_boosts(server_config.deadpool, n).await {
+      Ok(boosts) => boosts,
+      Err(error) => {
+        log::warn!("Error getting /recent_boosts: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving recent boosts"),
+        ).into_response();
+      }
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(boosts),
     ).into_response()
   }
 
@@ -5749,6 +5808,54 @@ impl Vermilion {
     Ok(inscriptions)
   }
 
+  async fn get_recent_boosts(pool: deadpool, n: u32) -> anyhow::Result<Vec<BoostFullMetadata>> {
+    let conn = pool.get().await?;
+    let result = conn.query(
+      "SELECT o.*, a.address, d.bootleg_edition from delegates d left join addresses a on d.bootleg_id=a.id left join ordinals o on o.id=d.bootleg_id order by d.bootleg_sequence_number desc limit $1", 
+      &[&n]
+    ).await?;
+    let mut inscriptions = Vec::new();
+    for row in result {
+      let inscription = BoostFullMetadata {
+        id: row.get("id"),
+        content_length: row.get("content_length"),
+        content_type: row.get("content_type"), 
+        content_encoding: row.get("content_encoding"),
+        content_category: row.get("content_category"),
+        genesis_fee: row.get("genesis_fee"),
+        genesis_height: row.get("genesis_height"),
+        genesis_transaction: row.get("genesis_transaction"),
+        pointer: row.get("pointer"),
+        number: row.get("number"),
+        sequence_number: row.get("sequence_number"),
+        parents: row.get("parents"),
+        delegate: row.get("delegate"),
+        metaprotocol: row.get("metaprotocol"),
+        on_chain_metadata: row.get("on_chain_metadata"),
+        sat: row.get("sat"),
+        sat_block: row.get("sat_block"),
+        satributes: row.get("satributes"),
+        charms: row.get("charms"),
+        timestamp: row.get("timestamp"),
+        sha256: row.get("sha256"),
+        text: row.get("text"),
+        referenced_ids: row.get("referenced_ids"),
+        is_json: row.get("is_json"),
+        is_maybe_json: row.get("is_maybe_json"),
+        is_bitmap_style: row.get("is_bitmap_style"),
+        is_recursive: row.get("is_recursive"),
+        spaced_rune: row.get("spaced_rune"),
+        collection_symbol: row.get("collection_symbol"),
+        off_chain_metadata: row.get("off_chain_metadata"),
+        collection_name: row.get("collection_name"),
+        address: row.get("address"),
+        bootleg_edition: row.get("bootleg_edition")
+      };
+      inscriptions.push(inscription);
+    }
+    Ok(inscriptions)
+  }
+
   async fn get_trending_feed_items(pool: deadpool, n: u32, bands: Vec<(f64, f64)>) -> anyhow::Result<Vec<TrendingItem>> {
     let n = std::cmp::min(n, 100);
     let mut rng = rand::rngs::StdRng::from_entropy();
@@ -7026,7 +7133,7 @@ impl Vermilion {
           INSERT INTO delegates_total (delegate_id, total) VALUES (NEW.delegate, COALESCE(previous_delegate_total, 0) + 1)
           ON CONFLICT (delegate_id) DO UPDATE SET total = EXCLUDED.total;
           -- Insert the new delegate
-          INSERT INTO delegates (delegate_id, bootleg_id, bootleg_number, bootleg_sequence_number, bootleg_edition) VALUES (NEW.delegate, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_delegate_total, 0) + 1)
+          INSERT INTO delegates (delegate_id, bootleg_id, bootleg_number, bootleg_sequence_number, bootleg_block_height, bootleg_edition) VALUES (NEW.delegate, NEW.id, NEW.number, NEW.sequence_number, NEW.genesis_height, COALESCE(previous_delegate_total, 0) + 1)
           ON CONFLICT DO NOTHING;
         END IF;
 
