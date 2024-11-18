@@ -684,6 +684,12 @@ pub struct BoostFullMetadata {
 }
 
 #[derive(Serialize)]
+pub struct LeaderboardEntry {
+  address: String,
+  count: i64
+}
+
+#[derive(Serialize)]
 pub struct SearchResult {
   collections: Vec<CollectionSummary>,
   inscription: Option<FullMetadata>,
@@ -1647,6 +1653,7 @@ impl Vermilion {
           .route("/random_inscription", get(Self::random_inscription))
           .route("/recent_inscriptions", get(Self::recent_inscriptions))
           .route("/recent_boosts", get(Self::recent_boosts))
+          .route("/boost_leaderboard", get(Self::boost_leaderboard))
           .route("/inscription_last_transfer/:inscription_id", get(Self::inscription_last_transfer))
           .route("/inscription_last_transfer_number/:number", get(Self::inscription_last_transfer_number))
           .route("/inscription_transfers/:inscription_id", get(Self::inscription_transfers))
@@ -4221,6 +4228,23 @@ impl Vermilion {
     ).into_response()
   }
 
+  async fn boost_leaderboard(State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let leaderboard = match Self::get_boost_leaderboard(server_config.deadpool).await {
+      Ok(leaderboard) => leaderboard,
+      Err(error) => {
+        log::warn!("Error getting /boost_leaderboard: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving boost leaderboard"),
+        ).into_response();
+      }
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(leaderboard),
+    ).into_response()
+  }
+
   async fn trending_feed(n: Query<QueryNumber>, State(server_config): State<ApiServerConfig>, session: Session<SessionNullPool>) -> impl axum::response::IntoResponse {
     let bands: Vec<(f64, f64)> = session.get("trending_bands_seen").unwrap_or(Vec::new());
     for band in bands.iter() {
@@ -5854,6 +5878,23 @@ impl Vermilion {
       inscriptions.push(inscription);
     }
     Ok(inscriptions)
+  }
+
+  async fn get_boost_leaderboard(pool: deadpool) -> anyhow::Result<Vec<LeaderboardEntry>> {
+    let conn = pool.get().await?;
+    let result = conn.query(
+      "SELECT a.address, count(*) from delegates d left join addresses a on d.bootleg_id=a.id where d.bootleg_block_height>(select max(genesis_height)-2016 from ordinals) group by a.address order by count(*) desc limit 100", 
+      &[]
+    ).await?;
+    let mut leaderboard = Vec::new();
+    for row in result {
+      let entry = LeaderboardEntry {
+        address: row.get("address"),
+        count: row.get("count")
+      };
+      leaderboard.push(entry);
+    }
+    Ok(leaderboard)
   }
 
   async fn get_trending_feed_items(pool: deadpool, n: u32, bands: Vec<(f64, f64)>) -> anyhow::Result<Vec<TrendingItem>> {
