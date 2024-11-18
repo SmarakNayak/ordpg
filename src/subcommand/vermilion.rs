@@ -5835,7 +5835,7 @@ impl Vermilion {
   async fn get_recent_boosts(pool: deadpool, n: i64) -> anyhow::Result<Vec<BoostFullMetadata>> {
     let conn = pool.get().await?;
     let result = conn.query(
-      "SELECT o.*, a.address, d.bootleg_edition from delegates d left join addresses a on d.bootleg_id=a.id left join ordinals o on o.id=d.bootleg_id order by d.bootleg_sequence_number desc limit $1", 
+      "SELECT o.*, a.address, d.bootleg_edition from delegates d left join addresses a on d.bootleg_id=a.id left join ordinals_full_v o on o.id=d.bootleg_id order by d.bootleg_sequence_number desc limit $1", 
       &[&n]
     ).await?;
     let mut inscriptions = Vec::new();
