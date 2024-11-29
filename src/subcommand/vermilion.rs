@@ -57,6 +57,8 @@ use tokio_postgres::binary_copy::BinaryCopyInWriter;
 use tokio_postgres::types::{ToSql, Type};
 use futures::pin_mut;
 
+use csv;
+
 mod rune_indexer;
 mod database;
 mod social;
@@ -1790,7 +1792,19 @@ impl Vermilion {
     });
     return address_indexer_thread;
   }
+
   //Collection indexer helper functions
+  async fn get_historical_collections() -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let contents = tokio::fs::read_to_string(std::path::Path::new("collection_symbols.csv")).await?;
+    let mut reader = csv::Reader::from_reader(contents.as_bytes());
+    let mut collections = Vec::new();
+    for result in reader.records() {
+        let record = result?;
+        collections.push(record.get(0).unwrap().to_string());
+    }
+    Ok(collections)
+}
+
   async fn get_recently_traded_collections() -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let mut collections = Vec::new();
     let mut offset = 0;
@@ -1826,6 +1840,12 @@ impl Vermilion {
           if symbol.starts_with("domain_dot") {
             continue;
           }
+          if symbol.starts_with("brc20_") {
+            continue;
+          }
+          if symbol == "rare-sats" {
+            continue;
+          }
           collections.push(symbol.to_string());
         }
       }
@@ -1847,50 +1867,56 @@ impl Vermilion {
     let token = settings.magiceden_api_key().map(|s| s.to_string()).ok_or("No Magic Eden Api key found")?;
     headers.insert(reqwest::header::AUTHORIZATION, format!("Bearer {}", token).parse().unwrap());
 
-    let request_start_time = Instant::now();
-    let response = client.get(&url).headers(headers).send().await?;
-    log::debug!(
-      "Got metadata for {} in {:.2} seconds",
-      symbol,
-      request_start_time.elapsed().as_secs_f64()
-    );
+    for attempt in 0..5 {
+      let request_start_time = Instant::now();
+      let response = client.get(&url).headers(headers.clone()).send().await?;
+      log::debug!(
+        "Got metadata for {} in {:.2} seconds",
+        symbol,
+        request_start_time.elapsed().as_secs_f64()
+      );
 
-    if response.status() != 200 {
-      println!("Error getting collection metadata for {}: {}", symbol, response.status());
-      println!("{}", response.text().await?);
-      return Err("Error occurred, 200 not returned".into());
-    }
+      if response.status() != 200 {
+        println!("Error getting collection metadata for {}: {}", symbol, response.status());
+        println!("{}", response.text().await?);
+        println!("Retrying in {} seconds", 1*attempt);
+        tokio::time::sleep(std::time::Duration::from_secs(1*attempt)).await;
+        continue;
+      }
 
-    let data: JsonValue = response.json().await?;
-    if let Some(tokens) = data["tokens"].as_array() {
-      if let Some(first_token) = tokens.first() {
-        if let Some(item_type) = first_token.get("itemType") {
-          if item_type.as_str() == Some("UTXO") {//skip rare-sats
+      let data: JsonValue = response.json().await?;
+      if let Some(tokens) = data["tokens"].as_array() {
+        if let Some(first_token) = tokens.first() {
+          if let Some(item_type) = first_token.get("itemType") {
+            if item_type.as_str() == Some("UTXO") {//skip rare-sats
+              return Ok(None);
+            }
+          }
+          if let Some(_domain) = first_token.get("domain") { //Skip domain collections
+            println!("Skipping domain collection: {}", symbol);
             return Ok(None);
           }
-        }
-        if let Some(_domain) = first_token.get("domain") { //Skip domain collections
-          println!("Skipping domain collection: {}", symbol);
-          return Ok(None);
-        }
-        if let Some(collection) = first_token.get("collection") {
-          if let Some(_brc20) = collection.get("brc20") { //Skip brc20 collections
-            return Ok(None);
-          } else {
-            let metadata: CollectionMetadata = serde_json::from_value(collection.clone())?;
-            return Ok(Some(metadata));
+          if let Some(collection) = first_token.get("collection") {
+            if let Some(_brc20) = collection.get("brc20") { //Skip brc20 collections
+              return Ok(None);
+            } else {
+              let metadata: CollectionMetadata = serde_json::from_value(collection.clone())?;
+              return Ok(Some(metadata));
+            }
           }
         }
       }
+      return Ok(None);
     }
-    Ok(None)
+
+    Err(format!("Failed to fetch metadata after 5 attempts for {}", symbol).into())
   }
 
-  async fn get_recently_traded_collection_metadata(settings: Settings, recently_traded_collections: Vec<String>) -> Result<Vec<CollectionMetadata>, Box<dyn std::error::Error>> {
+  async fn get_bulk_collection_metadata(settings: Settings, collections: Vec<String>) -> Result<Vec<CollectionMetadata>, Box<dyn std::error::Error>> {
     let mut traded_metadata = Vec::new();
-    println!("Getting metadata for traded collections: {}", recently_traded_collections.len());
+    println!("Getting metadata for traded collections: {}", collections.len());
     let mut t0 = Instant::now();
-    for (i, symbol) in recently_traded_collections.iter().enumerate() {
+    for (i, symbol) in collections.iter().enumerate() {
       if let Some(metadata) = Self::get_collection_metadata(settings.clone(), symbol).await? {
         traded_metadata.push(metadata);
       }
@@ -2019,11 +2045,18 @@ impl Vermilion {
 
   async fn update_all_tokens(pool: deadpool_postgres::Pool, settings: Settings) -> Result<(), Box<dyn std::error::Error>> {
     let recently_traded_collections = Self::get_recently_traded_collections().await?;
-    let stored_recently_traded_collections = Self::get_stored_recently_traded_collections(pool.clone()).await?;
-    //check if every collection in recently_traded_collections is stored
-    let new_collections = recently_traded_collections
+    let historical_collections = Self::get_historical_collections().await?;
+    let collections_to_update: Vec<String> = recently_traded_collections.into_iter()
+      .chain(historical_collections)
+      .collect::<HashSet<_>>()
+      .into_iter()
+      .collect();
+
+    let recently_stored_collections = Self::get_recently_stored_collections(pool.clone()).await?;
+    //check if every collection in collections_to_update is stored
+    let new_collections = collections_to_update
       .iter()
-      .filter(|item| !stored_recently_traded_collections.contains(item))
+      .filter(|item| !recently_stored_collections.contains(item))
       .map(|item| item.clone())
       .collect::<Vec<_>>();
     if new_collections.is_empty() {
@@ -2031,11 +2064,11 @@ impl Vermilion {
       return Ok(());
     }
 
-    let traded_collections = Self::get_recently_traded_collection_metadata(settings.clone(), recently_traded_collections.clone()).await?;
-    let new_symbols = Self::get_new_collection_symbols(pool.clone(), settings.clone(), traded_collections.clone()).await?;
+    let collections_to_update_metadata = Self::get_bulk_collection_metadata(settings.clone(), collections_to_update.clone()).await?;
+    let new_symbols = Self::get_new_collection_symbols(pool.clone(), settings.clone(), collections_to_update_metadata.clone()).await?;
     for (i, symbol) in new_symbols.iter().enumerate() {
       let new_tokens = Self::get_tokens(settings.clone(), &symbol).await?;
-      let collection_metadata = traded_collections.iter().find(|item| item.collection_symbol == symbol.clone()).ok_or("Collection metadata not found")?;
+      let collection_metadata = collections_to_update_metadata.iter().find(|item| item.collection_symbol == symbol.clone()).ok_or("Collection metadata not found")?;
       let mut conn = pool.get().await?;
       let tx = conn.transaction().await?;
       Self::insert_collection_list(&tx, vec![collection_metadata.clone()]).await?;
@@ -2045,7 +2078,7 @@ impl Vermilion {
       log::info!("Inserted tokens for {} in db. {} of {} updated", symbol, i+1, new_symbols.len());
     }
     Self::update_collection_summary(pool.clone()).await?;    
-    Self::insert_recently_traded_collections(pool, recently_traded_collections).await?;
+    Self::insert_recently_stored_collections(pool, collections_to_update).await?;
     Ok(())
   }
 
@@ -2434,7 +2467,7 @@ impl Vermilion {
     Self::create_collection_list_table(pool.clone()).await.context("Failed to create collection list table")?;
     Self::create_collections_table(pool.clone()).await.context("Failed to create collections table")?;
     Self::create_collections_summary_table(pool.clone()).await.context("Failed to create collections summary table")?;
-    Self::create_recently_traded_collection_table(pool.clone()).await.context("Failed to create recently traded collection table")?;
+    Self::create_recently_stored_collection_table(pool.clone()).await.context("Failed to create recently traded collection table")?;
     Self::create_on_chain_collection_summary_table(pool.clone()).await.context("Failed to create on chain collection summary table")?;
     
     Self::create_procedure_log(pool.clone()).await.context("Failed to create proc log")?;
@@ -2462,7 +2495,7 @@ impl Vermilion {
     Self::create_collection_list_table(pool.clone()).await.context("Failed to create collection list table")?;
     Self::create_collections_table(pool.clone()).await.context("Failed to create collections table")?;
     Self::create_collections_summary_table(pool.clone()).await.context("Failed to create collections summary table")?;
-    Self::create_recently_traded_collection_table(pool.clone()).await.context("Failed to create recently traded collection table")?;
+    Self::create_recently_stored_collection_table(pool.clone()).await.context("Failed to create recently traded collection table")?;
     Ok(())
   }
 
@@ -2876,10 +2909,10 @@ impl Vermilion {
     Ok(())
   }
 
-  pub(crate) async fn create_recently_traded_collection_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+  pub(crate) async fn create_recently_stored_collection_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
     conn.simple_query(
-      r"CREATE TABLE IF NOT EXISTS recently_traded_collections (
+      r"CREATE TABLE IF NOT EXISTS recently_stored_collections (
         collection_symbol varchar(50) not null primary key
       )").await?;
     Ok(())
@@ -5060,11 +5093,11 @@ impl Vermilion {
     Ok(())
   }
 
-  async fn insert_recently_traded_collections(pool: deadpool, symbols: Vec<String>) -> anyhow::Result<()> {
+  async fn insert_recently_stored_collections(pool: deadpool, symbols: Vec<String>) -> anyhow::Result<()> {
     let mut conn = pool.get().await?;
     let tx = conn.transaction().await?;
-    tx.simple_query("CREATE TEMP TABLE inserts_recently_traded_collections ON COMMIT DROP AS TABLE recently_traded_collections WITH NO DATA").await?;
-    let copy_stm = r#"COPY inserts_recently_traded_collections (
+    tx.simple_query("CREATE TEMP TABLE inserts_recently_stored_collections ON COMMIT DROP AS TABLE recently_stored_collections WITH NO DATA").await?;
+    let copy_stm = r#"COPY inserts_recently_stored_collections (
       collection_symbol
     ) FROM STDIN BINARY"#;
     let col_types = vec![
@@ -5079,15 +5112,15 @@ impl Vermilion {
       writer.as_mut().write(&row).await?;
     }
     writer.finish().await?;
-    tx.simple_query("DELETE FROM recently_traded_collections").await?;
-    tx.simple_query("INSERT INTO recently_traded_collections SELECT * FROM inserts_recently_traded_collections ON CONFLICT DO NOTHING").await?;
+    tx.simple_query("DELETE FROM recently_stored_collections").await?;
+    tx.simple_query("INSERT INTO recently_stored_collections SELECT * FROM inserts_recently_stored_collections ON CONFLICT DO NOTHING").await?;
     tx.commit().await?;
     Ok(())
   }
 
-  async fn get_stored_recently_traded_collections(pool: deadpool) -> anyhow::Result<Vec<String>> {
+  async fn get_recently_stored_collections(pool: deadpool) -> anyhow::Result<Vec<String>> {
     let conn = pool.get().await?;
-    let rows = conn.query("SELECT collection_symbol FROM recently_traded_collections", &[]).await?;
+    let rows = conn.query("SELECT collection_symbol FROM recently_stored_collections", &[]).await?;
     let mut symbols: Vec<String> = Vec::new();
     for row in rows {
       let symbol: String = row.get(0);
