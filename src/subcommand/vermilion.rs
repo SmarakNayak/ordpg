@@ -7455,7 +7455,7 @@ impl Vermilion {
     let conn = pool.get().await?;
     conn.simple_query(r"CREATE OR REPLACE FUNCTION after_collection_insert() RETURNS TRIGGER AS $$
       BEGIN
-        UPDATE ordinals_full of
+        UPDATE ordinals_full_t of
         SET collection_symbol = c.collection_symbol,
             off_chain_metadata = c.off_chain_metadata,
             collection_name = l.name
