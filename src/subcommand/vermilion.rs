@@ -5930,14 +5930,15 @@ impl Vermilion {
     Ok(leaderboard)
   }
 
-  async fn get_trending_feed_items(pool: deadpool, n: u32, bands: Vec<(f64, f64)>) -> anyhow::Result<Vec<TrendingItem>> {
+  async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands: Vec<(f64, f64)>) -> anyhow::Result<Vec<TrendingItem>> {
     let n = std::cmp::min(n, 100);
+    let all_bands = Self::get_trending_bands(pool.clone()).await?;
     let mut rng = rand::rngs::StdRng::from_entropy();
     let mut random_floats = Vec::new();
     while random_floats.len() < n as usize {
       let random_float = rng.gen::<f64>();
       let mut already_seen = false;
-      for band in bands.iter() {
+      for band in already_seen_bands.iter() {
         if random_float >= band.0 && random_float < band.1 {
           already_seen = true;
           break;
@@ -5945,6 +5946,12 @@ impl Vermilion {
       }
       if !already_seen {
         random_floats.push(random_float);
+        for band in all_bands.iter() {
+          if random_float >= band.0 && random_float < band.1 {
+            already_seen_bands.push(band.clone());
+            break;
+          }
+        }
       }
     }
 
@@ -5988,6 +5995,19 @@ impl Vermilion {
       inscriptions: inscriptions,
       activity: trending_item_activity
     })
+  }
+
+  async fn get_trending_bands(pool: deadpool) -> anyhow::Result<Vec<(f64, f64)>> {
+    let conn = pool.get().await?;
+    let result = conn.query(
+      "SELECT band_start, band_end from trending_summary", 
+      &[]
+    ).await?;
+    let mut bands = Vec::new();
+    for row in result {
+      bands.push((row.get("band_start"), row.get("band_end")));
+    }
+    Ok(bands)
   }
 
   fn create_inscription_query_string(base_query: String, params: ParsedInscriptionQueryParams) -> String {
@@ -7719,6 +7739,7 @@ impl Vermilion {
           WHERE o1.delegate IS NOT NULL 
           AND o1.parents = '{}'
           AND o1.genesis_height > ((SELECT max FROM max_height) - 2016)
+          AND o1.spaced_rune IS NULL
           AND o2.content_category IN ('image', 'html')
           GROUP BY o1.delegate
       ), b AS (
@@ -7751,6 +7772,7 @@ impl Vermilion {
       WHERE array_length(parents,1) > 0
           AND genesis_height > ((SELECT max FROM max_height) - 2016)
           AND content_category IN ('image', 'html')
+          AND spaced_rune IS NULL
       GROUP BY parents;
 
       --others
@@ -7770,6 +7792,7 @@ impl Vermilion {
               AND delegate is NULL
               AND genesis_height > ((SELECT max FROM max_height) - 2016)
               AND content_category IN ('image', 'html')
+              AND spaced_rune IS NULL
           GROUP BY sha256
       ),
       b as (
@@ -7826,7 +7849,7 @@ impl Vermilion {
               CAST(sum(size) AS INT8) as size,
               min(block_age) as block_age,
               max(most_recent_timestamp) as most_recent_timestamp,
-              CAST((15 * EXP(-0.01 * min(block_age)) + 25 * EXP(-0.0005 * min(block_age))) * sum(fee) AS FLOAT8) as weight
+              CAST((18 * EXP(-0.01 * min(block_age)) + 2 * EXP(-0.0005 * min(block_age))) * sum(fee) * sqrt(sum(orphan_delegate_count) + 1) AS FLOAT8) as weight
           FROM trending_union
           GROUP BY ids, id
       ), children AS (
