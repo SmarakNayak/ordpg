@@ -7760,20 +7760,35 @@ impl Vermilion {
       --parents
       CREATE TABLE trending_parents AS
       WITH max_height AS (
-          SELECT MAX(genesis_height) as max FROM ordinals
-      )
-      SELECT
+        SELECT MAX(genesis_height) as max FROM ordinals
+      ),
+      p AS (
+        SELECT
           parents,
           SUM(genesis_fee) as fee,
           SUM(CASE WHEN delegate is null THEN content_length ELSE 580 END) as size,
           (SELECT max FROM max_height) - MAX(genesis_height) as block_age,
           max(timestamp) as most_recent_timestamp
-      FROM ordinals
-      WHERE array_length(parents,1) > 0
+        FROM ordinals
+        WHERE array_length(parents,1) > 0
           AND genesis_height > ((SELECT max FROM max_height) - 2016)
           AND content_category IN ('image', 'html')
           AND spaced_rune IS NULL
-      GROUP BY parents;
+        GROUP BY parents
+      ),
+      with_runes AS (
+        SELECT 
+          p.*,
+          ARRAY(
+            SELECT o.spaced_rune
+            FROM ordinals o
+            WHERE o.id = ANY(p.parents)
+            ORDER BY array_position(p.parents, o.id)
+          ) as parent_spaced_runes 
+        FROM p
+      )
+      SELECT * FROM with_runes
+      WHERE (SELECT bool_and(x IS NULL) FROM unnest(parent_spaced_runes) x);
 
       --others
       CREATE TABLE trending_others AS
@@ -7799,11 +7814,12 @@ impl Vermilion {
           SELECT DISTINCT ON (o.sha256)
               id,
               sequence_number,
-              sha256
+              sha256,
+              spaced_rune
           from ordinals o where o.sha256 in (SELECT sha256 from a)
           order by o.sha256, sequence_number
       )
-      SELECT a.*, b.id, b.sequence_number from a left join b on a.sha256=b.sha256;
+      SELECT a.*, b.id, b.sequence_number from a left join b on a.sha256=b.sha256 where b.spaced_rune is null;
 
       --union
       CREATE TABLE trending_union AS
@@ -7849,7 +7865,7 @@ impl Vermilion {
               CAST(sum(size) AS INT8) as size,
               min(block_age) as block_age,
               max(most_recent_timestamp) as most_recent_timestamp,
-              CAST((18 * EXP(-0.01 * min(block_age)) + 2 * EXP(-0.0005 * min(block_age))) * sum(fee) * sqrt(sum(orphan_delegate_count) + 1) AS FLOAT8) as weight
+              CAST((18 * EXP(-0.01 * min(block_age)) + 2 * EXP(-0.0005 * min(block_age))) * sum(fee) * (sum(orphan_delegate_count) + 1) AS FLOAT8) as weight
           FROM trending_union
           GROUP BY ids, id
       ), children AS (
