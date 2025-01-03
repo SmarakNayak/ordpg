@@ -4,7 +4,7 @@ use super::*;
 #[command(group(
   ArgGroup::new("chains")
     .required(false)
-    .args(&["chain_argument", "signet", "regtest", "testnet"]),
+    .args(&["chain_argument", "signet", "regtest", "testnet", "testnet4"]),
 ))]
 pub struct Options {
   #[arg(long, help = "Load Bitcoin Core data dir from <BITCOIN_DATA_DIR>.")]
@@ -38,11 +38,6 @@ pub struct Options {
   pub(crate) cookie_file: Option<PathBuf>,
   #[arg(long, alias = "datadir", help = "Store index in <DATA_DIR>.")]
   pub(crate) data_dir: Option<PathBuf>,
-  #[arg(
-    long,
-    help = "Don't look for inscriptions below <FIRST_INSCRIPTION_HEIGHT>."
-  )]
-  pub(crate) first_inscription_height: Option<u32>,
   #[arg(long, help = "Limit index to <HEIGHT_LIMIT> blocks.")]
   pub(crate) height_limit: Option<u32>,
   #[arg(long, help = "Use index at <INDEX>.")]
@@ -54,15 +49,10 @@ pub struct Options {
     help = "Set index cache size to <INDEX_CACHE_SIZE> bytes. [default: 1/4 available RAM]"
   )]
   pub(crate) index_cache_size: Option<usize>,
-  #[arg(
-    long,
-    help = "Track location of runes. RUNES ARE IN AN UNFINISHED PRE-ALPHA STATE AND SUBJECT TO CHANGE AT ANY TIME."
-  )]
+  #[arg(long, help = "Track location of runes.")]
   pub(crate) index_runes: bool,
   #[arg(long, help = "Track location of all satoshis.")]
   pub(crate) index_sats: bool,
-  #[arg(long, help = "Keep sat index entries of spent outputs.")]
-  pub(crate) index_spent_sats: bool,
   #[arg(long, help = "Store transactions in index.")]
   pub(crate) index_transactions: bool,
   #[arg(long, help = "Run in integration test mode.")]
@@ -92,4 +82,6 @@ pub struct Options {
   pub(crate) signet: bool,
   #[arg(long, short, help = "Use testnet. Equivalent to `--chain testnet`.")]
   pub(crate) testnet: bool,
+  #[arg(long, help = "Use testnet4. Equivalent to `--chain testnet4`.")]
+  pub(crate) testnet4: bool,
 }

@@ -32,10 +32,11 @@ fn run() {
   }
 
   child.kill().unwrap();
+  child.wait().unwrap();
 }
 
 #[test]
-fn address_page_shows_outputs() {
+fn address_page_shows_outputs_and_sat_balance() {
   let core = mockcore::spawn();
   let ord = TestServer::spawn_with_args(&core, &["--index-addresses"]);
 
@@ -54,12 +55,173 @@ fn address_page_shows_outputs() {
   ord.assert_response_regex(
     format!("/address/{address}"),
     format!(
-      ".*<h1>Address {address}</h1>.*<a class=monospace href=/output/{}.*",
+      ".*<h1>Address {address}</h1>.*<dd>200000000</dd>.*<a class=collapse href=/output/{}.*",
       OutPoint {
         txid: send.txid,
         vout: 0
       }
     ),
+  );
+}
+
+#[test]
+fn address_page_shows_single_rune() {
+  let core = mockcore::builder().network(Network::Regtest).build();
+  let ord =
+    TestServer::spawn_with_args(&core, &["--index-runes", "--index-addresses", "--regtest"]);
+
+  create_wallet(&core, &ord);
+
+  etch(&core, &ord, Rune(RUNE));
+
+  let address = "bcrt1qs758ursh4q9z627kt3pp5yysm78ddny6txaqgw";
+
+  CommandBuilder::new(format!(
+    "--chain regtest --index-runes wallet send --fee-rate 1 {address} 1000:{}",
+    Rune(RUNE)
+  ))
+  .core(&core)
+  .ord(&ord)
+  .stdout_regex(".*")
+  .run_and_deserialize_output::<Output>();
+
+  core.mine_blocks(6);
+
+  ord.assert_response_regex(
+    format!("/address/{address}"),
+    format!(".*<dd>.*{}.*: 1000¢</dd>.*", Rune(RUNE)),
+  );
+}
+
+#[test]
+fn address_page_shows_multiple_runes() {
+  let core = mockcore::builder().network(Network::Regtest).build();
+  let ord =
+    TestServer::spawn_with_args(&core, &["--index-runes", "--index-addresses", "--regtest"]);
+
+  create_wallet(&core, &ord);
+
+  etch(&core, &ord, Rune(RUNE));
+  etch(&core, &ord, Rune(RUNE + 1));
+
+  let address = "bcrt1qs758ursh4q9z627kt3pp5yysm78ddny6txaqgw";
+
+  CommandBuilder::new(format!(
+    "--chain regtest --index-runes wallet send --fee-rate 1 {address} 1000:{}",
+    Rune(RUNE)
+  ))
+  .core(&core)
+  .ord(&ord)
+  .stdout_regex(".*")
+  .run_and_deserialize_output::<Output>();
+
+  core.mine_blocks(6);
+
+  CommandBuilder::new(format!(
+    "--chain regtest --index-runes wallet send --fee-rate 1 {address} 1000:{}",
+    Rune(RUNE + 1)
+  ))
+  .core(&core)
+  .ord(&ord)
+  .stdout_regex(".*")
+  .run_and_deserialize_output::<Output>();
+
+  core.mine_blocks(6);
+
+  ord.assert_response_regex(
+    format!("/address/{address}"),
+    format!(
+      ".*<dd>.*{}.*: 1000¢</dd>.*<dd>.*{}.*: 1000¢</dd>.*",
+      Rune(RUNE),
+      Rune(RUNE + 1)
+    ),
+  );
+}
+
+#[test]
+fn address_page_shows_aggregated_runes_balance() {
+  let core = mockcore::builder().network(Network::Regtest).build();
+  let ord =
+    TestServer::spawn_with_args(&core, &["--index-runes", "--index-addresses", "--regtest"]);
+
+  create_wallet(&core, &ord);
+
+  etch(&core, &ord, Rune(RUNE));
+
+  let address = "bcrt1qs758ursh4q9z627kt3pp5yysm78ddny6txaqgw";
+
+  CommandBuilder::new(format!(
+    "--chain regtest --index-runes wallet send --fee-rate 1 {address} 250:{}",
+    Rune(RUNE)
+  ))
+  .core(&core)
+  .ord(&ord)
+  .stdout_regex(".*")
+  .run_and_deserialize_output::<Output>();
+
+  core.mine_blocks(6);
+
+  CommandBuilder::new(format!(
+    "--chain regtest --index-runes wallet send --fee-rate 1 {address} 250:{}",
+    Rune(RUNE)
+  ))
+  .core(&core)
+  .ord(&ord)
+  .stdout_regex(".*")
+  .run_and_deserialize_output::<Output>();
+
+  core.mine_blocks(6);
+
+  ord.assert_response_regex(
+    format!("/address/{address}"),
+    format!(".*<dd>.*{}.*: 500¢</dd>.*", Rune(RUNE)),
+  );
+}
+
+#[test]
+fn address_page_shows_aggregated_inscriptions() {
+  let core = mockcore::builder().network(Network::Regtest).build();
+  let ord =
+    TestServer::spawn_with_args(&core, &["--index-runes", "--index-addresses", "--regtest"]);
+
+  create_wallet(&core, &ord);
+
+  let (inscription_id_1, _reveal) = inscribe(&core, &ord);
+
+  let address = "bcrt1qs758ursh4q9z627kt3pp5yysm78ddny6txaqgw";
+
+  CommandBuilder::new(format!(
+    "--chain regtest --index-runes wallet send --fee-rate 1 {address} {inscription_id_1}",
+  ))
+  .core(&core)
+  .ord(&ord)
+  .stdout_regex(".*")
+  .run_and_deserialize_output::<Output>();
+
+  core.mine_blocks(1);
+
+  let (inscription_id_2, _reveal) = inscribe(&core, &ord);
+
+  CommandBuilder::new(format!(
+    "--chain regtest --index-runes wallet send --fee-rate 1 {address} {inscription_id_2}",
+  ))
+  .core(&core)
+  .ord(&ord)
+  .stdout_regex(".*")
+  .run_and_deserialize_output::<Output>();
+
+  core.mine_blocks(1);
+
+  ord.assert_response_regex(
+    format!("/address/{address}"),
+      r".*
+<dl>.*
+  <dt>inscriptions</dt>
+  <dd class=thumbnails>
+    <a href=/inscription/[[:xdigit:]]{64}i\d><iframe .* src=/preview/[[:xdigit:]]{64}i\d></iframe></a>
+    <a href=/inscription/[[:xdigit:]]{64}i\d><iframe .* src=/preview/[[:xdigit:]]{64}i\d></iframe></a>
+  </dd>.*"
+    ,
   );
 }
 
@@ -72,52 +234,55 @@ fn inscription_page() {
 
   let (inscription, reveal) = inscribe(&core, &ord);
 
-  let ethereum_teleburn_address = CommandBuilder::new(format!("teleburn {inscription}"))
-    .core(&core)
-    .run_and_deserialize_output::<ord::subcommand::teleburn::Output>()
-    .ethereum;
+  let response = ord.json_request(format!(
+    "/output/{}",
+    OutPoint {
+      txid: reveal,
+      vout: 0
+    }
+  ));
 
-  TestServer::spawn_with_args(&core, &[]).assert_response_regex(
+  assert_eq!(response.status(), StatusCode::OK);
+
+  let output: api::Output = serde_json::from_str(&response.text().unwrap()).unwrap();
+
+  TestServer::spawn_with_args(&core, &[]).assert_html(
     format!("/inscription/{inscription}"),
-    format!(
-      ".*<meta property=og:title content='Inscription 0'>.*
-.*<meta property=og:image content='https://.*/favicon.png'>.*
-.*<meta property=twitter:card content=summary>.*
-<h1>Inscription 0</h1>
-.*<iframe .* src=/preview/{inscription}></iframe>.*
-<dl>
-  <dt>id</dt>
-  <dd class=monospace>{inscription}</dd>
-  <dt>address</dt>
-  <dd class=monospace>bc1.*</dd>
-  <dt>value</dt>
-  <dd>10000</dd>
-  <dt>preview</dt>
-  <dd><a href=/preview/{inscription}>link</a></dd>
-  <dt>content</dt>
-  <dd><a href=/content/{inscription}>link</a></dd>
-  <dt>content length</dt>
-  <dd>3 bytes</dd>
-  <dt>content type</dt>
-  <dd>text/plain;charset=utf-8</dd>
-  <dt>timestamp</dt>
-  <dd><time>1970-01-01 00:00:02 UTC</time></dd>
-  <dt>height</dt>
-  <dd><a href=/block/2>2</a></dd>
-  <dt>fee</dt>
-  <dd>138</dd>
-  <dt>reveal transaction</dt>
-  <dd><a class=monospace href=/tx/{reveal}>{reveal}</a></dd>
-  <dt>location</dt>
-  <dd class=monospace>{reveal}:0:0</dd>
-  <dt>output</dt>
-  <dd><a class=monospace href=/output/{reveal}:0>{reveal}:0</a></dd>
-  <dt>offset</dt>
-  <dd>0</dd>
-  <dt>ethereum teleburn address</dt>
-  <dd>{ethereum_teleburn_address}</dd>
-</dl>.*",
-    ),
+    Chain::Mainnet,
+    InscriptionHtml {
+      chain: Chain::Mainnet,
+      charms: 0,
+      child_count: 0,
+      children: Vec::new(),
+      fee: 138,
+      height: 2,
+      inscription: Inscription {
+        content_type: Some("text/plain;charset=utf-8".as_bytes().into()),
+        body: Some("foo".as_bytes().into()),
+        ..default()
+      },
+      id: inscription,
+      number: 0,
+      next: None,
+      output: Some(TxOut {
+        value: Amount::from_sat(10000),
+        script_pubkey: output.script_pubkey,
+      }),
+      parents: Vec::new(),
+      previous: None,
+      rune: None,
+      sat: None,
+      satpoint: SatPoint {
+        outpoint: OutPoint {
+          txid: reveal,
+          vout: 0,
+        },
+        offset: 0,
+      },
+      timestamp: "1970-01-01 00:00:02+00:00"
+        .parse::<DateTime<Utc>>()
+        .unwrap(),
+    },
   );
 }
 
@@ -201,7 +366,7 @@ fn inscription_page_after_send() {
   ord.assert_response_regex(
     format!("/inscription/{inscription}"),
     format!(
-      r".*<h1>Inscription 0</h1>.*<dt>location</dt>\s*<dd class=monospace>{reveal}:0:0</dd>.*",
+      r".*<h1>Inscription 0</h1>.*<dt>location</dt>\s*<dd><a class=collapse href=/satpoint/{reveal}:0:0>{reveal}:0:0</a></dd>.*",
     ),
   );
 
@@ -219,7 +384,7 @@ fn inscription_page_after_send() {
   ord.assert_response_regex(
     format!("/inscription/{inscription}"),
     format!(
-      r".*<h1>Inscription 0</h1>.*<dt>address</dt>\s*<dd class=monospace>bc1qcqgs2pps4u4yedfyl5pysdjjncs8et5utseepv</dd>.*<dt>location</dt>\s*<dd class=monospace>{txid}:0:0</dd>.*",
+      r".*<h1>Inscription 0</h1>.*<dt>address</dt>\s*<dd><a class=collapse href=/address/bc1qcqgs2pps4u4yedfyl5pysdjjncs8et5utseepv>bc1qcqgs2pps4u4yedfyl5pysdjjncs8et5utseepv</a></dd>.*<dt>location</dt>\s*<dd><a class=collapse href=/satpoint/{txid}:0:0>{txid}:0:0</a></dd>.*",
     ),
   )
 }
@@ -333,8 +498,11 @@ fn recursive_inscription_endpoint() {
     "application/json"
   );
 
-  let inscription_recursive_json: api::InscriptionRecursive =
+  let mut inscription_recursive_json: api::InscriptionRecursive =
     serde_json::from_str(&response.text().unwrap()).unwrap();
+
+  assert_regex_match!(inscription_recursive_json.address.unwrap(), r"bc1p.*");
+  inscription_recursive_json.address = None;
 
   pretty_assert_eq!(
     inscription_recursive_json,
@@ -355,6 +523,7 @@ fn recursive_inscription_endpoint() {
       },
       timestamp: 2,
       value: Some(10000),
+      address: None,
     }
   )
 }
@@ -510,7 +679,7 @@ fn inscription_transactions_are_stored_with_transaction_index() {
 
   let (_inscription, reveal) = inscribe(&core, &ord);
 
-  let coinbase = core.tx(1, 0).txid();
+  let coinbase = core.tx(1, 0).compute_txid();
 
   assert_eq!(
     ord.request(format!("/tx/{reveal}")).status(),
@@ -573,6 +742,7 @@ fn run_no_sync() {
   }
 
   child.kill().unwrap();
+  child.wait().unwrap();
 
   let builder = CommandBuilder::new(format!(
     "server --no-sync --address 127.0.0.1 --http-port {port}",
@@ -602,6 +772,7 @@ fn run_no_sync() {
   }
 
   child.kill().unwrap();
+  child.wait().unwrap();
 }
 
 #[test]
@@ -646,6 +817,7 @@ fn authentication() {
   assert_eq!(response.status(), 200);
 
   child.kill().unwrap();
+  child.wait().unwrap();
 }
 
 #[cfg(unix)]

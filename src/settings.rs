@@ -14,15 +14,14 @@ pub struct Settings {
   config_dir: Option<PathBuf>,
   cookie_file: Option<PathBuf>,
   data_dir: Option<PathBuf>,
-  first_inscription_height: Option<u32>,
   height_limit: Option<u32>,
   hidden: Option<HashSet<InscriptionId>>,
+  http_port: Option<u16>,
   index: Option<PathBuf>,
   index_addresses: bool,
   index_cache_size: Option<usize>,
   index_runes: bool,
   index_sats: bool,
-  index_spent_sats: bool,
   index_transactions: bool,
   integration_test: bool,
   no_index_inscriptions: bool,
@@ -84,7 +83,7 @@ impl Settings {
     };
 
     let config = if let Some(config_path) = config_path {
-      serde_yaml::from_reader(fs::File::open(&config_path).context(anyhow!(
+      serde_yaml::from_reader(File::open(&config_path).context(anyhow!(
         "failed to open config file `{}`",
         config_path.display()
       ))?)
@@ -129,9 +128,6 @@ impl Settings {
       config_dir: self.config_dir.or(source.config_dir),
       cookie_file: self.cookie_file.or(source.cookie_file),
       data_dir: self.data_dir.or(source.data_dir),
-      first_inscription_height: self
-        .first_inscription_height
-        .or(source.first_inscription_height),
       height_limit: self.height_limit.or(source.height_limit),
       hidden: Some(
         self
@@ -142,12 +138,12 @@ impl Settings {
           .cloned()
           .collect(),
       ),
+      http_port: self.http_port.or(source.http_port),
       index: self.index.or(source.index),
       index_addresses: self.index_addresses || source.index_addresses,
       index_cache_size: self.index_cache_size.or(source.index_cache_size),
       index_runes: self.index_runes || source.index_runes,
       index_sats: self.index_sats || source.index_sats,
-      index_spent_sats: self.index_spent_sats || source.index_spent_sats,
       index_transactions: self.index_transactions || source.index_transactions,
       integration_test: self.integration_test || source.integration_test,
       no_index_inscriptions: self.no_index_inscriptions || source.no_index_inscriptions,
@@ -178,21 +174,21 @@ impl Settings {
         .then_some(Chain::Signet)
         .or(options.regtest.then_some(Chain::Regtest))
         .or(options.testnet.then_some(Chain::Testnet))
+        .or(options.testnet4.then_some(Chain::Testnet4))
         .or(options.chain_argument),
       commit_interval: options.commit_interval,
       config: options.config,
       config_dir: options.config_dir,
       cookie_file: options.cookie_file,
       data_dir: options.data_dir,
-      first_inscription_height: options.first_inscription_height,
       height_limit: options.height_limit,
       hidden: None,
+      http_port: None,
       index: options.index,
       index_addresses: options.index_addresses,
       index_cache_size: options.index_cache_size,
       index_runes: options.index_runes,
       index_sats: options.index_sats,
-      index_spent_sats: options.index_spent_sats,
       index_transactions: options.index_transactions,
       integration_test: options.integration_test,
       no_index_inscriptions: options.no_index_inscriptions,
@@ -246,6 +242,14 @@ impl Settings {
         })
     };
 
+    let get_u16 = |key| {
+      env
+        .get(key)
+        .map(|int| int.parse::<u16>())
+        .transpose()
+        .with_context(|| format!("failed to parse environment variable ORD_{key} as u16"))
+    };
+
     let get_u32 = |key| {
       env
         .get(key)
@@ -253,6 +257,7 @@ impl Settings {
         .transpose()
         .with_context(|| format!("failed to parse environment variable ORD_{key} as u32"))
     };
+
     let get_usize = |key| {
       env
         .get(key)
@@ -273,15 +278,14 @@ impl Settings {
       config_dir: get_path("CONFIG_DIR"),
       cookie_file: get_path("COOKIE_FILE"),
       data_dir: get_path("DATA_DIR"),
-      first_inscription_height: get_u32("FIRST_INSCRIPTION_HEIGHT")?,
       height_limit: get_u32("HEIGHT_LIMIT")?,
       hidden: inscriptions("HIDDEN")?,
+      http_port: get_u16("HTTP_PORT")?,
       index: get_path("INDEX"),
       index_addresses: get_bool("INDEX_ADDRESSES"),
       index_cache_size: get_usize("INDEX_CACHE_SIZE")?,
       index_runes: get_bool("INDEX_RUNES"),
       index_sats: get_bool("INDEX_SATS"),
-      index_spent_sats: get_bool("INDEX_SPENT_SATS"),
       index_transactions: get_bool("INDEX_TRANSACTIONS"),
       integration_test: get_bool("INTEGRATION_TEST"),
       no_index_inscriptions: get_bool("NO_INDEX_INSCRIPTIONS"),
@@ -313,15 +317,14 @@ impl Settings {
       config_dir: None,
       cookie_file: None,
       data_dir: Some(dir.into()),
-      first_inscription_height: None,
       height_limit: None,
       hidden: None,
+      http_port: None,
       index: None,
       index_addresses: true,
       index_cache_size: None,
       index_runes: true,
       index_sats: true,
-      index_spent_sats: false,
       index_transactions: false,
       integration_test: false,
       no_index_inscriptions: false,
@@ -390,15 +393,9 @@ impl Settings {
       config_dir: None,
       cookie_file: Some(cookie_file),
       data_dir: Some(data_dir),
-      first_inscription_height: Some(if self.integration_test {
-        0
-      } else {
-        self
-          .first_inscription_height
-          .unwrap_or_else(|| chain.first_inscription_height())
-      }),
       height_limit: self.height_limit,
       hidden: self.hidden,
+      http_port: self.http_port,
       index: Some(index),
       index_addresses: self.index_addresses,
       index_cache_size: Some(match self.index_cache_size {
@@ -411,7 +408,6 @@ impl Settings {
       }),
       index_runes: self.index_runes,
       index_sats: self.index_sats,
-      index_spent_sats: self.index_spent_sats,
       index_transactions: self.index_transactions,
       integration_test: self.integration_test,
       no_index_inscriptions: self.no_index_inscriptions,
@@ -455,13 +451,13 @@ impl Settings {
 
     let bitcoin_credentials = self.bitcoin_credentials()?;
 
-    log::debug!(
+    log::trace!(
       "Connecting to Bitcoin Core at {}",
       self.bitcoin_rpc_url(None)
     );
 
     if let Auth::CookieFile(cookie_file) = &bitcoin_credentials {
-      log::debug!(
+      log::trace!(
         "Using credentials from cookie file at `{}`",
         cookie_file.display()
       );
@@ -473,18 +469,27 @@ impl Settings {
       );
     }
 
-    let client = Client::new(&rpc_url, bitcoin_credentials)
-      .with_context(|| format!("failed to connect to Bitcoin Core RPC at `{rpc_url}`"))?;
+    let client = Client::new(&rpc_url, bitcoin_credentials.clone()).with_context(|| {
+      format!(
+        "failed to connect to Bitcoin Core RPC at `{rpc_url}` with {}",
+        match bitcoin_credentials {
+          Auth::None => "no credentials".into(),
+          Auth::UserPass(_, _) => "username and password".into(),
+          Auth::CookieFile(cookie_file) => format!("cookie file at {}", cookie_file.display()),
+        }
+      )
+    })?;
 
     let mut checks = 0;
     let rpc_chain = loop {
       match client.get_blockchain_info() {
         Ok(blockchain_info) => {
-          break match blockchain_info.chain.as_str() {
-            "main" => Chain::Mainnet,
-            "test" => Chain::Testnet,
+          break match blockchain_info.chain.to_string().as_str() {
+            "bitcoin" => Chain::Mainnet,
             "regtest" => Chain::Regtest,
             "signet" => Chain::Signet,
+            "testnet" => Chain::Testnet,
+            "testnet4" => Chain::Testnet4,
             other => bail!("Bitcoin RPC server on unknown chain: {other}"),
           }
         }
@@ -553,7 +558,11 @@ impl Settings {
   }
 
   pub fn first_inscription_height(&self) -> u32 {
-    self.first_inscription_height.unwrap()
+    if self.integration_test {
+      0
+    } else {
+      self.chain.unwrap().first_inscription_height()
+    }
   }
 
   pub fn first_rune_height(&self) -> u32 {
@@ -572,15 +581,15 @@ impl Settings {
     self.index.as_ref().unwrap()
   }
 
-  pub fn index_addresses(&self) -> bool {
+  pub fn index_addresses_raw(&self) -> bool {
     self.index_addresses
   }
 
-  pub fn index_inscriptions(&self) -> bool {
+  pub fn index_inscriptions_raw(&self) -> bool {
     !self.no_index_inscriptions
   }
 
-  pub fn index_runes(&self) -> bool {
+  pub fn index_runes_raw(&self) -> bool {
     self.index_runes
   }
 
@@ -588,15 +597,11 @@ impl Settings {
     self.index_cache_size.unwrap()
   }
 
-  pub fn index_sats(&self) -> bool {
+  pub fn index_sats_raw(&self) -> bool {
     self.index_sats
   }
 
-  pub fn index_spent_sats(&self) -> bool {
-    self.index_spent_sats
-  }
-
-  pub fn index_transactions(&self) -> bool {
+  pub fn index_transactions_raw(&self) -> bool {
     self.index_transactions
   }
 
@@ -847,6 +852,20 @@ mod tests {
     } else {
       "/Bitcoin/signet/.cookie"
     }));
+
+    let cookie_file = parse(&["--testnet4"])
+      .cookie_file()
+      .unwrap()
+      .display()
+      .to_string();
+
+    assert!(cookie_file.ends_with(if cfg!(target_os = "linux") {
+      "/.bitcoin/testnet4/.cookie"
+    } else if cfg!(windows) {
+      r"\Bitcoin\testnet4\.cookie"
+    } else {
+      "/Bitcoin/testnet4/.cookie"
+    }));
   }
 
   #[test]
@@ -904,6 +923,7 @@ mod tests {
 
   #[test]
   fn network_accepts_aliases() {
+    #[track_caller]
     fn check_network_alias(alias: &str, suffix: &str) {
       let data_dir = parse(&["--chain", alias]).data_dir().display().to_string();
 
@@ -942,6 +962,14 @@ mod tests {
         r"ord\testnet3"
       } else {
         "ord/testnet3"
+      },
+    );
+    check_network_alias(
+      "testnet4",
+      if cfg!(windows) {
+        r"ord\testnet4"
+      } else {
+        "ord/testnet4"
       },
     );
   }
@@ -997,9 +1025,9 @@ mod tests {
 
   #[test]
   fn index_runes() {
-    assert!(parse(&["--chain=signet", "--index-runes"]).index_runes());
-    assert!(parse(&["--index-runes"]).index_runes());
-    assert!(!parse(&[]).index_runes());
+    assert!(parse(&["--chain=signet", "--index-runes"]).index_runes_raw());
+    assert!(parse(&["--index-runes"]).index_runes_raw());
+    assert!(!parse(&[]).index_runes_raw());
   }
 
   #[test]
@@ -1081,7 +1109,7 @@ mod tests {
 
   #[test]
   fn example_config_file_is_valid() {
-    let _: Settings = serde_yaml::from_reader(fs::File::open("ord.yaml").unwrap()).unwrap();
+    let _: Settings = serde_yaml::from_reader(File::open("ord.yaml").unwrap()).unwrap();
   }
 
   #[test]
@@ -1098,15 +1126,14 @@ mod tests {
       ("CONFIG_DIR", "config dir"),
       ("COOKIE_FILE", "cookie file"),
       ("DATA_DIR", "/data/dir"),
-      ("FIRST_INSCRIPTION_HEIGHT", "2"),
       ("HEIGHT_LIMIT", "3"),
       ("HIDDEN", "6fb976ab49dcec017f1e201e84395983204ae1a7c2abf7ced0a85d692e442799i0 703e5f7c49d82aab99e605af306b9a30e991e57d42f982908a962a81ac439832i0"),
+    ("HTTP_PORT", "8080"),
       ("INDEX", "index"),
       ("INDEX_CACHE_SIZE", "4"),
       ("INDEX_ADDRESSES", "1"),
       ("INDEX_RUNES", "1"),
       ("INDEX_SATS", "1"),
-      ("INDEX_SPENT_SATS", "1"),
       ("INDEX_TRANSACTIONS", "1"),
       ("INTEGRATION_TEST", "1"),
       ("NO_INDEX_INSCRIPTIONS", "1"),
@@ -1132,7 +1159,6 @@ mod tests {
         config_dir: Some("config dir".into()),
         cookie_file: Some("cookie file".into()),
         data_dir: Some("/data/dir".into()),
-        first_inscription_height: Some(2),
         height_limit: Some(3),
         hidden: Some(
           vec![
@@ -1146,12 +1172,12 @@ mod tests {
           .into_iter()
           .collect()
         ),
+        http_port: Some(8080),
         index: Some("index".into()),
         index_addresses: true,
         index_cache_size: Some(4),
         index_runes: true,
         index_sats: true,
-        index_spent_sats: true,
         index_transactions: true,
         integration_test: true,
         no_index_inscriptions: true,
@@ -1188,13 +1214,11 @@ mod tests {
           "--config-dir=config dir",
           "--cookie-file=cookie file",
           "--datadir=/data/dir",
-          "--first-inscription-height=2",
           "--height-limit=3",
           "--index-addresses",
           "--index-cache-size=4",
           "--index-runes",
           "--index-sats",
-          "--index-spent-sats",
           "--index-transactions",
           "--index=index",
           "--integration-test",
@@ -1216,15 +1240,14 @@ mod tests {
         config_dir: Some("config dir".into()),
         cookie_file: Some("cookie file".into()),
         data_dir: Some("/data/dir".into()),
-        first_inscription_height: Some(2),
         height_limit: Some(3),
         hidden: None,
+        http_port: None,
         index: Some("index".into()),
         index_addresses: true,
         index_cache_size: Some(4),
         index_runes: true,
         index_sats: true,
-        index_spent_sats: true,
         index_transactions: true,
         integration_test: true,
         no_index_inscriptions: true,

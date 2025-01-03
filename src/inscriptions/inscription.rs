@@ -106,7 +106,7 @@ impl Inscription {
     })
   }
 
-  pub(crate) fn pointer_value(pointer: u64) -> Vec<u8> {
+  pub fn pointer_value(pointer: u64) -> Vec<u8> {
     let mut bytes = pointer.to_le_bytes().to_vec();
 
     while bytes.last().copied() == Some(0) {
@@ -116,10 +116,7 @@ impl Inscription {
     bytes
   }
 
-  pub(crate) fn append_reveal_script_to_builder(
-    &self,
-    mut builder: script::Builder,
-  ) -> script::Builder {
+  pub fn append_reveal_script_to_builder(&self, mut builder: script::Builder) -> script::Builder {
     builder = builder
       .push_opcode(opcodes::OP_FALSE)
       .push_opcode(opcodes::all::OP_IF)
@@ -149,7 +146,7 @@ impl Inscription {
     self.append_reveal_script_to_builder(builder).into_script()
   }
 
-  pub(crate) fn append_batch_reveal_script_to_builder(
+  pub fn append_batch_reveal_script_to_builder(
     inscriptions: &[Inscription],
     mut builder: script::Builder,
   ) -> script::Builder {
@@ -160,7 +157,7 @@ impl Inscription {
     builder
   }
 
-  pub(crate) fn append_batch_reveal_script(
+  pub fn append_batch_reveal_script(
     inscriptions: &[Inscription],
     builder: script::Builder,
   ) -> ScriptBuf {
@@ -202,7 +199,7 @@ impl Inscription {
     Some(InscriptionId { txid, index })
   }
 
-  pub(crate) fn media(&self) -> Media {
+  pub fn media(&self) -> Media {
     if self.body.is_none() {
       return Media::Unknown;
     }
@@ -214,39 +211,39 @@ impl Inscription {
     content_type.parse().unwrap_or(Media::Unknown)
   }
 
-  pub(crate) fn body(&self) -> Option<&[u8]> {
+  pub fn body(&self) -> Option<&[u8]> {
     Some(self.body.as_ref()?)
   }
 
-  pub(crate) fn into_body(self) -> Option<Vec<u8>> {
+  pub fn into_body(self) -> Option<Vec<u8>> {
     self.body
   }
 
-  pub(crate) fn content_length(&self) -> Option<usize> {
+  pub fn content_length(&self) -> Option<usize> {
     Some(self.body()?.len())
   }
 
-  pub(crate) fn content_type(&self) -> Option<&str> {
+  pub fn content_type(&self) -> Option<&str> {
     str::from_utf8(self.content_type.as_ref()?).ok()
   }
 
-  pub(crate) fn content_encoding(&self) -> Option<HeaderValue> {
+  pub fn content_encoding(&self) -> Option<HeaderValue> {
     HeaderValue::from_str(str::from_utf8(self.content_encoding.as_ref()?).unwrap_or_default()).ok()
   }
 
-  pub(crate) fn delegate(&self) -> Option<InscriptionId> {
+  pub fn delegate(&self) -> Option<InscriptionId> {
     Self::inscription_id_field(self.delegate.as_deref())
   }
 
-  pub(crate) fn metadata(&self) -> Option<Value> {
+  pub fn metadata(&self) -> Option<Value> {
     ciborium::from_reader(Cursor::new(self.metadata.as_ref()?)).ok()
   }
 
-  pub(crate) fn metaprotocol(&self) -> Option<&str> {
+  pub fn metaprotocol(&self) -> Option<&str> {
     str::from_utf8(self.metaprotocol.as_ref()?).ok()
   }
 
-  pub(crate) fn parents(&self) -> Vec<InscriptionId> {
+  pub fn parents(&self) -> Vec<InscriptionId> {
     self
       .parents
       .iter()
@@ -254,7 +251,7 @@ impl Inscription {
       .collect()
   }
 
-  pub(crate) fn pointer(&self) -> Option<u64> {
+  pub fn pointer(&self) -> Option<u64> {
     let value = self.pointer.as_ref()?;
 
     if value.iter().skip(8).copied().any(|byte| byte != 0) {
@@ -289,7 +286,7 @@ impl Inscription {
     witness
   }
 
-  pub(crate) fn hidden(&self) -> bool {
+  pub fn hidden(&self) -> bool {
     use regex::bytes::Regex;
 
     const BVM_NETWORK: &[u8] = b"<body style=\"background:#F61;color:#fff;\">\

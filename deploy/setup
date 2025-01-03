@@ -58,6 +58,11 @@ case $CHAIN in
     CSP_ORIGIN=testnet.ordinals.com
     ufw allow 18333
     ;;
+  testnet4)
+    COOKIE_FILE_DIR=/var/lib/bitcoind/testnet4
+    CSP_ORIGIN=testnet4.ordinals.com
+    ufw allow 48333
+    ;;
   *)
     echo "Unknown chain: $CHAIN"
     exit 1
@@ -83,6 +88,8 @@ if ! which bitcoind; then
 fi
 
 bitcoind --version
+
+chown bitcoin:bitcoin /var/lib/bitcoind/settings.json
 
 if [[ ! -e ~/.cargo/env ]]; then
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
