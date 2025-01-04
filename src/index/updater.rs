@@ -389,8 +389,10 @@ impl Updater<'_> {
     }
 
     height_to_block_header.insert(&self.height, &block.header.store())?;
-    let base_size: usize = 80 + VarInt(block.txdata.len() as u64).len();
-    let txs_size: usize = block.txdata.iter().map(|(tx, _)| tx.size()).sum();
+
+    ///copied from - bitcoin-0.32.5/src/blockdata/block.rs
+    let base_size: usize = 80 + VarInt::from(block.txdata.len()).size();
+    let txs_size: usize = block.txdata.iter().map(|(tx, _)| tx.total_size()).sum();
     let block_size = (base_size + txs_size) as u32;
     height_to_block_size.insert(&self.height, block_size)?;
 
@@ -552,7 +554,7 @@ impl Updater<'_> {
     {
       log::trace!("Indexing transaction {tx_offset}…");
 
-      inscription_updater.tx_offset = tx_offset;
+      inscription_updater.tx_offset = tx_offset as u32;
       if let Some((tx, txid)) = block.txdata.first() {
         inscription_updater.tx_offset = 999999 as u32;
       }

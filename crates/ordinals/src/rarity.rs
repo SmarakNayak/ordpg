@@ -34,6 +34,10 @@ impl Rarity {
       Self::Epic => 27,
       Self::Legendary => 5,
       Self::Mythic => 1,
+      Self::BlackUncommon => 6_926_535,
+      Self::BlackRare => 3_432,
+      Self::BlackEpic => 27,
+      Self::BlackLegendary => 5,
     }
   }
 }

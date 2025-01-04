@@ -39,6 +39,7 @@ use tracing::Span;
 use http::{Request, Response};
 use tracing::Level as TraceLevel;
 
+use std::collections::HashMap;
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::thread::JoinHandle;
@@ -113,9 +114,9 @@ pub(crate) struct Vermilion {
   pub(crate) no_sync: bool,
   #[arg(
     long,
-    help = "Proxy `/content/INSCRIPTION_ID` requests to `<CONTENT_PROXY>/content/INSCRIPTION_ID` if the inscription is not present on current chain."
+    help = "Proxy `/content/INSCRIPTION_ID` and other recursive endpoints to `<PROXY>` if the inscription is not present on current chain."
   )]
-  pub(crate) content_proxy: Option<Url>,
+  pub(crate) proxy: Option<Url>,
   #[arg(
     long,
     default_value = "5s",
@@ -1494,10 +1495,10 @@ impl Vermilion {
                           Some(output) => {
                             //Check previous tx value to see if it's splitting off an ordinal within a large UTXO
                             let prev_tx_value = prev_tx.output.clone().into_iter().nth(old_satpoint.outpoint.vout.try_into().unwrap()).unwrap().value;
-                            if prev_tx_value > 20000 {
+                            if prev_tx_value.to_sat() > 20000 {
                               0
                             } else {
-                              output.value
+                              output.value.to_sat()
                             }
                           },
                           None => 0
@@ -1733,7 +1734,7 @@ impl Vermilion {
       csp_origin: self.csp_origin,
       decompress: self.decompress,
       no_sync: self.no_sync,
-      content_proxy: self.content_proxy,
+      proxy: self.proxy,
       polling_interval: self.polling_interval,
     };
     let server_thread = thread::spawn(move || {

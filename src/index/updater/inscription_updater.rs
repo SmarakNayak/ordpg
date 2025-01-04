@@ -232,7 +232,7 @@ impl InscriptionUpdater<'_, '_> {
       self.transaction_buffer.clear();
     }
 
-    if self.index_transactions && !floating_inscriptions.is_empty() {
+    if index.index_transactions && !floating_inscriptions.is_empty() {
       let fee = total_input_value - total_output_value;
       self
         .transaction_id_to_fee
@@ -577,7 +577,7 @@ impl InscriptionUpdater<'_, '_> {
     output_utxo_entry.push_inscription(sequence_number, satpoint.offset, index);
     let old_satpoint = match cloned_flotsam.origin {
       Origin::New { .. } => SatPoint{outpoint: OutPoint::null(), offset: 0},
-      Origin::Old { old_satpoint } => old_satpoint,
+      Origin::Old { old_satpoint, .. } => old_satpoint,
     };
     let transfer: [u8; 96] = {
       let mut transfer: [u8; 96] = [0; 96];
@@ -587,7 +587,7 @@ impl InscriptionUpdater<'_, '_> {
       one.copy_from_slice(&sequence_number.to_ne_bytes());
       two.copy_from_slice(&self.tx_offset.to_ne_bytes());
       three.copy_from_slice(&old_satpoint.store());
-      four.copy_from_slice(&satpoint);
+      four.copy_from_slice(&satpoint.store());
       transfer
     };
     self.height_to_transfers.insert(&self.height, &transfer)?;
