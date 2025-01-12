@@ -8,7 +8,7 @@ The goal is to make running ordinals based websites easier and less reliant on a
 Running `ordpg`
 ------
 ### Configuration
-`ord-mys3ql` requires 1 config files before it can run:
+`ordpg` requires 1 config files before it can run:
  - `ord.yaml` for postgres credentials and other ord options
 
 `ord.yaml:`
