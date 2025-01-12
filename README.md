@@ -1,17 +1,15 @@
-`ord-mys3ql`
+`ordpg`
 =====
 
-`ord-mys3ql` is a fork of `ord` that uploads inscription content to an aws s3 bucket, and inscription metadata to a mysql database. It also makes available an api that allows for easy access of the content/metadata. It is the backend behind the open source ordinal explorer available at [vermilion.place](https://vermilion.place) and [vermilion](https://github.com/SmarakNayak/Vermilion).
+`ordpg` is a fork of `ord` that uploads inscription content to a postgres database. It also makes available an api that allows for easy access of the content/metadata. It is the backend behind the open source ordinal explorer available at [vermilion.place](https://vermilion.place) and [vermilion](https://github.com/SmarakNayak/Vermilion).
 
 The goal is to make running ordinals based websites easier and less reliant on api's.
 
-Running `ord-mys3ql`
+Running `ordpg`
 ------
 ### Configuration
-`ord-mys3ql` requires 3 config files before it can run:
- - `ord.yaml` for mysql credentials, s3 options (and other ord options)
- - `~/.aws/config` for s3 region
- - `~/.aws/credentials` for s3 credentials
+`ord-mys3ql` requires 1 config files before it can run:
+ - `ord.yaml` for postgres credentials and other ord options
 
 `ord.yaml:`
 ```
@@ -32,37 +30,11 @@ s3_head_check: true
 
 ```
 
-`~/.aws/config:`
-```
-[default]
-region = us-east-1
-```
-
-`~/.aws/credentials:`
-```
-[default]
-aws_secret_key_id=<KEY_ID_GOES_HERE>
-aws_secret_access_key=<SECRET_ACCESS_KEY_GOES_HERE>
-```
-
-`ord-mys3ql` utilises the official s3 sdk so you can see the [awslabs](https://github.com/awslabs/aws-sdk-rust) sdk for more options on setting up s3 credentials.
 ### Running
-`vermilion` is the subcommand that runs the `ord-mys3ql` indexer and api on the port specified by `--api-http-port`. `vermilion` also runs the default server on `--http-port`. To get started simply run the following:
+`vermilion` is the subcommand that runs the `ordpg` indexer and api on the port specified by `--api-http-port`. `vermilion` also runs the default server on `--http-port`. To get started simply run the following:
 ```
 ord --config /home/ubuntu/ord.yaml --index-sats vermilion --http-port 80 --api-http-port 81
 ```
-
-If indexing is slow you can try increase the amount of threads allocated to the indexer
-```
-ord --config /home/ubuntu/ord.yaml --index-sats vermilion --http-port 80 --api-http-port 81 --n-threads 10
-```
-
-If you want to run the `ord-mys3ql` api and default server, but not the `ord-mys3ql` indexer
-```
-ord --config /home/ubuntu/ord.yaml --index-sats vermilion --http-port 80 --api-http-port 81 --run_api_server_only
-```
-
-When colocated with the s3 bucket and mysql db, `ord-mys3ql` indexing with ~20 threads should take a similar amount of time to `ord` indexing with `--index-sats`. Requesting inscription data from `bitcoind` is the main bottleneck when increasing threadcount.
 
 Feedback, issues, pull requests all welcome!
 
