@@ -3,8 +3,6 @@
 
 `ordpg` is a fork of `ord` that uploads inscription content to a postgres database. It also makes available an api that allows for easy access of the content/metadata. It is the backend behind the open source ordinal explorer available at [vermilion.place](https://vermilion.place) and [vermilion](https://github.com/SmarakNayak/Vermilion).
 
-The goal is to make running ordinals based websites easier and less reliant on api's.
-
 Running `ordpg`
 ------
 ### Configuration
@@ -16,24 +14,22 @@ Running `ordpg`
 # Example ord.yaml Config
 
 ## DB must already exist, tables will be automatically created
-db_connection_string: mysql://username:password@localhost:3306/database_name
-
-## AWS S3 bucket name
-s3_bucket_name: vermilion-ordinals
-
-## Skip uploading inscription numbers before this number. Saves money if you have already uploaded inscriptions to s3
-s3_upload_start_number: 0
-
-## Make a HEAD request to s3 to check if inscription content exists before making a POST upload
-## Useful if unsure what inscription numbers have been uploaded. HEAD requests are 8% the price of a POST, so can save money.
-s3_head_check: true
+db_host: localhost
+db_name: vermilion
+db_user: username
+db_password: password
 
 ```
 
 ### Running
 `vermilion` is the subcommand that runs the `ordpg` indexer and api on the port specified by `--api-http-port`. `vermilion` also runs the default server on `--http-port`. To get started simply run the following:
 ```
-ord --config /home/ubuntu/ord.yaml --index-sats vermilion --http-port 80 --api-http-port 81
+ord --config /home/ubuntu/ord.yaml --index-sats --index-transactions --index-runes vermilion --http-port 80 --api-http-port 81
+```
+
+you can also run the indexer alone via:
+```
+ord --index-sats --index-transactions --index-runes index update
 ```
 
 Feedback, issues, pull requests all welcome!
