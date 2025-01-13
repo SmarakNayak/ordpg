@@ -18,7 +18,6 @@ db_host: localhost
 db_name: vermilion
 db_user: username
 db_password: password
-
 ```
 
 ### Running
