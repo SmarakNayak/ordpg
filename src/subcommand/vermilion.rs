@@ -1,7 +1,6 @@
 use super::*;
 use axum_server::Handle;
 use rune_indexer::run_runes_indexer;
-use serde_aux::prelude::*;
 use social::initialize_social_tables;
 use social_api::social_router;
 use tokio::io::AsyncReadExt;
@@ -24,11 +23,14 @@ use axum::{
   Json, 
   Router,
   extract::{Path, State, Query},
-  body::{Body, BoxBody},
+  body::Body,
   middleware::map_response,
   http::StatusCode,
   http::HeaderMap,
   response::IntoResponse,
+  http::Request,
+  http::Response,
+  http,
 };
 use axum_session::{Session, SessionNullPool, SessionConfig, SessionStore, SessionLayer};
 
@@ -36,7 +38,6 @@ use tower_http::trace::TraceLayer;
 use tower_http::trace::DefaultMakeSpan;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::Span;
-use http::{Request, Response};
 use tracing::Level as TraceLevel;
 
 use std::collections::HashMap;
@@ -1383,7 +1384,7 @@ impl Vermilion {
           let mut tx_map: HashMap<Txid, Transaction> = HashMap::new();
           for tx in txs {
             if let Some(tx) = tx {
-              tx_map.insert(tx.txid(), tx);   
+              tx_map.insert(tx.compute_txid(), tx);
             }
           }
 
@@ -1629,59 +1630,59 @@ impl Vermilion {
           .layer(SessionLayer::new(session_store))
           .route("/", get(Self::root))
           .route("/home", get(Self::home))
-          .route("/inscription/:inscription_id", get(Self::inscription))
-          .route("/inscription_number/:number", get(Self::inscription_number))
-          .route("/inscription_sha256/:sha256", get(Self::inscription_sha256))
-          .route("/inscription_metadata/:inscription_id", get(Self::inscription_metadata))
-          .route("/inscription_metadata_number/:number", get(Self::inscription_metadata_number))
-          .route("/inscription_edition/:inscription_id", get(Self::inscription_edition))
-          .route("/inscription_edition_number/:number", get(Self::inscription_edition_number))
-          .route("/inscription_editions_sha256/:sha256", get(Self::inscription_editions_sha256))          
-          .route("/inscription_children/:inscription_id", get(Self::inscription_children))
-          .route("/inscription_children_number/:number", get(Self::inscription_children_number))
-          .route("/inscription_referenced_by/:inscription_id", get(Self::inscription_referenced_by))
-          .route("/inscription_referenced_by_number/:number", get(Self::inscription_referenced_by_number))
-          .route("/inscription_bootlegs/:inscription_id", get(Self::inscription_bootlegs))
-          .route("/inscription_bootlegs_number/:number", get(Self::inscription_bootlegs_number))
-          .route("/bootleg_edition/:inscription_id", get(Self::bootleg_edition))
-          .route("/bootleg_edition_number/:number", get(Self::bootleg_edition_number))
-          .route("/inscription_comments/:inscription_id", get(Self::inscription_comments))
-          .route("/inscription_comments_number/:number", get(Self::inscription_comments_number))
-          .route("/comment/:inscription_id", get(Self::comment))
-          .route("/comment_number/:number", get(Self::comment_number))
-          .route("/inscription_satribute_editions/:inscription_id", get(Self::inscription_satribute_editions))
-          .route("/inscription_satribute_editions_number/:number", get(Self::inscription_satribute_editions_number)) 
-          .route("/inscriptions_in_block/:block", get(Self::inscriptions_in_block))
+          .route("/inscription/{inscription_id}", get(Self::inscription))
+          .route("/inscription_number/{number}", get(Self::inscription_number))
+          .route("/inscription_sha256/{sha256}", get(Self::inscription_sha256))
+          .route("/inscription_metadata/{inscription_id}", get(Self::inscription_metadata))
+          .route("/inscription_metadata_number/{number}", get(Self::inscription_metadata_number))
+          .route("/inscription_edition/{inscription_id}", get(Self::inscription_edition))
+          .route("/inscription_edition_number/{number}", get(Self::inscription_edition_number))
+          .route("/inscription_editions_sha256/{sha256}", get(Self::inscription_editions_sha256))          
+          .route("/inscription_children/{inscription_id}", get(Self::inscription_children))
+          .route("/inscription_children_number/{number}", get(Self::inscription_children_number))
+          .route("/inscription_referenced_by/{inscription_id}", get(Self::inscription_referenced_by))
+          .route("/inscription_referenced_by_number/{number}", get(Self::inscription_referenced_by_number))
+          .route("/inscription_bootlegs/{inscription_id}", get(Self::inscription_bootlegs))
+          .route("/inscription_bootlegs_number/{number}", get(Self::inscription_bootlegs_number))
+          .route("/bootleg_edition/{inscription_id}", get(Self::bootleg_edition))
+          .route("/bootleg_edition_number/{number}", get(Self::bootleg_edition_number))
+          .route("/inscription_comments/{inscription_id}", get(Self::inscription_comments))
+          .route("/inscription_comments_number/{number}", get(Self::inscription_comments_number))
+          .route("/comment/{inscription_id}", get(Self::comment))
+          .route("/comment_number/{number}", get(Self::comment_number))
+          .route("/inscription_satribute_editions/{inscription_id}", get(Self::inscription_satribute_editions))
+          .route("/inscription_satribute_editions_number/{number}", get(Self::inscription_satribute_editions_number)) 
+          .route("/inscriptions_in_block/{block}", get(Self::inscriptions_in_block))
           .route("/inscriptions", get(Self::inscriptions))
           .route("/random_inscription", get(Self::random_inscription))
           .route("/recent_inscriptions", get(Self::recent_inscriptions))
           .route("/recent_boosts", get(Self::recent_boosts))
           .route("/boost_leaderboard", get(Self::boost_leaderboard))
-          .route("/inscription_last_transfer/:inscription_id", get(Self::inscription_last_transfer))
-          .route("/inscription_last_transfer_number/:number", get(Self::inscription_last_transfer_number))
-          .route("/inscription_transfers/:inscription_id", get(Self::inscription_transfers))
-          .route("/inscription_transfers_number/:number", get(Self::inscription_transfers_number))
-          .route("/inscriptions_in_address/:address", get(Self::inscriptions_in_address))
-          .route("/inscriptions_on_sat/:sat", get(Self::inscriptions_on_sat))
-          .route("/inscriptions_in_sat_block/:block", get(Self::inscriptions_in_sat_block))
-          .route("/sat_metadata/:sat", get(Self::sat_metadata))
-          .route("/satributes/:sat", get(Self::satributes))
-          .route("/inscription_collection_data/:inscription_id", get(Self::inscription_collection_data))
-          .route("/inscription_collection_data_number/:number", get(Self::inscription_collection_data_number))
-          .route("/block_statistics/:block", get(Self::block_statistics))
-          .route("/sat_block_statistics/:block", get(Self::sat_block_statistics))
+          .route("/inscription_last_transfer/{inscription_id}", get(Self::inscription_last_transfer))
+          .route("/inscription_last_transfer_number/{number}", get(Self::inscription_last_transfer_number))
+          .route("/inscription_transfers/{inscription_id}", get(Self::inscription_transfers))
+          .route("/inscription_transfers_number/{number}", get(Self::inscription_transfers_number))
+          .route("/inscriptions_in_address/{address}", get(Self::inscriptions_in_address))
+          .route("/inscriptions_on_sat/{sat}", get(Self::inscriptions_on_sat))
+          .route("/inscriptions_in_sat_block/{block}", get(Self::inscriptions_in_sat_block))
+          .route("/sat_metadata/{sat}", get(Self::sat_metadata))
+          .route("/satributes/{sat}", get(Self::satributes))
+          .route("/inscription_collection_data/{inscription_id}", get(Self::inscription_collection_data))
+          .route("/inscription_collection_data_number/{number}", get(Self::inscription_collection_data_number))
+          .route("/block_statistics/{block}", get(Self::block_statistics))
+          .route("/sat_block_statistics/{block}", get(Self::sat_block_statistics))
           .route("/blocks", get(Self::blocks))          
           .route("/collections", get(Self::collections))
-          .route("/collection_summary/:collection_symbol", get(Self::collection_summary))          
-          .route("/collection_holders/:collection_symbol", get(Self::collection_holders))
-          .route("/inscriptions_in_collection/:collection_symbol", get(Self::inscriptions_in_collection))
+          .route("/collection_summary/{collection_symbol}", get(Self::collection_summary))          
+          .route("/collection_holders/{collection_symbol}", get(Self::collection_holders))
+          .route("/inscriptions_in_collection/{collection_symbol}", get(Self::inscriptions_in_collection))
           .route("/on_chain_collections", get(Self::on_chain_collections))          
-          .route("/on_chain_collection_summary/:parents", get(Self::on_chain_collection_summary))
-          .route("/on_chain_collection_holders/:parents", get(Self::on_chain_collection_holders))
-          .route("/inscriptions_in_on_chain_collection/:parents", get(Self::inscriptions_in_on_chain_collection))
-          .route("/search/:search_by_query", get(Self::search_by_query))
-          .route("/block_icon/:block", get(Self::block_icon))
-          .route("/sat_block_icon/:block", get(Self::sat_block_icon))
+          .route("/on_chain_collection_summary/{parents}", get(Self::on_chain_collection_summary))
+          .route("/on_chain_collection_holders/{parents}", get(Self::on_chain_collection_holders))
+          .route("/inscriptions_in_on_chain_collection/{parents}", get(Self::inscriptions_in_on_chain_collection))
+          .route("/search/{search_by_query}", get(Self::search_by_query))
+          .route("/block_icon/{block}", get(Self::block_icon))
+          .route("/sat_block_icon/{block}", get(Self::sat_block_icon))
           .merge(social_router())
           .layer(map_response(Self::set_header))
           .layer(
@@ -1690,7 +1691,7 @@ impl Vermilion {
               .on_request(|req: &Request<Body>, _span: &Span| {
                 tracing::event!(TraceLevel::DEBUG, "Started processing request {}", req.uri().path());
               })
-              .on_response(|res: &Response<BoxBody>, latency: Duration, _span: &Span| {
+              .on_response(|res: &Response<Body>, latency: Duration, _span: &Span| {
                 if latency.as_millis() > 10 {
                   tracing::event!(TraceLevel::INFO, "Finished processing SLOW request latency={:?} status={:?}", latency, res.status());                    
                 } else {                    
@@ -1707,9 +1708,9 @@ impl Vermilion {
 
         let addr = SocketAddr::from(([127, 0, 0, 1], self.api_http_port.unwrap_or(81)));
         //tracing::debug!("listening on {}", addr);
-        axum::Server::bind(&addr)
+        axum_server::Server::bind(addr)
             .serve(app.into_make_service())
-            .with_graceful_shutdown(Self::shutdown_signal())
+            //.with_graceful_shutdown(Self::shutdown_signal())
             .await
             .unwrap();
       });
