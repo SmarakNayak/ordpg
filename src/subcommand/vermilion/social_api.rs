@@ -11,29 +11,29 @@ use axum::{
 pub fn social_router() -> Router<ApiServerConfig> {
   let app = Router::new()
     .route("/social/user", post(create_user_handler))    
-    .route("/social/user/:user_id", get(get_user_handler))
-    .route("/social/user/:user_id", put(update_user_handler))
-    .route("/social/user/:user_id", delete(delete_user_handler))
+    .route("/social/user/{user_id}", get(get_user_handler))
+    .route("/social/user/{user_id}", put(update_user_handler))
+    .route("/social/user/{user_id}", delete(delete_user_handler))
     .route("/social/follow", post(create_follow_handler))
-    .route("/social/follow/:user_id", get(get_follows_handler))
-    .route("/social/follow/:follower_id/:following_id", delete(delete_follow_handler))
-    .route("/social/followers/:user_id", get(get_followers_handler))
+    .route("/social/follow/{user_id}", get(get_follows_handler))
+    .route("/social/follow/{follower_id}/{following_id}", delete(delete_follow_handler))
+    .route("/social/followers/{user_id}", get(get_followers_handler))
     .route("/social/like", post(create_like_handler))
-    .route("/social/like/:inscription_id", get(get_likes_handler))
-    .route("/social/like/:inscription_id/:user_id", delete(delete_like_handler))
+    .route("/social/like/{inscription_id}", get(get_likes_handler))
+    .route("/social/like/{inscription_id}/{user_id}", delete(delete_like_handler))
     .route("/social/comment", post(create_comment_handler))
-    .route("/social/comment/:comment_id", put(update_comment_handler))
-    .route("/social/comment/:comment_id", delete(delete_comment_handler))    
-    .route("/social/comments/:inscription_id", get(get_comments_handler))
+    .route("/social/comment/{comment_id}", put(update_comment_handler))
+    .route("/social/comment/{comment_id}", delete(delete_comment_handler))    
+    .route("/social/comments/{inscription_id}", get(get_comments_handler))
     .route("/social/playlist_info", post(create_playlist_info_handler))
-    .route("/social/playlist_info/:playlist_id", put(update_playlist_info_handler))
-    .route("/social/playlist_info/:playlist_id", delete(delete_playlist_info_handler))
+    .route("/social/playlist_info/{playlist_id}", put(update_playlist_info_handler))
+    .route("/social/playlist_info/{playlist_id}", delete(delete_playlist_info_handler))
     .route("/social/playlist_inscription", post(create_playlist_inscription_handler))
-    .route("/social/playlist_inscription/:playlist_id", get(get_playlist_inscriptions_handler))
-    .route("/social/playlist_inscription/:playlist_id/:inscription_id", delete(delete_playlist_inscription_handler))
-    .route("/social/playlists/:user_id", get(get_playlists_handler));
+    .route("/social/playlist_inscription/{playlist_id}", get(get_playlist_inscriptions_handler))
+    .route("/social/playlist_inscription/{playlist_id}/{inscription_id}", delete(delete_playlist_inscription_handler))
+    .route("/social/playlists/{user_id}", get(get_playlists_handler));
   app
-}
+ }
 
 async fn create_user_handler(State(server_config): State<ApiServerConfig>, Json(user): Json<User>) -> impl axum::response::IntoResponse {
   match insert_user(&server_config.deadpool, &user).await {
