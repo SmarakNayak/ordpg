@@ -1231,7 +1231,12 @@ impl Vermilion {
           }
 
           let blockstat_result = match index.get_block_stats(height as u64) {
-            Ok(blockstats) => blockstats,
+            Ok(Some(blockstats)) => blockstats,
+            Ok(None) => {
+              log::info!("No block stats found for block height: {:?}, waiting a minute", height);
+              tokio::time::sleep(Duration::from_secs(60)).await;
+              continue;
+            },
             Err(err) => {
               log::info!("Error getting block stats for block height: {:?} - {:?}, waiting a minute", height, err);
               tokio::time::sleep(Duration::from_secs(60)).await;
@@ -1249,13 +1254,13 @@ impl Vermilion {
           };
           let blockstat = BlockStats {
             block_number: height as i64,
-            block_timestamp: blockstat_result.clone().map(|x| x.time.map(|y| 1000*y as i64)).flatten(), //Convert to millis
-            block_tx_count: blockstat_result.clone().map(|x| x.txs.map(|y| y as i64)).flatten(),
+            block_timestamp: blockstat_result.time.map(|y| 1000 * y as i64), //Convert to millis
+            block_tx_count: blockstat_result.txs.map(|y| y as i64),
             block_size: Some(block_size_result as i64),
-            block_fees: blockstat_result.clone().map(|x| x.total_fee.map(|y| y.to_sat() as i64)).flatten(),
-            min_fee: blockstat_result.clone().map(|x| x.min_fee_rate.map(|y| y.to_sat() as i64)).flatten(),
-            max_fee: blockstat_result.clone().map(|x| x.max_fee_rate.map(|y| y.to_sat() as i64)).flatten(),
-            average_fee: blockstat_result.clone().map(|x| x.fee_rate_percentiles.map(|y| y.fr_50th.to_sat() as i64)).flatten(),
+            block_fees: blockstat_result.total_fee.map(|y| y.to_sat() as i64),
+            min_fee: blockstat_result.min_fee_rate.map(|y| y.to_sat() as i64),
+            max_fee: blockstat_result.max_fee_rate.map(|y| y.to_sat() as i64),
+            average_fee: blockstat_result.fee_rate_percentiles.map(|y| y.fr_50th.to_sat() as i64),
             //average_fee: blockstat_result.clone().map(|x| x.avg_fee_rate.map(|y| y.to_sat() as i64)).flatten()
           };
           blockstats.push(blockstat);
