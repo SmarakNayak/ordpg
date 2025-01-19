@@ -1215,7 +1215,7 @@ impl Vermilion {
         };
         log::info!("Address indexing block start height: {:?}", height);
         let mut blockstats = Vec::new();
-        loop {
+        'outer: loop {
           let t0 = Instant::now();
           // break if ctrl-c is received
           if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
@@ -1367,7 +1367,7 @@ impl Vermilion {
                     Err(e) => {                      
                       log::error!("ERROR: skipped non-miner transfer: {:?} - {:?}, trying again in a minute", tx_id, e);
                       tokio::time::sleep(Duration::from_secs(60)).await;
-                      continue;
+                      continue 'outer;
                     }
                   };
                   txs.push(tx);
