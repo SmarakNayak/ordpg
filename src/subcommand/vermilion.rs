@@ -1360,7 +1360,7 @@ impl Vermilion {
             }
             Err(e) => {
               log::info!("Error getting transfer transactions for block height: {:?} - {:?}", height, e);
-              if e.to_string().contains("No such mempool") || e.to_string().contains("Broken pipe") || e.to_string().contains("end of file") || e.to_string().contains("EOF while parsing") {
+              if e.to_string().contains("No such mempool or blockchain transaction") || e.to_string().contains("Broken pipe") || e.to_string().contains("end of file") || e.to_string().contains("EOF while parsing") {
                 log::info!("Attempting 1 at a time");
                 let mut txs = Vec::new();
                 for tx_id in tx_id_list {
