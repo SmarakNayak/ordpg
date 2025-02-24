@@ -2555,7 +2555,7 @@ impl Vermilion {
       CREATE INDEX IF NOT EXISTS index_metadata_type ON ordinals (content_type);
       CREATE INDEX IF NOT EXISTS index_metadata_category ON ordinals (content_category);
       CREATE INDEX IF NOT EXISTS index_metadata_metaprotocol ON ordinals (metaprotocol);
-      CREATE INDEX IF NOT EXISTS index_metadata_text ON ordinals USING GIN (to_tsvector('english', left(text, 1048575)));
+      CREATE INDEX IF NOT EXISTS index_metadata_text ON ordinals USING GIN (to_tsvector('english', left(text, 800000)));
       CREATE INDEX IF NOT EXISTS index_metadata_referenced_ids ON ordinals USING GIN (referenced_ids);
     ").await?;
     conn.simple_query(r"
@@ -2629,7 +2629,7 @@ impl Vermilion {
       CREATE INDEX IF NOT EXISTS index_metadata_full_type ON ordinals_full_t (content_type);
       CREATE INDEX IF NOT EXISTS index_metadata_full_category ON ordinals_full_t (content_category);
       CREATE INDEX IF NOT EXISTS index_metadata_full_metaprotocol ON ordinals_full_t (metaprotocol);
-      CREATE INDEX IF NOT EXISTS index_metadata_full_text ON ordinals_full_t USING GIN (to_tsvector('english', left(text, 1048575)));
+      CREATE INDEX IF NOT EXISTS index_metadata_full_text ON ordinals_full_t USING GIN (to_tsvector('english', left(text, 800000)));
       CREATE INDEX IF NOT EXISTS index_metadata_full_referenced_ids ON ordinals_full_t USING GIN (referenced_ids);
       CREATE INDEX IF NOT EXISTS index_metadata_full_collection_symbol ON ordinals_full_t (collection_symbol);
     ").await?;
@@ -2908,8 +2908,8 @@ impl Vermilion {
         date_created bigint
       )").await?;
     conn.simple_query(r"
-      CREATE INDEX IF NOT EXISTS index_collection_list_name ON collection_list USING GIN (to_tsvector('english', left(name, 1048575)));
-      CREATE INDEX IF NOT EXISTS index_collection_list_description ON collection_list USING GIN (to_tsvector('english', left(description, 1048575)));
+      CREATE INDEX IF NOT EXISTS index_collection_list_name ON collection_list USING GIN (to_tsvector('english', left(name, 800000)));
+      CREATE INDEX IF NOT EXISTS index_collection_list_description ON collection_list USING GIN (to_tsvector('english', left(description, 800000)));
       CREATE INDEX IF NOT EXISTS index_min_inscription_number ON collection_list (min_inscription_number);
       CREATE INDEX IF NOT EXISTS index_date_created ON collection_list (date_created);
     ").await?;
