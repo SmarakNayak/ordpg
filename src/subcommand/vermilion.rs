@@ -3726,6 +3726,7 @@ impl Vermilion {
     let mut header_map = HeaderMap::new();
     header_map.insert("content-type", content_type.parse().unwrap());
     header_map.insert("cache-control", cache_control.parse().unwrap());
+    header_map.insert("content-security-policy", "default-src 'self' 'unsafe-eval' 'unsafe-inline' data: blob:".parse().unwrap());
     if let Some(encoding) = content_encoding {
       header_map.insert("content-encoding", encoding.parse().unwrap());
     }
@@ -3755,6 +3756,7 @@ impl Vermilion {
     let mut header_map = HeaderMap::new();
     header_map.insert("content-type", content_type.parse().unwrap());
     header_map.insert("cache-control", cache_control.parse().unwrap());
+    header_map.insert("content-security-policy", "default-src 'self' 'unsafe-eval' 'unsafe-inline' data: blob:".parse().unwrap());
     if let Some(encoding) = content_encoding {
       header_map.insert("content-encoding", encoding.parse().unwrap());
     }
@@ -3784,6 +3786,7 @@ impl Vermilion {
     let mut header_map = HeaderMap::new();
     header_map.insert("content-type", content_type.parse().unwrap());
     header_map.insert("cache-control", cache_control.parse().unwrap());
+    header_map.insert("content-security-policy", "default-src 'self' 'unsafe-eval' 'unsafe-inline' data: blob:".parse().unwrap());
     if let Some(encoding) = content_encoding {
       header_map.insert("content-encoding", encoding.parse().unwrap());
     }
@@ -4084,6 +4087,7 @@ impl Vermilion {
     let mut header_map = HeaderMap::new();
     header_map.insert("content-type", content_type.parse().unwrap());
     header_map.insert("cache-control", cache_control.parse().unwrap());
+    header_map.insert("content-security-policy", "default-src 'self' 'unsafe-eval' 'unsafe-inline' data: blob:".parse().unwrap());
     if let Some(encoding) = content_encoding {
       header_map.insert("content-encoding", encoding.parse().unwrap());
     }
@@ -4120,6 +4124,7 @@ impl Vermilion {
     let mut header_map = HeaderMap::new();
     header_map.insert("content-type", content_type.parse().unwrap());
     header_map.insert("cache-control", cache_control.parse().unwrap());
+    header_map.insert("content-security-policy", "default-src 'self' 'unsafe-eval' 'unsafe-inline' data: blob:".parse().unwrap());
     if let Some(encoding) = content_encoding {
       header_map.insert("content-encoding", encoding.parse().unwrap());
     }
