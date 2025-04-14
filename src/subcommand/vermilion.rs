@@ -20,6 +20,7 @@ use s3::error::ProvideErrorMetadata;
 
 use axum::{
   routing::get,
+  routing::post,
   Json, 
   Router,
   extract::{Path, State, Query},
@@ -729,7 +730,8 @@ pub struct IndexerTimings {
 
 #[derive(Clone)]
 pub struct ApiServerConfig {
-  deadpool: deadpool
+  deadpool: deadpool,
+  bitcoin_rpc_client: Arc<bitcoincore_rpc::Client>,
 }
 
 const INDEX_BATCH_SIZE: usize = 10000;
@@ -1612,7 +1614,7 @@ impl Vermilion {
     let verm_server_thread = thread::spawn(move ||{
       let rt = Runtime::new().unwrap();
       rt.block_on(async move {
-        let deadpool = match Self::get_deadpool(settings).await {
+        let deadpool = match Self::get_deadpool(settings.clone()).await {
           Ok(deadpool) => deadpool,
           Err(err) => {
             println!("Error creating deadpool: {:?}", err);
@@ -1620,8 +1622,17 @@ impl Vermilion {
           }
         };
         
+        let bitcoin_rpc_client = match settings.bitcoin_rpc_client(None) {
+          Ok(client) => Arc::new(client),
+          Err(err) => {
+            println!("Error creating bitcoin rpc client: {:?}", err);
+            return;
+          }
+        };
+        
         let server_config = ApiServerConfig {
-          deadpool: deadpool
+          deadpool: deadpool,
+          bitcoin_rpc_client: bitcoin_rpc_client.clone(),
         };
 
         let session_config = SessionConfig::default()
@@ -1688,6 +1699,7 @@ impl Vermilion {
           .route("/search/{search_by_query}", get(Self::search_by_query))
           .route("/block_icon/{block}", get(Self::block_icon))
           .route("/sat_block_icon/{block}", get(Self::sat_block_icon))
+          .route("/submit_package", post(Self::submit_package))
           .merge(social_router())
           .layer(map_response(Self::set_header))
           .layer(
@@ -1712,7 +1724,7 @@ impl Vermilion {
           .with_state(server_config);
 
         let addr = SocketAddr::from(([127, 0, 0, 1], self.api_http_port.unwrap_or(81)));
-        //tracing::debug!("listening on {}", addr);
+        println!("listening on {}", addr);
         axum_server::Server::bind(addr)
             .serve(app.into_make_service())
             //.with_graceful_shutdown(Self::shutdown_signal())
@@ -4894,6 +4906,36 @@ impl Vermilion {
         (axum::http::header::CACHE_CONTROL, "public, max-age=31536000".to_string())]),
       bytes,
     ).into_response()
+  }
+  
+
+  async fn submit_package(State(server_config): State<ApiServerConfig>, Json(payload): Json<Vec<String>>) -> impl axum::response::IntoResponse {
+    // function should extract signed hex txs from the request body
+    // and submit them using the bitcoin client
+    // and return the txids
+    let bitcoin_client = server_config.bitcoin_rpc_client;
+    println!("Submitting package with tx_hexs: {:?}", payload);
+    match bitcoin_client.call::<Vec<String>>("submitpackage", &[serde_json::to_value(payload).unwrap()]) {
+      Ok(txids) => {
+          // Return successful response with the transaction IDs
+          (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            Json(txids)
+          ).into_response()
+      },
+      Err(error) => {
+        // Log the error and return an appropriate error response
+        log::warn!("Error submitting transaction package: {}", error);
+        (
+            StatusCode::BAD_REQUEST,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            Json(serde_json::json!({
+              "error": error.to_string()
+            }))
+        ).into_response()
+      }
+    }
   }
 
   async fn shutdown_signal() {
