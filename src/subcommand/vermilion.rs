@@ -1700,6 +1700,7 @@ impl Vermilion {
           .route("/block_icon/{block}", get(Self::block_icon))
           .route("/sat_block_icon/{block}", get(Self::sat_block_icon))
           .route("/submit_package", post(Self::submit_package))
+          .route("/getrawtransaction/{txid}", get(Self::get_raw_transaction))
           .merge(social_router())
           .layer(map_response(Self::set_header))
           .layer(
@@ -4928,11 +4929,34 @@ impl Vermilion {
         // Log the error and return an appropriate error response
         log::warn!("Error submitting transaction package: {}", error);
         (
-            StatusCode::BAD_REQUEST,
-            [(axum::http::header::CONTENT_TYPE, "application/json")],
-            Json(serde_json::json!({
-              "error": error.to_string()
-            }))
+          StatusCode::BAD_REQUEST,
+          [(axum::http::header::CONTENT_TYPE, "application/json")],
+          Json(serde_json::json!({
+            "error": error.to_string()
+          }))
+        ).into_response()
+      }
+    }
+  }
+
+  async fn get_raw_transaction(State(server_config): State<ApiServerConfig>, Path(txid): Path<Txid>) -> impl axum::response::IntoResponse {
+    let bitcoin_client = server_config.bitcoin_rpc_client;
+    match bitcoin_client.get_raw_transaction_info(&txid, None) {
+      Ok(tx) => {
+        (
+          StatusCode::OK,
+          [(axum::http::header::CONTENT_TYPE, "application/json")],
+          Json(tx)
+        ).into_response()
+      },
+      Err(error) => {
+        log::warn!("Error getting raw transaction: {}", error);
+        (
+          StatusCode::BAD_REQUEST,
+          [(axum::http::header::CONTENT_TYPE, "application/json")],
+          Json(serde_json::json!({
+            "error": error.to_string()
+          }))
         ).into_response()
       }
     }
