@@ -1700,7 +1700,7 @@ impl Vermilion {
           .route("/block_icon/{block}", get(Self::block_icon))
           .route("/sat_block_icon/{block}", get(Self::sat_block_icon))
           .route("/submit_package", post(Self::submit_package))
-          .route("/getrawtransaction/{txid}", get(Self::get_raw_transaction))
+          .route("/get_raw_transaction/{txid}", get(Self::get_raw_transaction))
           .merge(social_router())
           .layer(map_response(Self::set_header))
           .layer(
