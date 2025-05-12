@@ -37,6 +37,7 @@ pub struct Settings {
   s3_upload_start_number: Option<u32>,
   s3_head_check: Option<bool>,
   magiceden_api_key: Option<String>,
+  access_token_secret: Option<String>,
 }
 
 impl Settings {
@@ -159,6 +160,7 @@ impl Settings {
       s3_upload_start_number: self.s3_upload_start_number.or(source.s3_upload_start_number),
       s3_head_check: self.s3_head_check.or(source.s3_head_check),
       magiceden_api_key: self.magiceden_api_key.or(source.magiceden_api_key),
+      access_token_secret: self.access_token_secret.or(source.access_token_secret),
     }
   }
 
@@ -204,6 +206,7 @@ impl Settings {
       s3_upload_start_number: None,
       s3_head_check: None,
       magiceden_api_key: None,
+      access_token_secret: None,
     }
   }
 
@@ -301,6 +304,7 @@ impl Settings {
       s3_upload_start_number: get_u32("S3_UPLOAD_START_NUMBER")?,
       s3_head_check: Some(get_bool("S3_HEAD_CHECK")),
       magiceden_api_key: get_string("MAGICEDEN_API_KEY"),
+      access_token_secret: get_string("ACCESS_TOKEN_SECRET"),
     })
   }
 
@@ -340,6 +344,7 @@ impl Settings {
       s3_upload_start_number: None,
       s3_head_check: None,
       magiceden_api_key: None,
+      access_token_secret: None,
     }
   }
 
@@ -423,6 +428,7 @@ impl Settings {
       s3_upload_start_number: self.s3_upload_start_number,
       s3_head_check: self.s3_head_check,
       magiceden_api_key: self.magiceden_api_key,
+      access_token_secret: self.access_token_secret,
     })
   }
 
@@ -669,6 +675,10 @@ impl Settings {
 
   pub fn magiceden_api_key(&self) -> Option<&str> {
     self.magiceden_api_key.as_deref()
+  }
+
+  pub fn access_token_secret(&self) -> Option<&str> {
+    self.access_token_secret.as_deref()
   }
 }
 
@@ -1195,6 +1205,7 @@ mod tests {
         s3_upload_start_number: None,
         s3_head_check: Some(true),
         magiceden_api_key: None,
+        access_token_secret: None,
       }
     );
   }
@@ -1265,6 +1276,7 @@ mod tests {
         s3_upload_start_number: None,
         s3_head_check: Some(true),
         magiceden_api_key: None,
+        access_token_secret: None,
       }
     );
   }
