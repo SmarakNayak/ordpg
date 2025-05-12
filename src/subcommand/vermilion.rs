@@ -7533,7 +7533,8 @@ impl Vermilion {
         SELECT o.*, c.collection_symbol, c.off_chain_metadata, l.name as collection_name
         FROM inserted_ordinals o
         LEFT JOIN collections c ON o.id = c.id
-        LEFT JOIN collection_list l ON c.collection_symbol = l.collection_symbol;
+        LEFT JOIN collection_list l ON c.collection_symbol = l.collection_symbol
+        ON CONFLICT (sequence_number) DO NOTHING;
 
         CALL update_trending_weights();
 
