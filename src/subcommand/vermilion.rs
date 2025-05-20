@@ -1636,7 +1636,7 @@ impl Vermilion {
         };
 
         let session_config = SessionConfig::default()
-          .with_cookie_path("/api/random_inscriptions")
+          .with_cookie_path("/api") // Used to have it only for /random_inscriptions. Can't remember why. Setting it to /api for now.
           .with_table_name("sessions_table");
         let session_store = SessionStore::<SessionNullPool>::new(None, session_config).await.unwrap();
 
