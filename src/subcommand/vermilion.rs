@@ -7817,7 +7817,7 @@ impl Vermilion {
           ON o1.delegate=o2.id
           WHERE o1.delegate IS NOT NULL 
           AND o1.parents = '{}'
-          AND o1.genesis_height > ((SELECT max FROM max_height) - 2016)
+          AND o1.genesis_height > ((SELECT max FROM max_height) - 4032)
           AND o1.spaced_rune IS NULL
           AND o2.content_category IN ('image')
           GROUP BY o1.delegate
@@ -7829,12 +7829,21 @@ impl Vermilion {
           where delegate in (SELECT delegate from a)
           AND parents = '{}'
           group by delegate
+      ), c AS (
+          SELECT 
+              delegate, 
+              count(*) as full_delegate_count
+          from ordinals
+          where delegate in (SELECT delegate from a)
+          group by delegate
       )
       SELECT 
           a.*, 
-          b.orphan_delegate_count
+          b.orphan_delegate_count,
+          c.full_delegate_count
       FROM a 
-      LEFT JOIN b ON a.delegate=b.delegate;
+      LEFT JOIN b ON a.delegate=b.delegate
+      LEFT JOIN c ON a.delegate=c.delegate;
 
       --parents
       CREATE TABLE trending_parents AS
@@ -7850,7 +7859,7 @@ impl Vermilion {
           max(timestamp) as most_recent_timestamp
         FROM ordinals
         WHERE array_length(parents,1) > 0
-          AND genesis_height > ((SELECT max FROM max_height) - 2016)
+          AND genesis_height > ((SELECT max FROM max_height) - 4032)
           AND content_category IN ('image')
           AND spaced_rune IS NULL
         GROUP BY parents
@@ -7892,7 +7901,7 @@ impl Vermilion {
 	      LEFT JOIN dbscan db on o.sha256 = db.sha256
         WHERE array_length(parents,1) IS NULL
           AND delegate is NULL
-          AND genesis_height > ((SELECT max FROM max_height) - 2016)
+          AND genesis_height > ((SELECT max FROM max_height) - 4032)
           AND content_category IN ('image')
           AND spaced_rune IS NULL
         GROUP BY CLASS
@@ -7917,7 +7926,8 @@ impl Vermilion {
           size,
           block_age,
           most_recent_timestamp,
-          0 as orphan_delegate_count
+          0 as orphan_delegate_count,
+          0 as full_delegate_count
       FROM trending_parents
       UNION ALL
       SELECT
@@ -7927,7 +7937,8 @@ impl Vermilion {
           size,
           block_age,
           most_recent_timestamp,
-          orphan_delegate_count
+          orphan_delegate_count,
+          full_delegate_count
       FROM trending_delegates
       UNION ALL
       SELECT
@@ -7937,7 +7948,8 @@ impl Vermilion {
           size,
           block_age,
           most_recent_timestamp,
-          0 as orphan_delegate_count
+          0 as orphan_delegate_count,
+          0 as full_delegate_count
       FROM trending_others;
 
       --summary (sum(orphan_delegate_count) + 1)
@@ -7950,7 +7962,7 @@ impl Vermilion {
               CAST(sum(size) AS INT8) as size,
               min(block_age) as block_age,
               max(most_recent_timestamp) as most_recent_timestamp,
-              CAST((18 * EXP(-0.01 * min(block_age)) + 2 * EXP(-0.0005 * min(block_age))) * sum(fee) * (sum(orphan_delegate_count) + 1) AS FLOAT8) as weight
+              CAST((12.5 * EXP(-0.01 * min(block_age)) + 7.5 * EXP(-0.0005 * min(block_age))) * sum(fee) * (sum(full_delegate_count) + 1) AS FLOAT8) as weight
           FROM trending_union
           GROUP BY ids, id
       ), children AS (
