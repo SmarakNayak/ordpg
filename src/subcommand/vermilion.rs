@@ -4304,10 +4304,9 @@ impl Vermilion {
   }
 
   async fn trending_feed(n: Query<QueryNumber>, State(server_config): State<ApiServerConfig>, session: Session<SessionNullPool>) -> impl axum::response::IntoResponse {
-    println!("Trending feed - Session: {:?}", session);
     let mut bands_seen: Vec<(f64, f64)> = session.get("trending_bands_seen").unwrap_or(Vec::new());
     for band in bands_seen.iter() {
-      println!("Trending Band: {:?}", band);
+      log::debug!("Trending Band: {:?}", band);
     }
     let n = n.0.n.unwrap_or(20);
     let trending_items = match Self::get_trending_feed_items(server_config.deadpool, n, bands_seen.clone()).await {
@@ -7873,33 +7872,39 @@ impl Vermilion {
       --others
       CREATE TABLE trending_others AS
       WITH max_height AS (
-          SELECT MAX(genesis_height) as max FROM ordinals
+        SELECT MAX(genesis_height) as max FROM ordinals
       ),
       a AS (
-          SELECT
-              sha256,
-              SUM(genesis_fee) as fee,
-              SUM(CASE WHEN delegate is null THEN content_length ELSE 580 END) as size,
-              (SELECT max FROM max_height) - MAX(genesis_height) as block_age,
-              max(timestamp) as most_recent_timestamp
-          FROM ordinals
-          WHERE array_length(parents,1) IS NULL
-              AND delegate is NULL
-              AND genesis_height > ((SELECT max FROM max_height) - 2016)
-              AND content_category IN ('image')
-              AND spaced_rune IS NULL
-          GROUP BY sha256
+        SELECT
+          MIN(db.dbscan_class) as dbscan_class,
+          CASE
+            WHEN db.dbscan_class IS NULL THEN -o.sequence_number
+            WHEN db.dbscan_class = -1 THEN -o.sequence_number
+            ELSE db.dbscan_class
+          END AS CLASS,
+          COUNT(*) AS COUNT,
+          MIN(o.sequence_number) as sequence_number,
+          SUM(genesis_fee) as fee,
+          SUM(CASE WHEN delegate is null THEN content_length ELSE 580 END) as size,
+          (SELECT max FROM max_height) - MAX(genesis_height) as block_age,
+          max(timestamp) as most_recent_timestamp
+        FROM ordinals o
+	      LEFT JOIN dbscan db on o.sha256 = db.sha256
+        WHERE array_length(parents,1) IS NULL
+          AND delegate is NULL
+          AND genesis_height > ((SELECT max FROM max_height) - 2016)
+          AND content_category IN ('image')
+          AND spaced_rune IS NULL
+        GROUP BY CLASS
       ),
       b as (
-          SELECT DISTINCT ON (o.sha256)
-              id,
-              sequence_number,
-              sha256,
-              spaced_rune
-          from ordinals o where o.sha256 in (SELECT sha256 from a)
-          order by o.sha256, sequence_number
+        SELECT
+          id,
+	        sequence_number,
+          spaced_rune
+        from ordinals o where o.sequence_number in (SELECT sequence_number from a)
       )
-      SELECT a.*, b.id, b.sequence_number from a left join b on a.sha256=b.sha256 where b.spaced_rune is null;
+      SELECT a.*, b.id from a left join b on a.sequence_number=b.sequence_number where b.spaced_rune is null;
 
       --union
       CREATE TABLE trending_union AS
