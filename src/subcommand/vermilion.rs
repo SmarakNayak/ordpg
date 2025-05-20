@@ -4305,12 +4305,12 @@ impl Vermilion {
 
   async fn trending_feed(n: Query<QueryNumber>, State(server_config): State<ApiServerConfig>, session: Session<SessionNullPool>) -> impl axum::response::IntoResponse {
     println!("Trending feed - Session: {:?}", session);
-    let mut bands: Vec<(f64, f64)> = session.get("trending_bands_seen").unwrap_or(Vec::new());
-    for band in bands.iter() {
-      log::info!("Trending Band: {:?}", band);
+    let mut bands_seen: Vec<(f64, f64)> = session.get("trending_bands_seen").unwrap_or(Vec::new());
+    for band in bands_seen.iter() {
+      println!("Trending Band: {:?}", band);
     }
     let n = n.0.n.unwrap_or(20);
-    let trending_items = match Self::get_trending_feed_items(server_config.deadpool, n, bands.clone()).await {
+    let trending_items = match Self::get_trending_feed_items(server_config.deadpool, n, bands_seen.clone()).await {
       Ok(trending_items) => trending_items,
       Err(error) => {
         log::warn!("Error getting /trending_feed: {}", error);
@@ -4324,7 +4324,8 @@ impl Vermilion {
       .iter()
       .map(|item| (item.activity.band_start, item.activity.band_end))
       .collect();
-    session.set("trending_bands_seen", bands.append(&mut band_tuples));
+    bands_seen.append(&mut band_tuples);
+    session.set("trending_bands_seen", bands_seen);
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
       Json(trending_items),
