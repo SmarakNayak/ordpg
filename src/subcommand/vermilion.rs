@@ -7847,7 +7847,7 @@ impl Vermilion {
           AND o1.parents = '{}'
           AND o1.genesis_height > ((SELECT max FROM max_height) - 2016)
           AND o1.spaced_rune IS NULL
-          AND o2.content_category IN ('image', 'html')
+          AND o2.content_category IN ('image')
           GROUP BY o1.delegate
       ), b AS (
           SELECT 
@@ -7879,7 +7879,7 @@ impl Vermilion {
         FROM ordinals
         WHERE array_length(parents,1) > 0
           AND genesis_height > ((SELECT max FROM max_height) - 2016)
-          AND content_category IN ('image', 'html')
+          AND content_category IN ('image')
           AND spaced_rune IS NULL
         GROUP BY parents
       ),
@@ -7913,7 +7913,7 @@ impl Vermilion {
           WHERE array_length(parents,1) IS NULL
               AND delegate is NULL
               AND genesis_height > ((SELECT max FROM max_height) - 2016)
-              AND content_category IN ('image', 'html')
+              AND content_category IN ('image')
               AND spaced_rune IS NULL
           GROUP BY sha256
       ),
@@ -8005,6 +8005,7 @@ impl Vermilion {
       $$;"#).await?;
     Ok(())
   }
+
 
   async fn create_collection_summary_procedure(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
