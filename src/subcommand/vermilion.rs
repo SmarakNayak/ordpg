@@ -4304,6 +4304,7 @@ impl Vermilion {
   }
 
   async fn trending_feed(n: Query<QueryNumber>, State(server_config): State<ApiServerConfig>, session: Session<SessionNullPool>) -> impl axum::response::IntoResponse {
+    println!("Trending feed - Session: {:?}", session);
     let bands: Vec<(f64, f64)> = session.get("trending_bands_seen").unwrap_or(Vec::new());
     for band in bands.iter() {
       log::debug!("Trending Band: {:?}", band);
