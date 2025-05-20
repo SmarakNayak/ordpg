@@ -6009,11 +6009,15 @@ impl Vermilion {
   }
 
   async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands: Vec<(f64, f64)>) -> anyhow::Result<Vec<TrendingItem>> {
+    let t0 = Instant::now();
     let n = std::cmp::min(n, 100);
     let all_bands = Self::get_trending_bands(pool.clone()).await?;
     let mut rng = rand::rngs::StdRng::from_entropy();
     let mut random_floats = Vec::new();
+    let mut r0 = Instant::now();
+    let mut rcount = 0;
     while random_floats.len() < n as usize {
+      let s0 = Instant::now();
       let random_float = rng.gen::<f64>();
       let mut already_seen = false;
       for band in already_seen_bands.iter() {
@@ -6031,7 +6035,18 @@ impl Vermilion {
           }
         }
       }
+      let s1 = Instant::now();
+      if already_seen {
+        rcount += 1;
+        println!("Generated invalid random float in {} us", (s1-s0).as_micros());
+      } else {
+        println!("Generated valid random float in {} us after {} iterations", (Instant::now()-r0).as_micros(), rcount+1);
+        r0 = Instant::now();
+        rcount = 0;
+      }
     }
+    let t1 = Instant::now();
+    println!("Generated {} random floats in {} us", random_floats.len(), (t1-t0).as_micros());
 
     let mut set = JoinSet::new();
     let mut trending_items = Vec::new();
@@ -6042,6 +6057,9 @@ impl Vermilion {
       let trending_item = res??;
       trending_items.push(trending_item);
     }
+    let t2 = Instant::now();
+    println!("Fetched {} trending items in {} us", trending_items.len(), (t2-t1).as_micros());
+    println!("Total time taken: {} us", (t2-t0).as_micros());
     Ok(trending_items)
   }
 
