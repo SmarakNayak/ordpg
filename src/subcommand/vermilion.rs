@@ -6012,7 +6012,11 @@ impl Vermilion {
     let t0 = Instant::now();
     let n = std::cmp::min(n, 100);
     let all_bands = Self::get_trending_bands(pool.clone()).await?;
+    let t01 = Instant::now();
+    println!("Fetched {} bands in {} us", all_bands.len(), (t01-t0).as_micros());
     let mut rng = rand::rngs::StdRng::from_entropy();
+    let t02 = Instant::now();
+    println!("Created RNG in {} us", (t02-t01).as_micros());
     let mut random_floats = Vec::new();
     let mut r0 = Instant::now();
     let mut rcount = 0;
