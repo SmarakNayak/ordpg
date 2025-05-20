@@ -6098,7 +6098,12 @@ impl Vermilion {
   }
 
   async fn get_trending_bands(pool: deadpool) -> anyhow::Result<Vec<(f64, f64)>> {
+    let t0 = Instant::now();
+    let pool_status = pool.status();
+    println!("Pool status: {:?}", pool_status);
     let conn = pool.get().await?;
+    let t1 = Instant::now();
+    println!("Got connection in {} us", (t1-t0).as_micros());
     let result = conn.query(
       "SELECT band_start, band_end from trending_summary", 
       &[]
@@ -6107,6 +6112,8 @@ impl Vermilion {
     for row in result {
       bands.push((row.get("band_start"), row.get("band_end")));
     }
+    let t2 = Instant::now();
+    println!("Fetched {} internal bands in {} us", bands.len(), (t2-t1).as_micros());
     Ok(bands)
   }
 
@@ -7820,7 +7827,6 @@ impl Vermilion {
       DROP TABLE IF EXISTS trending_parents;
       DROP TABLE IF EXISTS trending_others;
       DROP TABLE IF EXISTS trending_union;
-      DROP TABLE IF EXISTS trending_summary;
 
       --delegates
       CREATE TABLE trending_delegates AS
@@ -7957,7 +7963,7 @@ impl Vermilion {
       FROM trending_others;
 
       --summary (sum(orphan_delegate_count) + 1)
-      CREATE TABLE trending_summary AS
+      CREATE TABLE trending_summary_new AS
       WITH A AS (
           SELECT
               ids,
@@ -7988,6 +7994,12 @@ impl Vermilion {
       left join delegates_total d on d.delegate_id=a.id
       left join inscription_comments_total ic on ic.delegate_id=a.id
       left join children c on c.parents = a.ids;
+
+      IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'trending_summary') THEN
+        alter table trending_summary rename to trending_summary_old;
+      END IF;
+      alter table trending_summary_new rename to trending_summary;
+      drop table if exists trending_summary_old;
 
       END;
       $$;"#).await?;
