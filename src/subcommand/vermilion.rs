@@ -1859,6 +1859,14 @@ impl Vermilion {
 
       let response = reqwest::get(&url).await?;
 
+      if response.status() == 429 {
+        println!("Error getting recently traded collections: {}", response.status());
+        println!("{}", response.text().await?);
+        println!("Rate limit exceeded, retrying in 2 minutes");
+        tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+        break;
+      }
+
       if response.status() != 200 {
         println!("Error getting recently traded collections: {}", response.status());
         println!("{}", response.text().await?);
@@ -1917,6 +1925,14 @@ impl Vermilion {
         symbol,
         request_start_time.elapsed().as_secs_f64()
       );
+
+      if response.status() == 429 {
+        println!("Rate limit exceeded for {}: {}", symbol, response.status());
+        println!("{}", response.text().await?);
+        println!("Retrying in {} minutes", attempt);
+        tokio::time::sleep(std::time::Duration::from_secs(61*attempt)).await;
+        continue;
+      }
 
       if response.status() != 200 {
         println!("Error getting collection metadata for {}: {}", symbol, response.status());
@@ -2003,9 +2019,15 @@ impl Vermilion {
     for traded_collection in traded_collections {
       if let Some(stored_collection) = stored_collections.iter().find(|item| item.collection_symbol == traded_collection.collection_symbol) {
         if stored_collection.supply != traded_collection.supply {
-          log::info!("Symbol {} has updated supply", traded_collection.collection_symbol);
-          log::info!("Stored: {:?}, Traded: {:?}", stored_collection.supply, traded_collection.supply);
+          log::info!("Supply in metadata for {} updated from stored: {:?} to traded: {:?}", traded_collection.collection_symbol, stored_collection.supply, traded_collection.supply);
           update_symbols.push(traded_collection.collection_symbol.clone());
+        } else {
+          //compare actual supplies - update if different
+          let stored_supply = Self::get_stored_collection_supply(pool.clone(), traded_collection.collection_symbol.clone()).await?;
+          if Self::is_me_supply_larger(settings.clone(), &traded_collection.collection_symbol, stored_supply as u64).await? {
+            log::info!("Detected supply larger than {} on ME for Symbol {}",stored_supply, traded_collection.collection_symbol);
+            update_symbols.push(traded_collection.collection_symbol.clone());
+          }
         }
       } else {
         // Symbol in traded but not in stored
@@ -2052,6 +2074,14 @@ impl Vermilion {
         request_start_time.elapsed().as_secs_f64()
       );
 
+      if response.status() == 429 {
+        println!("Error getting tokens for {}: {}", symbol, response.status());
+        println!("{}", response.text().await?);
+        println!("Rate limit exceeded, retrying in 2 minutes");
+        tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+        continue;
+      }
+
       if response.status() != 200 {
         println!("Error getting tokens for {}: {}", symbol, response.status());
         println!("{}", response.text().await?);
@@ -2083,6 +2113,39 @@ impl Vermilion {
       start_time.elapsed().as_secs_f64()
     );
     Ok(tokens)
+  }
+
+  async fn is_me_supply_larger(settings: Settings, symbol: &str, stored_supply: u64) -> Result<bool, Box<dyn std::error::Error>> {
+    let expected_remainder = stored_supply % 20; // magic eden requires multiples of 20
+    let offset = stored_supply - expected_remainder;
+    let url = format!(
+      "https://api-mainnet.magiceden.dev/v2/ord/btc/tokens?limit=20&offset={}&collectionSymbol={}",
+      offset,
+      symbol
+    );
+    let mut headers = reqwest::header::HeaderMap::new();
+    let token = settings.magiceden_api_key().map(|s| s.to_string()).ok_or("No Magic Eden Api key found")?;
+    headers.insert(reqwest::header::AUTHORIZATION, format!("Bearer {}", token).parse().unwrap());
+    let client = reqwest::Client::new();
+    let response = client.get(&url).headers(headers).send().await?;
+    if response.status() == 429 {
+      println!("Rate limit exceeded, pausing for 2 minutes");
+      tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+    }
+    if response.status() != 200 {
+      println!("Error getting tokens for {}: {}", symbol, response.status());
+      println!("{}", response.text().await?);
+      return Err("Error occurred, 200 not returned".into());
+    }
+
+    let data: JsonValue = response.json().await?;
+    let tokens_array = data.get("tokens").ok_or("tokens not found")?;
+    let remainder_length = tokens_array.as_array().ok_or("tokens is not an array")?.len();
+    if remainder_length > expected_remainder as usize {
+      return Ok(true);
+    } else {
+      return Ok(false);
+    }
   }
 
   async fn update_all_tokens(pool: deadpool_postgres::Pool, settings: Settings) -> Result<(), Box<dyn std::error::Error>> {
@@ -5257,6 +5320,13 @@ impl Vermilion {
       symbols.push(symbol);
     }
     Ok(symbols)
+  }
+
+  async fn get_stored_collection_supply(pool: deadpool, collection_symbol: String) -> anyhow::Result<i64> {
+    let conn = pool.get().await?;
+    let row = conn.query_one("SELECT supply from collection_summary WHERE collection_symbol=$1", &[&collection_symbol]).await?;
+    let supply: i64 = row.get(0);
+    Ok(supply)
   }
 
   async fn get_ordinal_content(pool: deadpool, inscription_id: String) -> anyhow::Result<ContentBlob> {
