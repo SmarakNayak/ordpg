@@ -873,7 +873,7 @@ impl Vermilion {
           },
           Err(err) => {
             println!("Error getting inscription info: {:?}", err);
-            continue;;
+            continue;
           }
         };
         let address = match Self::get_last_ordinal_transfer(deadpool.clone(), inscription.id.to_string()).await {
@@ -2052,6 +2052,10 @@ impl Vermilion {
     println!("Getting metadata for traded collections: {}", collections.len());
     let mut t0 = Instant::now();
     for (i, symbol) in collections.iter().enumerate() {
+      // break if ctrl-c is received
+      if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
+        return Err("Shutting down".into());
+      }
       if let Some(metadata) = Self::get_collection_metadata(settings.clone(), symbol).await? {
         traded_metadata.push(metadata);
       }
@@ -2094,6 +2098,10 @@ impl Vermilion {
     //let traded_collections = Self::get_recently_traded_collection_metadata(settings.clone()).await?;
     let mut update_symbols = Vec::new();
     for traded_collection in traded_collections {
+      // break if ctrl-c is received
+      if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
+        return Err("Shutting down".into());
+      }
       if let Some(stored_collection) = stored_collections.iter().find(|item| item.collection_symbol == traded_collection.collection_symbol) {
         if stored_collection.supply != traded_collection.supply {
           log::info!("Supply in metadata for {} updated from stored: {:?} to traded: {:?}", traded_collection.collection_symbol, stored_collection.supply, traded_collection.supply);
