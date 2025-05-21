@@ -846,6 +846,10 @@ impl Vermilion {
     //   let mut i=0;
     //   let mut t0 = Instant::now();
     //   loop {
+    //     // break if ctrl-c is received
+    //     if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
+    //       return;
+    //     }
     //     let inscription = match index.get_inscription_entry_by_sequence_number(i) {
     //       Ok(inscription) => {
     //         match inscription {
@@ -907,6 +911,7 @@ impl Vermilion {
     //     }
     //   }
     // });
+    // return;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
