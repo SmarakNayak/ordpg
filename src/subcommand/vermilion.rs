@@ -831,82 +831,82 @@ impl Vermilion {
   }
 
   pub(crate) fn run_inscription_indexer(self, settings: Settings, index: Arc<Index>) {    
-    let rt = tokio::runtime::Builder::new_multi_thread()
-      .enable_all()
-      .build()
-      .unwrap();
-    rt.block_on(async {
-      let deadpool = match Self::get_deadpool(settings.clone()).await {
-        Ok(deadpool) => deadpool,
-        Err(err) => {
-          println!("Error creating deadpool: {:?}", err);
-          return;
-        }
-      };      
-      let mut i=0;
-      let mut t0 = Instant::now();
-      loop {
-        let inscription = match index.get_inscription_entry_by_sequence_number(i) {
-          Ok(inscription) => {
-            match inscription {
-              Some(inscription) => inscription,
-              None => {
-                println!("No inscription found for sequence number: {}. Breaking from loop", i);
-                continue;
-              }
-            }
-          },
-          Err(err) => {
-            println!("Error getting inscription entry by sequence number: {:?}", err);
-            continue;
-          }
-        };
-        let info = match index.inscription_info(subcommand::server::query::Inscription::Id(inscription.id), None) {
-          Ok(info) => {
-            match info {
-              Some(info) => info,
-              None => {
-                println!("No inscription info found for sequence number: {}. Breaking from loop", i);
-                continue;
-              }
-            }
-          },
-          Err(err) => {
-            println!("Error getting inscription info: {:?}", err);
-            continue;
-          }
-        };
-        let address = match Self::get_last_ordinal_transfer(deadpool.clone(), inscription.id.to_string()).await {
-          Ok(transfer) => transfer.address,
-          Err(err) => {
-            println!("Error getting last ordinal transfer: {:?}", err);
-            continue;
-          }
-        };
-        let indexed_address = match info.0.address {
-          Some(address) => address,
-          None => {
-            println!("No address found for inscription: {}. Breaking from loop", inscription.id);
-            i+= 1;
-            continue;
-          }
-        };
-        if indexed_address != address {
-          println!("Address mismatch for inscription: {}. Breaking from loop", inscription.id);
-        }
-        i+= 1;
-        if i % 10000 == 0 {
-          let t1 = Instant::now();
-          let elapsed = t1.duration_since(t0);
-          println!("Checked {} addresses in {:?}", i, elapsed);
-          t0 = t1;
-        }
-        if i > 100_000_000 {
-          println!("Breaking from loop after 100_000_000 iterations");
-          break;
-        }
-      }
-    });
+    // let rt = tokio::runtime::Builder::new_multi_thread()
+    //   .enable_all()
+    //   .build()
+    //   .unwrap();
+    // rt.block_on(async {
+    //   let deadpool = match Self::get_deadpool(settings.clone()).await {
+    //     Ok(deadpool) => deadpool,
+    //     Err(err) => {
+    //       println!("Error creating deadpool: {:?}", err);
+    //       return;
+    //     }
+    //   };      
+    //   let mut i=0;
+    //   let mut t0 = Instant::now();
+    //   loop {
+    //     let inscription = match index.get_inscription_entry_by_sequence_number(i) {
+    //       Ok(inscription) => {
+    //         match inscription {
+    //           Some(inscription) => inscription,
+    //           None => {
+    //             println!("No inscription found for sequence number: {}. Breaking from loop", i);
+    //             continue;
+    //           }
+    //         }
+    //       },
+    //       Err(err) => {
+    //         println!("Error getting inscription entry by sequence number: {:?}", err);
+    //         continue;
+    //       }
+    //     };
+    //     let info = match index.inscription_info(subcommand::server::query::Inscription::Id(inscription.id), None) {
+    //       Ok(info) => {
+    //         match info {
+    //           Some(info) => info,
+    //           None => {
+    //             println!("No inscription info found for sequence number: {}. Breaking from loop", i);
+    //             continue;
+    //           }
+    //         }
+    //       },
+    //       Err(err) => {
+    //         println!("Error getting inscription info: {:?}", err);
+    //         continue;
+    //       }
+    //     };
+    //     let address = match Self::get_last_ordinal_transfer(deadpool.clone(), inscription.id.to_string()).await {
+    //       Ok(transfer) => transfer.address,
+    //       Err(err) => {
+    //         println!("Error getting last ordinal transfer: {:?}", err);
+    //         continue;
+    //       }
+    //     };
+    //     let indexed_address = match info.0.address {
+    //       Some(address) => address,
+    //       None => {
+    //         println!("No address found for inscription: {}. Breaking from loop", inscription.id);
+    //         i+= 1;
+    //         continue;
+    //       }
+    //     };
+    //     if indexed_address != address {
+    //       println!("Address mismatch for inscription: {}. Breaking from loop", inscription.id);
+    //     }
+    //     i+= 1;
+    //     if i % 10000 == 0 {
+    //       let t1 = Instant::now();
+    //       let elapsed = t1.duration_since(t0);
+    //       println!("Checked {} addresses in {:?}", i, elapsed);
+    //       t0 = t1;
+    //     }
+    //     if i > 100_000 {
+    //       println!("Breaking from loop after 100_000 iterations");
+    //       break;
+    //     }
+    //   }
+    // });
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
