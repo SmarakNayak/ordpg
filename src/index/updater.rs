@@ -555,9 +555,6 @@ impl Updater<'_> {
       log::trace!("Indexing transaction {tx_offset}…");
 
       inscription_updater.tx_offset = tx_offset as u32;
-      if let Some((_tx, _txid)) = block.txdata.first() {
-        inscription_updater.tx_offset = 999999 as u32;
-      }
 
       let input_utxo_entries = if tx_offset == 0 {
         Vec::new()
