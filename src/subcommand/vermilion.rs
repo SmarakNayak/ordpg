@@ -7502,7 +7502,7 @@ impl Vermilion {
           SELECT total INTO previous_comment_total FROM inscription_comments_total WHERE delegate_id = NEW.delegate;
           -- Insert or update the total in inscription_comments_total
           INSERT INTO inscription_comments_total (delegate_id, total) VALUES (NEW.delegate, COALESCE(previous_comment_total, 0) + 1)
-          ON CONFLICT (delegate_id) DO UPDATE SET total = EXCLUDED.total +1;
+          ON CONFLICT (delegate_id) DO UPDATE SET total = EXCLUDED.total;
           -- Insert the new delegate
           INSERT INTO inscription_comments (delegate_id, comment_id, comment_number, comment_sequence_number, comment_edition) VALUES (NEW.delegate, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_comment_total, 0) + 1)
           ON CONFLICT DO NOTHING;
