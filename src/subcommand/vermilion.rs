@@ -446,8 +446,29 @@ pub struct TrendingItemActivity {
 }
 
 #[derive(Serialize)]
+pub struct DiscoverItemActivity {
+  ids: Vec<String>,
+  block_age: i64,
+  most_recent_timestamp: i64,
+  children_count: i64,
+  delegate_count: i64,
+  comment_count: i64,
+  edition_count: i64,
+  band_start: f64,
+  band_end: f64,
+  class_band_start: f64,
+  class_band_end: f64,
+}
+
+#[derive(Serialize)]
 pub struct TrendingItem {
   activity: TrendingItemActivity,
+  inscriptions: Vec<FullMetadata>
+}
+
+#[derive(Serialize)]
+pub struct DiscoverItem {
+  activity: DiscoverItemActivity,
   inscriptions: Vec<FullMetadata>
 }
 
@@ -1643,6 +1664,7 @@ impl Vermilion {
         let app = Router::new()
           .route("/random_inscriptions", get(Self::random_inscriptions))          
           .route("/trending_feed", get(Self::trending_feed))
+          .route("/discover_feed", get(Self::discover_feed))
           .layer(SessionLayer::new(session_store))
           .route("/", get(Self::root))
           .route("/home", get(Self::home))
@@ -2494,6 +2516,7 @@ impl Vermilion {
     Self::create_collection_summary_procedure(pool.clone()).await.context("Failed to create collection summary proc")?;
     Self::create_edition_procedure(pool.clone()).await.context("Failed to create edition proc")?;
     Self::create_weights_procedure(pool.clone()).await.context("Failed to create weights proc")?;
+    Self::create_discover_weights_procedure(pool.clone()).await.context("Failed to create discover weights proc")?;
     Self::create_trending_weights_procedure(pool.clone()).await.context("Failed to create trending weights proc")?;
     Self::create_on_chain_collection_summary_procedure(pool.clone()).await.context("Failed to create on chain collection summary proc")?;
     Self::create_single_on_chain_collection_summary_procedure(pool.clone()).await.context("Failed to create single on chain collection summary proc")?;
@@ -4331,6 +4354,34 @@ impl Vermilion {
     ).into_response()
   }
 
+  async fn discover_feed(n: Query<QueryNumber>, State(server_config): State<ApiServerConfig>, session: Session<SessionNullPool>) -> impl axum::response::IntoResponse {
+    let mut bands_seen: Vec<(f64, f64)> = session.get("discover_bands_seen").unwrap_or(Vec::new());
+    for band in bands_seen.iter() {
+      log::debug!("Discover Band: {:?}", band);
+    }
+    let n = n.0.n.unwrap_or(20);
+    let discover_items = match Self::get_discover_feed_items(server_config.deadpool, n, bands_seen.clone()).await {
+      Ok(discover_items) => discover_items,
+      Err(error) => {
+        log::warn!("Error getting /discover_feed: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving discover feed"),
+        ).into_response();
+      }
+    };
+    let mut band_tuples: Vec<(f64, f64)> = discover_items
+      .iter()
+      .map(|item| (item.activity.class_band_start, item.activity.class_band_end))
+      .collect();
+    bands_seen.append(&mut band_tuples);
+    session.set("discover_bands_seen", bands_seen);
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(discover_items),
+    ).into_response()
+  }
+
   async fn inscriptions(params: Query<InscriptionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
     //1. parse params
     let params = ParsedInscriptionQueryParams::from(params.0);
@@ -6089,6 +6140,71 @@ impl Vermilion {
     Ok(bands)
   }
 
+  async fn get_discover_feed_items(pool: deadpool, n: u32, already_seen_bands: Vec<(f64, f64)>) -> anyhow::Result<Vec<DiscoverItem>> {
+    let n = std::cmp::min(n, 100);
+    let mut rng = rand::rngs::StdRng::from_entropy();
+    let mut random_floats = Vec::new();
+    while random_floats.len() < n as usize {
+      let random_float = rng.gen::<f64>();
+      let mut already_seen = false;
+      for band in already_seen_bands.iter() {
+        if random_float >= band.0 && random_float < band.1 {
+          already_seen = true;
+          break;
+        }
+      }
+      if !already_seen {
+        // Normally, we would check against the discover bands here, but pulling from the discover bands is expensive, so we skip it for now
+        // in the future we can cache the discover bands in a table and check against that
+        random_floats.push(random_float);
+      }
+    }
+
+    let mut set = JoinSet::new();
+    let mut discover_items = Vec::new();
+    for i in 0..n {
+      set.spawn(Self::get_discover_feed_item(pool.clone(), random_floats[i as usize]));
+    }
+    while let Some(res) = set.join_next().await {
+      let discover_item = res??;
+      discover_items.push(discover_item);
+    }
+    Ok(discover_items)
+  }
+
+  async fn get_discover_feed_item(pool: deadpool, random_float: f64) -> anyhow::Result<DiscoverItem> {
+    let conn = pool.get().await?;
+    let random_inscription_band = conn.query_one(
+      "SELECT ids, children_count, delegate_count, comment_count, edition_count, block_age, most_recent_timestamp, band_start, band_end, class_band_start, class_band_end from discover_weights where band_end>$1 order by band_end limit 1",
+      &[&random_float]
+    ).await?;
+    let discover_item_activity = DiscoverItemActivity {
+      ids: random_inscription_band.get("ids"),
+      block_age: random_inscription_band.get("block_age"),
+      most_recent_timestamp: random_inscription_band.get("most_recent_timestamp"),
+      children_count: random_inscription_band.get("children_count"),
+      delegate_count: random_inscription_band.get("delegate_count"),
+      comment_count: random_inscription_band.get("comment_count"),
+      edition_count: random_inscription_band.get("edition_count"),
+      band_start: random_inscription_band.get("band_start"),
+      band_end: random_inscription_band.get("band_end"),
+      class_band_start: random_inscription_band.get("class_band_start"),
+      class_band_end: random_inscription_band.get("class_band_end")
+    };
+    let result = conn.query(
+      "SELECT * from ordinals_full_v where id=ANY($1)", 
+      &[&discover_item_activity.ids]
+    ).await?;
+    let mut inscriptions = Vec::new();
+    for row in result {
+      inscriptions.push(Self::map_row_to_fullmetadata(row));
+    }
+    Ok(DiscoverItem {
+      inscriptions: inscriptions,
+      activity: discover_item_activity
+    })
+  }
+
   fn create_inscription_query_string(base_query: String, params: ParsedInscriptionQueryParams) -> String {
     let mut query = base_query;
     if params.content_types.len() > 0 {
@@ -7622,6 +7738,7 @@ impl Vermilion {
     Ok(())
   }
   
+  // deprecated for now
   async fn create_weights_procedure(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
     conn.simple_query(r"DROP PROCEDURE IF EXISTS update_weights").await?;
@@ -7786,6 +7903,122 @@ impl Vermilion {
     Ok(())
   }
   
+  async fn create_discover_weights_procedure(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
+      r#"CREATE OR REPLACE PROCEDURE update_discover_weights()
+      LANGUAGE plpgsql
+      AS $$
+      BEGIN
+        drop table if exists discover_1, discover_2, discover_3, discover_4;
+        CREATE TABLE discover_1 as
+        WITH max_height AS (
+          SELECT max(genesis_height) as max 
+          FROM ordinals
+        )
+        select sha256, 
+               min(sequence_number) as first_number, 
+               sum(genesis_fee) as total_fee, 
+               max(content_length) as content_length, 
+               count(*) as edition_count,
+               (SELECT max FROM max_height) - max(genesis_height) as block_age,
+               max(timestamp) as most_recent_timestamp
+        from ordinals 
+        where content_type ILIKE 'image%' and content_type !='image/svg+xml' and sha256 in (
+          select sha256 
+          from content_moderation 
+          where coalesce(human_override_moderation_flag, automated_moderation_flag) = 'SAFE_MANUAL' 
+          or coalesce(human_override_moderation_flag, automated_moderation_flag) = 'SAFE_AUTOMATED')
+        group by sha256;
+
+        CREATE TABLE discover_2 AS
+        SELECT w.*,
+              CASE
+                  WHEN db.dbscan_class IS NULL THEN -w.first_number
+                  WHEN db.dbscan_class = -1 THEN -w.first_number
+                  ELSE db.dbscan_class
+              END AS CLASS
+        FROM discover_1 w
+        LEFT JOIN dbscan db ON w.sha256=db.sha256;
+
+        CREATE TABLE discover_3 AS
+        SELECT *,
+              (10-log(10,first_number+1))*total_fee AS weight
+        FROM discover_2;
+
+        CREATE TABLE discover_4 AS
+        SELECT *,
+              sum(weight) OVER(ORDER BY class, first_number)/sum(weight) OVER() AS band_end, 
+              coalesce(sum(weight) OVER(ORDER BY class, first_number ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS band_start
+        FROM discover_3;
+
+        CREATE TABLE discover_weights_new AS
+        WITH a AS (
+          SELECT sha256,
+                class,
+                first_number,
+                edition_count,
+                block_age,
+                most_recent_timestamp,
+                CAST(total_fee AS FLOAT8),
+                CAST(weight AS FLOAT8),
+                CAST(band_start AS FLOAT8),
+                CAST(band_end AS FLOAT8),
+                CAST(min(band_start) OVER(PARTITION BY class) AS FLOAT8) AS class_band_start,
+                CAST(max(band_end) OVER(PARTITION BY class) AS FLOAT8) AS class_band_end
+          FROM discover_4
+        ),
+        b as (
+          SELECT
+            id,
+            ARRAY[id] as ids,
+            sequence_number
+          from ordinals o where o.sequence_number in (SELECT sequence_number from a)
+        ),
+        children AS (
+          SELECT
+            parents,
+            count(*) as children_count
+          from ordinals o where o.sequence_number in (SELECT sequence_number from a)
+          group by parents
+        )
+        SELECT 
+          a.*,
+          b.id,
+          b.ids,
+          CAST(coalesce(c.children_count, 0) AS INT8) as children_count,
+          CAST(coalesce(d.total, 0) AS INT8) as delegate_count,
+          CAST(coalesce(ic.total, 0) AS INT8) as comment_count
+        FROM a
+        left join b on a.first_number=b.sequence_number
+        left join delegates_total d on d.delegate_id=b.id
+        left join inscription_comments_total ic on ic.delegate_id=b.id
+        left join children c on c.parents = b.ids;
+
+        CREATE INDEX discover_idx_band_start_new ON discover_weights_new (band_start);
+        CREATE INDEX discover_idx_band_end_new ON discover_weights_new (band_end);
+
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'discover_weights') THEN
+          ALTER TABLE discover_weights RENAME to discover_weights_old;
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'discover_idx_band_start') THEN          
+          ALTER INDEX discover_idx_band_start RENAME TO discover_idx_band_start_old;
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'discover_idx_band_end') THEN          
+          ALTER INDEX discover_idx_band_end RENAME TO discover_idx_band_end_old;
+        END IF;
+
+        ALTER TABLE discover_weights_new RENAME to discover_weights;
+        ALTER INDEX discover_idx_band_start_new RENAME TO discover_idx_band_start;
+        ALTER INDEX discover_idx_band_end_new RENAME TO discover_idx_band_end;
+        DROP TABLE IF EXISTS discover_weights_old;
+        DROP INDEX IF EXISTS discover_idx_band_start_old;
+        DROP INDEX IF EXISTS discover_idx_band_end_old;
+      END;
+      $$;"#).await?;
+    Ok(())
+  }
+
   async fn create_trending_weights_procedure(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
     conn.simple_query(r"DROP PROCEDURE IF EXISTS update_trending_weights").await?;
@@ -7995,7 +8228,6 @@ impl Vermilion {
       $$;"#).await?;
     Ok(())
   }
-
 
   async fn create_collection_summary_procedure(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
