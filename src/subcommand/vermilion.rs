@@ -2610,7 +2610,7 @@ impl Vermilion {
     conn.simple_query(
       r"CREATE TABLE IF NOT EXISTS ordinals (
         sequence_number bigint not null primary key,
-        id varchar(80) not null,
+        id varchar(80) not null unique,
         content_length bigint,
         content_type text,
         content_encoding text,
