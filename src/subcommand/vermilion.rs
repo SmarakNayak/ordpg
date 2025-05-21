@@ -2162,6 +2162,7 @@ impl Vermilion {
       }
 
       if response.status() != 200 {
+        retry_count += 1;
         if retry_count < 10 {
           log::info!("Error getting tokens for {}: {}", symbol, response.status());
           log::info!("{}", response.text().await?);
@@ -2224,6 +2225,7 @@ impl Vermilion {
         continue;
       }
       if response.status() != 200 {
+        retry_count += 1;
         if retry_count < 10 {
           log::info!("Error getting supply for {}: {}", symbol, response.status());
           log::info!("{}", response.text().await?);
