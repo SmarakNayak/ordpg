@@ -1930,7 +1930,7 @@ impl Vermilion {
         println!("Rate limit exceeded for {}: {}", symbol, response.status());
         println!("{}", response.text().await?);
         println!("Retrying in {} minutes", attempt);
-        tokio::time::sleep(std::time::Duration::from_secs(61*attempt)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(61*(attempt+1))).await;
         continue;
       }
 
@@ -1938,7 +1938,7 @@ impl Vermilion {
         println!("Error getting collection metadata for {}: {}", symbol, response.status());
         println!("{}", response.text().await?);
         println!("Retrying in {} seconds", 1*attempt);
-        tokio::time::sleep(std::time::Duration::from_secs(1*attempt)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(attempt+1)).await;
         continue;
       }
 
