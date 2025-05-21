@@ -6457,7 +6457,7 @@ impl Vermilion {
   async fn get_last_ordinal_transfer(pool: deadpool, inscription_id: String) -> anyhow::Result<Transfer> {
     let conn = pool.get().await?;
     let result = conn.query_one(
-      "SELECT * FROM transfers WHERE id=$1 ORDER BY block_number DESC LIMIT 1", 
+      "SELECT * FROM addresses WHERE id=$1 LIMIT 1", 
       &[&inscription_id]
     ).await?;
     let transfer = Transfer {
@@ -6482,7 +6482,7 @@ impl Vermilion {
   async fn get_last_ordinal_transfer_by_number(pool: deadpool, number: i64) -> anyhow::Result<Transfer> {
     let conn = pool.get().await?;
     let result = conn.query_one(
-      "with a as (Select id from ordinals where number=$1) select b.* from transfers b, a where a.id=b.id order by block_number desc limit 1", 
+      "with a as (Select id from ordinals where number=$1) select b.* from addresses b, a where a.id=b.id limit 1", 
       &[&number]
     ).await?;
     let transfer = Transfer {
