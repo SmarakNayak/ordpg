@@ -7538,23 +7538,14 @@ impl Vermilion {
           SELECT total INTO previous_reference_total 
           FROM inscription_references_total 
           WHERE reference_id = ref_id;
-
-          -- Insert the new reference and check if it was successful (it is possible for one inscription to reference the same inscription multiple times)
-          -- The ON CONFLICT DO NOTHING will ensure that if the reference already exists, it won't be inserted again
-          INSERT INTO inscription_references (reference_id, recursive_id, recursive_number, recursive_sequence_number, recursive_edition) 
-          VALUES (ref_id, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_reference_total, 0) + 1)
-          ON CONFLICT DO NOTHING;
-
-          -- Skip to next iteration if no rows were inserted (i.e., conflict occurred)
-          IF NOT FOUND THEN
-            CONTINUE;
-          END IF;
-          
           -- Insert or update the total in inscription_references_total
           INSERT INTO inscription_references_total (reference_id, total) 
           VALUES (ref_id, COALESCE(previous_reference_total, 0) + 1)
           ON CONFLICT (reference_id) DO UPDATE 
           SET total = EXCLUDED.total;
+          -- Insert the new reference 
+          INSERT INTO inscription_references (reference_id, recursive_id, recursive_number, recursive_sequence_number, recursive_edition) 
+          VALUES (ref_id, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_reference_total, 0) + 1);
         END LOOP;
 
         -- 3. Update satributes
