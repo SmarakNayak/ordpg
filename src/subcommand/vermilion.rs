@@ -7492,8 +7492,7 @@ impl Vermilion {
           INSERT INTO delegates_total (delegate_id, total) VALUES (NEW.delegate, COALESCE(previous_delegate_total, 0) + 1)
           ON CONFLICT (delegate_id) DO UPDATE SET total = EXCLUDED.total;
           -- Insert the new delegate
-          INSERT INTO delegates (delegate_id, bootleg_id, bootleg_number, bootleg_sequence_number, bootleg_block_height, bootleg_edition) VALUES (NEW.delegate, NEW.id, NEW.number, NEW.sequence_number, NEW.genesis_height, COALESCE(previous_delegate_total, 0) + 1)
-          ON CONFLICT DO NOTHING;
+          INSERT INTO delegates (delegate_id, bootleg_id, bootleg_number, bootleg_sequence_number, bootleg_block_height, bootleg_edition) VALUES (NEW.delegate, NEW.id, NEW.number, NEW.sequence_number, NEW.genesis_height, COALESCE(previous_delegate_total, 0) + 1);
         END IF;
 
         -- 1b. Update comments
@@ -7504,8 +7503,7 @@ impl Vermilion {
           INSERT INTO inscription_comments_total (delegate_id, total) VALUES (NEW.delegate, COALESCE(previous_comment_total, 0) + 1)
           ON CONFLICT (delegate_id) DO UPDATE SET total = EXCLUDED.total;
           -- Insert the new delegate
-          INSERT INTO inscription_comments (delegate_id, comment_id, comment_number, comment_sequence_number, comment_edition) VALUES (NEW.delegate, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_comment_total, 0) + 1)
-          ON CONFLICT DO NOTHING;
+          INSERT INTO inscription_comments (delegate_id, comment_id, comment_number, comment_sequence_number, comment_edition) VALUES (NEW.delegate, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_comment_total, 0) + 1);
         END IF;
 
         -- 2. Update references
@@ -7517,8 +7515,7 @@ impl Vermilion {
           INSERT INTO inscription_references_total (reference_id, total) VALUES (ref_id, COALESCE(previous_reference_total, 0) + 1)
           ON CONFLICT (reference_id) DO UPDATE SET total = EXCLUDED.total;
           -- Insert the new reference
-          INSERT INTO inscription_references (reference_id, recursive_id, recursive_number, recursive_sequence_number, recursive_edition) VALUES (ref_id, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_reference_total, 0) + 1)
-          ON CONFLICT DO NOTHING;
+          INSERT INTO inscription_references (reference_id, recursive_id, recursive_number, recursive_sequence_number, recursive_edition) VALUES (ref_id, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_reference_total, 0) + 1);
         END LOOP;
 
         -- 3. Update satributes
@@ -7530,8 +7527,7 @@ impl Vermilion {
           INSERT INTO inscription_satributes_total (satribute, total) VALUES (inscription_satribute, COALESCE(previous_satribute_total, 0) + 1)
           ON CONFLICT (satribute) DO UPDATE SET total = EXCLUDED.total;
           -- Insert the new satribute
-          INSERT INTO inscription_satributes (satribute, sat, inscription_id, inscription_number, inscription_sequence_number, satribute_edition) VALUES (inscription_satribute, NEW.sat, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_satribute_total, 0) + 1)
-          ON CONFLICT DO NOTHING;
+          INSERT INTO inscription_satributes (satribute, sat, inscription_id, inscription_number, inscription_sequence_number, satribute_edition) VALUES (inscription_satribute, NEW.sat, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_satribute_total, 0) + 1);
         END LOOP;
 
         -- 4. Update on chain collection summary
