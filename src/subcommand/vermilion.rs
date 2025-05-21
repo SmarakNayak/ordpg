@@ -2904,11 +2904,12 @@ impl Vermilion {
     let conn = pool.get().await?;
     conn.simple_query(
       r"CREATE TABLE IF NOT EXISTS inscription_references (
-          reference_id varchar(80),
-          recursive_id varchar(80) not null primary key,
+          reference_id varchar(80) not null,
+          recursive_id varchar(80) not null,
           recursive_number bigint,
           recursive_sequence_number bigint,
-          recursive_edition bigint
+          recursive_edition bigint,
+          CONSTRAINT inscription_reference_key PRIMARY KEY (reference_id, recursive_id)
       )").await?;
       conn.simple_query(r"
         CREATE INDEX IF NOT EXISTS index_references_number ON inscription_references (recursive_number);
@@ -7534,12 +7535,26 @@ impl Vermilion {
         FOREACH ref_id IN ARRAY NEW.referenced_ids
         LOOP
           -- Get the previous total for the same reference id
-          SELECT total INTO previous_reference_total FROM inscription_references_total WHERE reference_id = ref_id;
+          SELECT total INTO previous_reference_total 
+          FROM inscription_references_total 
+          WHERE reference_id = ref_id;
+
+          -- Insert the new reference and check if it was successful (it is possible for one inscription to reference the same inscription multiple times)
+          -- The ON CONFLICT DO NOTHING will ensure that if the reference already exists, it won't be inserted again
+          INSERT INTO inscription_references (reference_id, recursive_id, recursive_number, recursive_sequence_number, recursive_edition) 
+          VALUES (ref_id, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_reference_total, 0) + 1)
+          ON CONFLICT DO NOTHING;
+
+          -- Skip to next iteration if no rows were inserted (i.e., conflict occurred)
+          IF NOT FOUND THEN
+            CONTINUE;
+          END IF;
+          
           -- Insert or update the total in inscription_references_total
-          INSERT INTO inscription_references_total (reference_id, total) VALUES (ref_id, COALESCE(previous_reference_total, 0) + 1)
-          ON CONFLICT (reference_id) DO UPDATE SET total = EXCLUDED.total;
-          -- Insert the new reference
-          INSERT INTO inscription_references (reference_id, recursive_id, recursive_number, recursive_sequence_number, recursive_edition) VALUES (ref_id, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_reference_total, 0) + 1);
+          INSERT INTO inscription_references_total (reference_id, total) 
+          VALUES (ref_id, COALESCE(previous_reference_total, 0) + 1)
+          ON CONFLICT (reference_id) DO UPDATE 
+          SET total = EXCLUDED.total;
         END LOOP;
 
         -- 3. Update satributes
