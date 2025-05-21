@@ -1860,11 +1860,11 @@ impl Vermilion {
       let response = reqwest::get(&url).await?;
 
       if response.status() == 429 {
-        println!("Error getting recently traded collections: {}", response.status());
-        println!("{}", response.text().await?);
-        println!("Rate limit exceeded, retrying in 2 minutes");
+        log::info!("Error getting recently traded collections: {}", response.status());
+        log::info!("{}", response.text().await?);
+        log::info!("Rate limit exceeded, retrying in 2 minutes");
         tokio::time::sleep(std::time::Duration::from_secs(120)).await;
-        break;
+        continue;
       }
 
       if response.status() != 200 {
@@ -1917,7 +1917,7 @@ impl Vermilion {
     let token = settings.magiceden_api_key().map(|s| s.to_string()).ok_or("No Magic Eden Api key found")?;
     headers.insert(reqwest::header::AUTHORIZATION, format!("Bearer {}", token).parse().unwrap());
 
-    for attempt in 0..5 {
+    for attempt in 0..10 {
       let request_start_time = Instant::now();
       let response = client.get(&url).headers(headers.clone()).send().await?;
       log::debug!(
@@ -1927,18 +1927,18 @@ impl Vermilion {
       );
 
       if response.status() == 429 {
-        println!("Rate limit exceeded for {}: {}", symbol, response.status());
-        println!("{}", response.text().await?);
-        println!("Retrying in {} minutes", attempt);
-        tokio::time::sleep(std::time::Duration::from_secs(61*(attempt+1))).await;
+        log::info!("Rate limit exceeded getting collection metadata for {}: {}", symbol, response.status());
+        log::info!("{}", response.text().await?);
+        log::info!("Retrying in {} minutes", attempt+1);
+        tokio::time::sleep(std::time::Duration::from_secs(60*(attempt+1))).await;
         continue;
       }
 
       if response.status() != 200 {
-        println!("Error getting collection metadata for {}: {}", symbol, response.status());
-        println!("{}", response.text().await?);
-        println!("Retrying in {} seconds", 1*attempt);
-        tokio::time::sleep(std::time::Duration::from_secs(attempt+1)).await;
+        log::info!("Error getting collection metadata for {}: {}", symbol, response.status());
+        log::info!("{}", response.text().await?);
+        log::info!("Retrying in {} minutes", attempt+1);
+        tokio::time::sleep(std::time::Duration::from_secs(60*(attempt+1))).await;
         continue;
       }
 
@@ -1951,7 +1951,7 @@ impl Vermilion {
             }
           }
           if let Some(_domain) = first_token.get("domain") { //Skip domain collections
-            println!("Skipping domain collection: {}", symbol);
+            log::info!("Skipping domain collection: {}", symbol);
             return Ok(None);
           }
           if let Some(collection) = first_token.get("collection") {
@@ -2043,6 +2043,7 @@ impl Vermilion {
     let mut offset = 0;
     let start_time = Instant::now();
     let client = reqwest::Client::new();
+    let mut retry_count = 0;
 
     loop {
       // break if ctrl-c is received
@@ -2075,16 +2076,24 @@ impl Vermilion {
       );
 
       if response.status() == 429 {
-        println!("Error getting tokens for {}: {}", symbol, response.status());
-        println!("{}", response.text().await?);
-        println!("Rate limit exceeded, retrying in 2 minutes");
-        tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+        retry_count += 1;
+        log::info!("Error getting tokens for {}: {}", symbol, response.status());
+        log::info!("{}", response.text().await?);
+        log::info!("Rate limit exceeded, retrying in {} minutes", retry_count);
+        tokio::time::sleep(std::time::Duration::from_secs(60*(retry_count))).await;
         continue;
       }
 
       if response.status() != 200 {
-        println!("Error getting tokens for {}: {}", symbol, response.status());
-        println!("{}", response.text().await?);
+        if retry_count < 10 {
+          log::info!("Error getting tokens for {}: {}", symbol, response.status());
+          log::info!("{}", response.text().await?);
+          log::info!("Retrying in {} minutes", retry_count);
+          tokio::time::sleep(std::time::Duration::from_secs(60*(retry_count))).await;
+          continue;
+        }
+        log::info!("Error getting tokens for {}: {}", symbol, response.status());
+        log::info!("{}", response.text().await?);
         return Err("Error occurred, 200 not returned".into());
       }
 
@@ -2127,16 +2136,31 @@ impl Vermilion {
     let token = settings.magiceden_api_key().map(|s| s.to_string()).ok_or("No Magic Eden Api key found")?;
     headers.insert(reqwest::header::AUTHORIZATION, format!("Bearer {}", token).parse().unwrap());
     let client = reqwest::Client::new();
-    let response = client.get(&url).headers(headers).send().await?;
-    if response.status() == 429 {
-      println!("Rate limit exceeded, pausing for 2 minutes");
-      tokio::time::sleep(std::time::Duration::from_secs(120)).await;
-    }
-    if response.status() != 200 {
-      println!("Error getting tokens for {}: {}", symbol, response.status());
-      println!("{}", response.text().await?);
-      return Err("Error occurred, 200 not returned".into());
-    }
+    let mut retry_count = 0;
+    let response = loop {
+      let response = client.get(&url).headers(headers.clone()).send().await?;
+      if response.status() == 429 {
+        retry_count += 1;
+        log::info!("Rate limit exceeded getting supply for {}: {}", symbol, response.status());
+        log::info!("Rate limit exceeded, pausing for {} minutes", retry_count);
+        tokio::time::sleep(std::time::Duration::from_secs(retry_count*60)).await;
+        continue;
+      }
+      if response.status() != 200 {
+        if retry_count < 10 {
+          log::info!("Error getting supply for {}: {}", symbol, response.status());
+          log::info!("{}", response.text().await?);
+          log::info!("Retrying in {} minutes", retry_count);
+          tokio::time::sleep(std::time::Duration::from_secs(60*(retry_count))).await;
+          continue;
+        }
+        println!("Error getting supply for {}: {}", symbol, response.status());
+        println!("{}", response.text().await?);
+        return Err("Error getting supply occurred, 200 not returned".into());
+      }
+
+      break response
+    };
 
     let data: JsonValue = response.json().await?;
     let tokens_array = data.get("tokens").ok_or("tokens not found")?;
