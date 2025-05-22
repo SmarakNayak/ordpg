@@ -2102,26 +2102,29 @@ impl Vermilion {
     let stored_collections = Self::get_stored_collection_metadata(pool.clone()).await?;
     //let traded_collections = Self::get_recently_traded_collection_metadata(settings.clone()).await?;
     let mut update_symbols = Vec::new();
+    let mut count = 0;
+    let total = traded_collections.len();
     for traded_collection in traded_collections {
       // break if ctrl-c is received
       if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
         return Err("Shutting down".into());
       }
+      count += 1;
       if let Some(stored_collection) = stored_collections.iter().find(|item| item.collection_symbol == traded_collection.collection_symbol) {
         if stored_collection.supply != traded_collection.supply {
-          log::info!("Supply in metadata for {} updated from stored: {:?} to traded: {:?}", traded_collection.collection_symbol, stored_collection.supply, traded_collection.supply);
+          log::info!("Supply in metadata for {} updated from stored: {:?} to traded: {:?}, {}/{} checked", traded_collection.collection_symbol, stored_collection.supply, traded_collection.supply, count, total);
           update_symbols.push(traded_collection.collection_symbol.clone());
         } else {
           //compare actual supplies - update if different
           let stored_supply = Self::get_stored_collection_supply(pool.clone(), traded_collection.collection_symbol.clone()).await?;
           if Self::is_me_supply_larger(settings.clone(), &traded_collection.collection_symbol, stored_supply as u64).await? {
-            log::info!("Detected supply larger than {} on ME for Symbol {}",stored_supply, traded_collection.collection_symbol);
+            log::info!("Detected supply larger than {} on ME for Symbol {}, {}/{} checked",stored_supply, traded_collection.collection_symbol, count, total);
             update_symbols.push(traded_collection.collection_symbol.clone());
           }
         }
       } else {
         // Symbol in traded but not in stored
-        log::info!("Symbol {} has not been stored", traded_collection.collection_symbol);
+        log::info!("Symbol {} has not been stored, {}/{} checked", traded_collection.collection_symbol, count, total);
         update_symbols.push(traded_collection.collection_symbol.clone());
       }
     }
@@ -5441,8 +5444,11 @@ impl Vermilion {
 
   async fn get_stored_collection_supply(pool: deadpool, collection_symbol: String) -> anyhow::Result<i64> {
     let conn = pool.get().await?;
-    let row = conn.query_one("SELECT supply from collection_summary WHERE collection_symbol=$1", &[&collection_symbol]).await?;
-    let supply: i64 = row.get(0);
+    let mut row = conn.query("SELECT supply from collection_summary WHERE collection_symbol=$1", &[&collection_symbol]).await?;
+    let supply: i64 = match row.pop() {
+      Some(row) => row.get(0),
+      None => 0
+    };
     Ok(supply)
   }
 
