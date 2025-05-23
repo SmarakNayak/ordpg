@@ -2207,6 +2207,11 @@ impl Vermilion {
       }
 
       offset += 100;
+      if offset > 25000 {
+        tokens = Vec::new();
+        log::info!(">25k tokens for {} - returning nothing", symbol);
+        break;
+      }
     }
 
     log::info!(
@@ -2292,6 +2297,10 @@ impl Vermilion {
     let new_symbols = Self::get_new_collection_symbols(pool.clone(), settings.clone(), collections_to_update_metadata.clone()).await?;
     for (i, symbol) in new_symbols.iter().enumerate() {
       let new_tokens = Self::get_tokens(settings.clone(), &symbol).await?;
+      if new_tokens.is_empty() {
+        log::info!("No tokens found for {} in metadata, skipping", symbol);
+        continue;
+      }
       let collection_metadata = collections_to_update_metadata.iter().find(|item| item.collection_symbol == symbol.clone()).ok_or("Collection metadata not found")?;
       let mut conn = pool.get().await?;
       let tx = conn.transaction().await?;
