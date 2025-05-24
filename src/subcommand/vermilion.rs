@@ -1811,13 +1811,13 @@ impl Vermilion {
             TraceLayer::new_for_http()
               .make_span_with(DefaultMakeSpan::new().level(TraceLevel::INFO))
               .on_request(|req: &Request<Body>, _span: &Span| {
-                tracing::event!(TraceLevel::DEBUG, "Started processing request {}", req.uri().path());
+                tracing::event!(TraceLevel::INFO, "Started processing request {}", req.uri().path());
               })
               .on_response(|res: &Response<Body>, latency: Duration, _span: &Span| {
                 if latency.as_millis() > 10 {
                   tracing::event!(TraceLevel::INFO, "Finished processing SLOW request latency={:?} status={:?}", latency, res.status());                    
                 } else {                    
-                  tracing::event!(TraceLevel::DEBUG, "Finished processing request latency={:?} status={:?}", latency, res.status());
+                  tracing::event!(TraceLevel::INFO, "Finished processing request latency={:?} status={:?}", latency, res.status());
                 }
               })
           )
@@ -7671,7 +7671,7 @@ impl Vermilion {
         -- Add delta for a single inscription and all transfers (so far)
         IF array_length(NEW.parents, 1) > 0 THEN          
           LOCK TABLE transfers IN EXCLUSIVE MODE;
-          RAISE NOTICE 'insert_metadata (on chain summary): transfers lock acquired';
+          -- RAISE NOTICE 'insert_metadata (on chain summary): transfers lock acquired';
           WITH a AS (
             SELECT 
               SUM(price) AS total_volume,
