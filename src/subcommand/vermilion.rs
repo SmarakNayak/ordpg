@@ -8253,7 +8253,7 @@ impl Vermilion {
           LEFT JOIN ordinals o2
           ON o1.delegate=o2.id
           WHERE o1.delegate IS NOT NULL 
-          AND o1.parents = '{}'
+          -- AND o1.parents = '{}'
           AND o1.genesis_height > ((SELECT max FROM max_height) - 4032)
           AND o1.spaced_rune IS NULL
           AND o2.content_category IN ('image')
@@ -8315,24 +8315,36 @@ impl Vermilion {
       SELECT * FROM with_runes
       WHERE (SELECT bool_and(x IS NULL) FROM unnest(parent_spaced_runes) x);
 
+      --collections
       CREATE TABLE trending_collections AS
       WITH max_height AS (
         SELECT MAX(genesis_height) as max FROM ordinals
       ),
-      a AS (
+      random_sequence AS (
         SELECT
           collection_symbol,
-          min(sequence_number) as sequence_number,
-          SUM(genesis_fee) as fee,
-          SUM(CASE WHEN delegate is null THEN content_length ELSE 580 END) as size,
-          (SELECT max FROM max_height) - MAX(genesis_height) as block_age,
-          max(timestamp) as most_recent_timestamp
-        FROM ordinals_full_v
+          FIRST_VALUE(sequence_number) OVER (PARTITION BY collection_symbol ORDER BY RANDOM()) as sequence_number
+        FROM ordinals_full_t
         WHERE genesis_height > ((SELECT max FROM max_height) - 4032)
           AND content_category IN ('image')
           AND spaced_rune IS NULL
           AND collection_symbol IS NOT NULL
-        GROUP BY collection_symbol
+      ),
+      a AS ( 
+        SELECT
+          o.collection_symbol,
+          MIN(r.sequence_number) as sequence_number,
+          SUM(o.genesis_fee) as fee,
+          SUM(CASE WHEN o.delegate IS NULL THEN o.content_length ELSE 580 END) as size,
+          (SELECT max FROM max_height) - MAX(o.genesis_height) as block_age,
+          MAX(o.timestamp) as most_recent_timestamp
+        FROM ordinals_full_t o
+        JOIN random_sequence r ON o.collection_symbol = r.collection_symbol
+        WHERE o.genesis_height > ((SELECT max FROM max_height) - 4032)
+          AND o.content_category IN ('image')
+          AND o.spaced_rune IS NULL
+          AND o.collection_symbol IS NOT NULL
+        GROUP BY o.collection_symbol
       ),
       b as (
         SELECT
@@ -8340,7 +8352,7 @@ impl Vermilion {
 	        sequence_number
         from ordinals o where o.sequence_number in (SELECT sequence_number from a)
       )
-      SELECT a.*, b.id from a left join b on a.sequence_number=b.sequence_number where b.spaced_rune is null;
+      SELECT a.*, b.id from a left join b on a.sequence_number=b.sequence_number;
 
       --others
       CREATE TABLE trending_others AS
@@ -8361,10 +8373,11 @@ impl Vermilion {
           SUM(CASE WHEN delegate is null THEN content_length ELSE 580 END) as size,
           (SELECT max FROM max_height) - MAX(genesis_height) as block_age,
           max(timestamp) as most_recent_timestamp
-        FROM ordinals o
+        FROM ordinals_full_v o
 	      LEFT JOIN dbscan db on o.sha256 = db.sha256
         WHERE array_length(parents,1) IS NULL
           AND delegate is NULL
+          AND collection_symbol IS NULL
           AND genesis_height > ((SELECT max FROM max_height) - 4032)
           AND content_category IN ('image')
           AND spaced_rune IS NULL
@@ -8404,6 +8417,17 @@ impl Vermilion {
           orphan_delegate_count,
           full_delegate_count
       FROM trending_delegates
+      UNION ALL
+      SELECT
+          ARRAY[id] as ids,
+          id as id,
+          fee,
+          size,
+          block_age,
+          most_recent_timestamp,
+          0 as orphan_delegate_count,
+          0 as full_delegate_count
+      FROM trending_collections
       UNION ALL
       SELECT
           ARRAY[id] as ids,
