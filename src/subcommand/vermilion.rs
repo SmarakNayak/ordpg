@@ -8233,6 +8233,7 @@ impl Vermilion {
 
       DROP TABLE IF EXISTS trending_delegates;
       DROP TABLE IF EXISTS trending_parents;
+      DROP TABLE IF EXISTS trending_collections;
       DROP TABLE IF EXISTS trending_others;
       DROP TABLE IF EXISTS trending_union;
 
@@ -8313,6 +8314,33 @@ impl Vermilion {
       )
       SELECT * FROM with_runes
       WHERE (SELECT bool_and(x IS NULL) FROM unnest(parent_spaced_runes) x);
+
+      CREATE TABLE trending_collections AS
+      WITH max_height AS (
+        SELECT MAX(genesis_height) as max FROM ordinals
+      ),
+      a AS (
+        SELECT
+          collection_symbol,
+          min(sequence_number) as sequence_number,
+          SUM(genesis_fee) as fee,
+          SUM(CASE WHEN delegate is null THEN content_length ELSE 580 END) as size,
+          (SELECT max FROM max_height) - MAX(genesis_height) as block_age,
+          max(timestamp) as most_recent_timestamp
+        FROM ordinals_full_v
+        WHERE genesis_height > ((SELECT max FROM max_height) - 4032)
+          AND content_category IN ('image')
+          AND spaced_rune IS NULL
+          AND collection_symbol IS NOT NULL
+        GROUP BY collection_symbol
+      ),
+      b as (
+        SELECT
+          id,
+	        sequence_number
+        from ordinals o where o.sequence_number in (SELECT sequence_number from a)
+      )
+      SELECT a.*, b.id from a left join b on a.sequence_number=b.sequence_number where b.spaced_rune is null;
 
       --others
       CREATE TABLE trending_others AS
