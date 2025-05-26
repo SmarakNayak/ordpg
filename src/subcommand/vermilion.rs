@@ -8497,6 +8497,7 @@ impl Vermilion {
   }
 
   async fn create_collection_summary_procedure(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    // TODO: check b could inner join transfers to speed it up
     let conn = pool.get().await?;
     conn.simple_query(
       r#"
@@ -8526,7 +8527,7 @@ impl Vermilion {
             sum(tx_fee) as transfer_fees, 
             sum(tx_size) as transfer_footprint 
             from collections c left join transfers t on c.id=t.id            
-            where NOT t.is_genesis
+            where NOT t.is_genesis and t.id in (select id from collections)
             group by c.collection_symbol
         ) 
         INSERT INTO collection_summary (collection_symbol, supply, total_inscription_size, total_inscription_fees, first_inscribed_date, last_inscribed_date, range_start, range_end, total_volume, transfer_fees, transfer_footprint, total_fees, total_on_chain_footprint) 
@@ -8563,6 +8564,7 @@ impl Vermilion {
   }
 
   async fn create_on_chain_collection_summary_procedure(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    // TODO: check b could inner join transfers to speed it up
     let conn = pool.get().await?;
     conn.simple_query(
       r#"
@@ -8586,7 +8588,7 @@ impl Vermilion {
         FROM ordinals o
         WHERE array_length(parents, 1) > 0
         GROUP BY parents),
-            b AS
+      b AS
         (SELECT hash_array(ARRAY(SELECT unnest(o.parents) ORDER BY 1)) as parents_hash,
                 sum(price) AS total_volume,
                 sum(tx_fee) AS transfer_fees,
@@ -8595,6 +8597,7 @@ impl Vermilion {
         LEFT JOIN transfers t ON o.id=t.id
         WHERE NOT t.is_genesis
           AND array_length(o.parents, 1) > 0
+          AND t.id in (select id from ordinals where array_length(parents, 1) > 0)
         GROUP BY o.parents)
       INSERT INTO on_chain_collection_summary (parents_hash, parents, supply, total_inscription_size, total_inscription_fees, first_inscribed_date, last_inscribed_date, range_start, range_end, total_volume, transfer_fees, transfer_footprint, total_fees, total_on_chain_footprint)
         SELECT a.*,
