@@ -1683,7 +1683,9 @@ impl Vermilion {
           let insert_transfer_result = Self::bulk_insert_transfers(&deadpool_tx, transfer_vec.clone()).await;
           let t6 = Instant::now();
           let insert_address_result = Self::bulk_insert_addresses(&deadpool_tx, transfer_vec).await;
+          let t7 = Instant::now();
           let insert_inscription_blockstats_result = Self::bulk_insert_inscription_blockstats(&deadpool_tx, height as i64).await;
+          let t8 = Instant::now();
           let commit_result = deadpool_tx.commit().await;
           if insert_transfer_result.is_err() || insert_address_result.is_err() || insert_inscription_blockstats_result.is_err() || commit_result.is_err() {
             log::info!("Error bulk inserting addresses into db for block height: {:?}, waiting a minute", height);
@@ -1702,9 +1704,19 @@ impl Vermilion {
             tokio::time::sleep(Duration::from_secs(60)).await;
             continue;              
           }
-          let t7 = Instant::now();
+          let t9 = Instant::now();
           log::info!("Address indexer: Indexed block: {:?}", height);
-          log::info!("Height check: {:?} - Get transfers: {:?} - Get txs: {:?} - Get addresses {:?} - Create Vec: {:?} - Insert transfers: {:?} - Insert addresses: {:?} TOTAL: {:?}", t1.duration_since(t0), t2.duration_since(t1), t3.duration_since(t2), t4.duration_since(t3), t5.duration_since(t4), t6.duration_since(t5), t7.duration_since(t6), t7.duration_since(t0));
+          log::info!("Height check: {:?} - Get transfers: {:?} - Get txs: {:?} - Get addresses {:?} - Create Vec: {:?} - Insert transfers: {:?} - Insert addresses: {:?} - Insert blockstats: {:?} - Commit: {:?} TOTAL: {:?}", 
+            t1.duration_since(t0), 
+            t2.duration_since(t1), 
+            t3.duration_since(t2), 
+            t4.duration_since(t3), 
+            t5.duration_since(t4), 
+            t6.duration_since(t5), 
+            t7.duration_since(t6), 
+            t8.duration_since(t7),
+            t9.duration_since(t8), 
+            t9.duration_since(t0));
           height += 1;
         }
         println!("Address indexer stopped");
@@ -3608,10 +3620,10 @@ impl Vermilion {
         is_genesis boolean,
         PRIMARY KEY (id, block_number, satpoint)
       )").await?;
-    conn.simple_query(r"
-      CREATE INDEX IF NOT EXISTS index_transfers_id ON transfers (id);
-      CREATE INDEX IF NOT EXISTS index_transfers_block ON transfers (block_number);
-    ").await?;
+    // conn.simple_query(r"
+    //   CREATE INDEX IF NOT EXISTS index_transfers_id ON transfers (id);
+    //   CREATE INDEX IF NOT EXISTS index_transfers_block ON transfers (block_number);
+    // ").await?;
     Ok(())
   }
   
