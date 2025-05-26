@@ -3620,10 +3620,10 @@ impl Vermilion {
         is_genesis boolean,
         PRIMARY KEY (id, block_number, satpoint)
       )").await?;
-    // conn.simple_query(r"
-    //   CREATE INDEX IF NOT EXISTS index_transfers_id ON transfers (id);
-    //   CREATE INDEX IF NOT EXISTS index_transfers_block ON transfers (block_number);
-    // ").await?;
+    conn.simple_query(r"
+      CREATE INDEX IF NOT EXISTS index_transfers_id ON transfers (id);
+      CREATE INDEX IF NOT EXISTS index_transfers_block ON transfers (block_number);
+    ").await?;
     Ok(())
   }
   
