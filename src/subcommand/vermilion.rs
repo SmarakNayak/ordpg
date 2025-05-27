@@ -5172,11 +5172,21 @@ impl Vermilion {
     // and return the txids
     let bitcoin_client = server_config.bitcoin_rpc_client;
     println!("Submitting package with tx_hexs: {:?}", payload);
-    let temp = serde_json::to_value(payload.clone()).unwrap();
-    println!("Converted payload to JSON: {:?}", temp);
-    match bitcoin_client.call::<Vec<String>>("submitpackage", &[serde_json::to_value(payload).unwrap()]) {
-      Ok(txids) => {
+    match bitcoin_client.call::<serde_json::Value>("submitpackage", &[serde_json::to_value(payload.clone()).unwrap()]) {
+      Ok(rpc_response) => {
+        println!("Success: RPC response: {:?}", rpc_response);
           // Return successful response with the transaction IDs
+          let mut txids = Vec::new();
+          if let Some(tx_results) = rpc_response.get("tx-results").and_then(|v| v.as_object()) {
+            for (_wtxid, tx_data) in tx_results {
+              if let Some(txid) = tx_data.get("txid").and_then(|v| v.as_str()) {
+                txids.push(txid.to_string());
+              }
+            }
+          }
+          if txids.len() < payload.len() {
+            log::warn!("Not all transactions were captured successfully. Expected: {}, Got: {}", payload.len(), txids.len());
+          }
           (
             StatusCode::OK,
             [(axum::http::header::CONTENT_TYPE, "application/json")],
