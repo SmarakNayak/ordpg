@@ -8248,6 +8248,7 @@ impl Vermilion {
       DROP TABLE IF EXISTS trending_collections;
       DROP TABLE IF EXISTS trending_others;
       DROP TABLE IF EXISTS trending_union;
+      DROP TABLE IF EXISTS trending_union_filtered;
 
       --delegates
       CREATE TABLE trending_delegates AS
@@ -8411,6 +8412,7 @@ impl Vermilion {
           CASE 
               WHEN array_length(parents, 1) = 1 THEN parents[1] ELSE NULL
           END as id,
+          parents[1] as first_id,
           fee,
           size,
           block_age,
@@ -8422,6 +8424,7 @@ impl Vermilion {
       SELECT
           ARRAY[delegate] as ids,
           delegate as id,
+          delegate as first_id,
           fee,
           size,
           block_age,
@@ -8433,6 +8436,7 @@ impl Vermilion {
       SELECT
           ARRAY[id] as ids,
           id as id,
+          id as first_id,
           fee,
           size,
           block_age,
@@ -8444,6 +8448,7 @@ impl Vermilion {
       SELECT
           ARRAY[id] as ids,
           id,
+          id as first_id,
           fee,
           size,
           block_age,
@@ -8451,6 +8456,23 @@ impl Vermilion {
           0 as orphan_delegate_count,
           0 as full_delegate_count
       FROM trending_others;
+
+      Create table trending_union_filtered as
+      With A as (
+        SELECT tu.*,
+               o.sha256
+        FROM trending_union tu
+        left join ordinals o on tu.first_id = o.id
+      )
+      SELECT *
+      FROM A
+      WHERE sha256 in (
+        select sha256 
+        from content_moderation 
+        where coalesce(human_override_moderation_flag, automated_moderation_flag) = 'SAFE_MANUAL' 
+        or coalesce(human_override_moderation_flag, automated_moderation_flag) = 'SAFE_AUTOMATED'
+        or coalesce(human_override_moderation_flag, automated_moderation_flag) = 'UNKNOWN_AUTOMATED'
+      ) OR sha256 IS NULL;
 
       --summary (sum(orphan_delegate_count) + 1)
       CREATE TABLE trending_summary_new AS
@@ -8463,7 +8485,7 @@ impl Vermilion {
               min(block_age) as block_age,
               max(most_recent_timestamp) as most_recent_timestamp,
               CAST((12.5 * EXP(-0.01 * min(block_age)) + 7.5 * EXP(-0.0005 * min(block_age))) * sum(fee) * (sum(full_delegate_count) + 1) AS FLOAT8) as weight
-          FROM trending_union
+          FROM trending_union_filtered
           GROUP BY ids, id
       ), children AS (
           SELECT
