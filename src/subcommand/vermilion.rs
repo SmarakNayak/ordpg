@@ -5172,6 +5172,8 @@ impl Vermilion {
     // and return the txids
     let bitcoin_client = server_config.bitcoin_rpc_client;
     println!("Submitting package with tx_hexs: {:?}", payload);
+    let temp = serde_json::to_value(payload.clone()).unwrap();
+    println!("Converted payload to JSON: {:?}", temp);
     match bitcoin_client.call::<Vec<String>>("submitpackage", &[serde_json::to_value(payload).unwrap()]) {
       Ok(txids) => {
           // Return successful response with the transaction IDs
