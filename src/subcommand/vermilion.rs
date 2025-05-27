@@ -7230,26 +7230,46 @@ impl Vermilion {
         s.total_fees,
         s.total_on_chain_footprint
       from on_chain_collection_summary s WHERE s.parents = $1";
-    let result = conn.query_one(
+    let result_vec = conn.query(
       query, 
       &[&parents]
     ).await?;
-    let collection = OnChainCollectionSummary {
-      parents: result.get("parents"),
-      parent_numbers: result.get("parent_numbers"),
-      total_inscription_fees: result.get("total_inscription_fees"),
-      total_inscription_size: result.get("total_inscription_size"),
-      first_inscribed_date: result.get("first_inscribed_date"),
-      last_inscribed_date: result.get("last_inscribed_date"),
-      supply: result.get("supply"),
-      range_start: result.get("range_start"),
-      range_end: result.get("range_end"),
-      total_volume: result.get("total_volume"),
-      transfer_fees: result.get("transfer_fees"),
-      transfer_footprint: result.get("transfer_footprint"),
-      total_fees: result.get("total_fees"),
-      total_on_chain_footprint: result.get("total_on_chain_footprint")
-    };
+    let collection = match result_vec.first() {
+      Some(row) => OnChainCollectionSummary {
+        parents: row.get("parents"),
+        parent_numbers: row.get("parent_numbers"),
+        total_inscription_fees: row.get("total_inscription_fees"),
+        total_inscription_size: row.get("total_inscription_size"),
+        first_inscribed_date: row.get("first_inscribed_date"),
+        last_inscribed_date: row.get("last_inscribed_date"),
+        supply: row.get("supply"),
+        range_start: row.get("range_start"),
+        range_end: row.get("range_end"),
+        total_volume: row.get("total_volume"),
+        transfer_fees: row.get("transfer_fees"),
+        transfer_footprint: row.get("transfer_footprint"),
+        total_fees: row.get("total_fees"),
+        total_on_chain_footprint: row.get("total_on_chain_footprint")
+      },
+      None => {
+        OnChainCollectionSummary {
+          parents: Vec::new(),
+          parent_numbers: Vec::new(),
+          total_inscription_fees: None,
+          total_inscription_size: None,
+          first_inscribed_date: None,
+          last_inscribed_date: None,
+          supply: None,
+          range_start: None,
+          range_end: None,
+          total_volume: None,
+          transfer_fees: None,
+          transfer_footprint: None,
+          total_fees: None,
+          total_on_chain_footprint: None
+        }
+      }
+    }; 
     Ok(collection)
   }
 
