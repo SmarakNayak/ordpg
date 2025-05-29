@@ -5175,23 +5175,23 @@ impl Vermilion {
     match bitcoin_client.call::<serde_json::Value>("submitpackage", &[serde_json::to_value(payload.clone()).unwrap()]) {
       Ok(rpc_response) => {
         println!("Success: RPC response: {:?}", rpc_response);
-          // Return successful response with the transaction IDs
-          let mut txids = Vec::new();
-          if let Some(tx_results) = rpc_response.get("tx-results").and_then(|v| v.as_object()) {
-            for (_wtxid, tx_data) in tx_results {
-              if let Some(txid) = tx_data.get("txid").and_then(|v| v.as_str()) {
-                txids.push(txid.to_string());
-              }
+        // Return successful response with the transaction IDs
+        let mut txids = Vec::new();
+        if let Some(tx_results) = rpc_response.get("tx-results").and_then(|v| v.as_object()) {
+          for (_wtxid, tx_data) in tx_results {
+            if let Some(txid) = tx_data.get("txid").and_then(|v| v.as_str()) {
+              txids.push(txid.to_string());
             }
           }
-          if txids.len() < payload.len() {
-            log::warn!("Not all transactions were captured successfully. Expected: {}, Got: {}", payload.len(), txids.len());
-          }
-          (
-            StatusCode::OK,
-            [(axum::http::header::CONTENT_TYPE, "application/json")],
-            Json(txids)
-          ).into_response()
+        }
+        if txids.len() < payload.len() {
+          log::warn!("Not all transactions were captured successfully. Expected: {}, Got: {}", payload.len(), txids.len());
+        }
+        (
+          StatusCode::OK,
+          [(axum::http::header::CONTENT_TYPE, "application/json")],
+          Json(txids)
+        ).into_response()
       },
       Err(error) => {
         // Log the error and return an appropriate error response
@@ -8256,6 +8256,7 @@ impl Vermilion {
         END IF;
 
         ALTER TABLE discover_weights_new RENAME to discover_weights;
+        ALTER TABLE discover_weights owner to vermilion_user;
         ALTER INDEX discover_idx_band_start_new RENAME TO discover_idx_band_start;
         ALTER INDEX discover_idx_band_end_new RENAME TO discover_idx_band_end;
         DROP TABLE IF EXISTS discover_weights_old;
