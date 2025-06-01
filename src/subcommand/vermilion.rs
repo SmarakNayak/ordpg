@@ -6291,6 +6291,8 @@ impl Vermilion {
     let all_bands = Self::get_trending_bands(pool.clone()).await?;
     let mut rng = rand::rngs::StdRng::from_entropy();
     let mut random_floats = Vec::new();
+    let mut attempt = 0;
+    let t0 = std::time::Instant::now();
     while random_floats.len() < n as usize {
       let random_float = rng.gen::<f64>();
       let mut already_seen = false;
@@ -6309,7 +6311,16 @@ impl Vermilion {
           }
         }
       }
+      attempt += 1;
+      if attempt > 100 {
+        // If we can't find enough unique bands, reset the already seen bands and try again
+        log::warn!("Could not find enough unique bands for trending feed, resetting already seen bands");
+        already_seen_bands = Vec::new();
+        attempt = 0;
+      }
     }
+    let t1 = std::time::Instant::now();
+    log::info!("Generated {} random floats in {}ms", random_floats.len(), (t1 - t0).as_millis());
 
     let mut set = JoinSet::new();
     let mut trending_items = Vec::new();
@@ -6320,6 +6331,7 @@ impl Vermilion {
       let trending_item = res??;
       trending_items.push(trending_item);
     }
+    log::info!("Fetched {} trending items in {}ms", trending_items.len(), (std::time::Instant::now() - t1).as_millis());
     Ok(trending_items)
   }
 
