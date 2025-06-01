@@ -6291,36 +6291,60 @@ impl Vermilion {
     let all_bands = Self::get_trending_bands(pool.clone()).await?;
     let mut rng = rand::rngs::StdRng::from_entropy();
     let mut random_floats = Vec::new();
-    let mut attempt = 0;
     let t0 = std::time::Instant::now();
-    while random_floats.len() < n as usize {
-      let random_float = rng.gen::<f64>();
-      let mut already_seen = false;
-      for band in already_seen_bands.iter() {
-        if random_float >= band.0 && random_float < band.1 {
-          already_seen = true;
+    
+    // Sort already seen bands by start point
+    already_seen_bands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    
+    // Create valid ranges from gaps between non-overlapping bands
+    let mut valid_ranges = Vec::new();
+    let mut last_end = 0.0;
+    for band in already_seen_bands.iter() {
+      if band.0 > last_end {
+        valid_ranges.push((last_end, band.0));
+      }
+      last_end = band.1;
+    }
+    if last_end < 1.0 {
+      valid_ranges.push((last_end, 1.0));
+    }
+
+    let t1 = std::time::Instant::now();
+    log::info!("Prepared valid ranges in {}ms", (t1 - t0).as_millis());
+
+    // Generate random numbers within valid ranges
+    for _ in 0..n {
+      if valid_ranges.is_empty() {
+        log::warn!("No valid ranges remaining for trending feed, resetting already seen bands");
+        already_seen_bands.clear();
+        valid_ranges = vec![(0.0, 1.0)];
+      }
+
+      let total_length: f64 = valid_ranges.iter().map(|r| r.1 - r.0).sum();
+      let mut target = rng.gen::<f64>() * total_length;
+      let mut selected_float = 0.0;
+      
+      for range in &valid_ranges {
+        let range_length = range.1 - range.0;
+        if target <= range_length {
+          selected_float = range.0 + target;
+          break;
+        }
+        target -= range_length;
+      }
+
+      random_floats.push(selected_float);
+      
+      for band in all_bands.iter() {
+        if selected_float >= band.0 && selected_float < band.1 {
+          already_seen_bands.push(band.clone());
           break;
         }
       }
-      if !already_seen {
-        random_floats.push(random_float);
-        for band in all_bands.iter() {
-          if random_float >= band.0 && random_float < band.1 {
-            already_seen_bands.push(band.clone());
-            break;
-          }
-        }
-      }
-      attempt += 1;
-      if attempt > 100 {
-        // If we can't find enough unique bands, reset the already seen bands and try again
-        log::warn!("Could not find enough unique bands for trending feed, resetting already seen bands");
-        already_seen_bands = Vec::new();
-        attempt = 0;
-      }
     }
-    let t1 = std::time::Instant::now();
-    log::info!("Generated {} random floats in {}ms", random_floats.len(), (t1 - t0).as_millis());
+    
+    let t2 = std::time::Instant::now();
+    log::info!("Generated {} random floats in {}ms", random_floats.len(), (t2 - t0).as_millis());
 
     let mut set = JoinSet::new();
     let mut trending_items = Vec::new();
@@ -6331,10 +6355,10 @@ impl Vermilion {
       let trending_item = res??;
       trending_items.push(trending_item);
     }
-    log::info!("Fetched {} trending items in {}ms", trending_items.len(), (std::time::Instant::now() - t1).as_millis());
+    log::info!("Fetched {} trending items in {}ms", trending_items.len(), (std::time::Instant::now() - t2).as_millis());
     Ok(trending_items)
-  }
-
+}
+  
   async fn get_trending_feed_item(pool: deadpool, random_float: f64) -> anyhow::Result<TrendingItem> {
     let conn = pool.get().await?;
     let random_inscription_band = conn.query_one(
