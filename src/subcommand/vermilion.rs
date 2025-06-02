@@ -6296,7 +6296,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
   // Sort already seen bands by start point
   already_seen_bands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
-  for _ in 0..n {
+  for i in 0..n {
     // Create valid ranges from gaps between non-overlapping bands
     let mut valid_ranges = Vec::new();
     let mut last_end = 0.0;
@@ -6309,6 +6309,8 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
     if last_end < 1.0 {
       valid_ranges.push((last_end, 1.0));
     }
+
+    log::info!("i: {}, Valid range count: {}, already seen band count: {}", i, valid_ranges.len(), already_seen_bands.len());
 
     if valid_ranges.is_empty() {
       log::warn!("No valid ranges remaining for trending feed, resetting already seen bands");
