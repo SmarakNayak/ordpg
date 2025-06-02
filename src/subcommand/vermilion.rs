@@ -6335,6 +6335,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
     
     for band in all_bands.iter() {
       if selected_float >= band.0 && selected_float < band.1 {
+        log::info!("Selected random float {} in band ({}, {})", selected_float, band.0, band.1);
         already_seen_bands.push(band.clone());
         already_seen_bands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         break;
