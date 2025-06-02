@@ -6353,7 +6353,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
   async fn get_trending_feed_item(pool: deadpool, random_float: f64) -> anyhow::Result<TrendingItem> {
     let conn = pool.get().await?;
     let random_inscription_band = conn.query_one(
-      "SELECT ids, block_age, most_recent_timestamp, children_count, delegate_count, comment_count, band_start, band_end from trending_summary where band_end>$1 order by band_end limit 1",
+      "SELECT ids, block_age, most_recent_timestamp, children_count, delegate_count, comment_count, band_start, band_end, band_id from trending_summary where band_end>$1 order by band_end limit 1",
       &[&random_float]
     ).await?;
     let trending_item_activity = TrendingItemActivity {
