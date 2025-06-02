@@ -443,7 +443,7 @@ pub struct TrendingItemActivity {
   comment_count: i64,
   band_start: f64,
   band_end: f64,
-  band_id: Option<i64>
+  band_id: i64
 }
 
 #[derive(Serialize)]
@@ -4532,7 +4532,7 @@ impl Vermilion {
   }
 
   async fn trending_feed(n: Query<QueryNumber>, State(server_config): State<ApiServerConfig>, session: Session<SessionNullPool>) -> impl axum::response::IntoResponse {
-    let mut bands_seen: Vec<(f64, f64)> = session.get("trending_bands_seen").unwrap_or(Vec::new());
+    let mut bands_seen: Vec<i64> = session.get("trending_bands_seen").unwrap_or(Vec::new());
     for band in bands_seen.iter() {
       log::debug!("Trending Band: {:?}", band);
     }
@@ -4547,11 +4547,11 @@ impl Vermilion {
         ).into_response();
       }
     };
-    let mut band_tuples: Vec<(f64, f64)> = trending_items
+    let mut band_ids: Vec<i64> = trending_items
       .iter()
-      .map(|item| (item.activity.band_start, item.activity.band_end))
+      .map(|item| item.activity.band_id)
       .collect();
-    bands_seen.append(&mut band_tuples);
+    bands_seen.append(&mut band_ids);
     session.set("trending_bands_seen", bands_seen);
     (
       ([(axum::http::header::CONTENT_TYPE, "application/json")]),
@@ -6287,22 +6287,19 @@ impl Vermilion {
     Ok(leaderboard)
   }
 
-async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands: Vec<(f64, f64)>) -> anyhow::Result<Vec<TrendingItem>> {
+async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands: Vec<i64>) -> anyhow::Result<Vec<TrendingItem>> {
   let n = std::cmp::min(n, 100);
   let all_bands = Self::get_trending_bands(pool.clone()).await?;
   let mut rng = rand::rngs::StdRng::from_entropy();
   let mut random_floats = Vec::new();
   let t0 = std::time::Instant::now();
   
-  // Sort already seen bands by start point
-  already_seen_bands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
   for i in 0..n {
     // Get available bands by filtering out already seen bands
-    let mut available_bands: Vec<(f64, f64)> = all_bands
+    let mut available_bands: Vec<(f64, f64, i64)> = all_bands
       .clone()
       .into_iter()
-      .filter(|band| !already_seen_bands.contains(band))
+      .filter(|band| !already_seen_bands.contains(&band.2))
       .collect();
 
     log::info!("i: {}, Valid range count: {}, already seen band count: {}", i, available_bands.len(), already_seen_bands.len());
@@ -6331,8 +6328,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
     for band in all_bands.iter() {
       if selected_float >= band.0 && selected_float < band.1 {
         log::info!("Selected random float {} in band ({}, {})", selected_float, band.0, band.1);
-        already_seen_bands.push(band.clone());
-        already_seen_bands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        already_seen_bands.push(band.2);
         break;
       }
     }
@@ -6385,15 +6381,15 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
     })
   }
 
-  async fn get_trending_bands(pool: deadpool) -> anyhow::Result<Vec<(f64, f64)>> {
+  async fn get_trending_bands(pool: deadpool) -> anyhow::Result<Vec<(f64, f64, i64)>> {
     let conn = pool.get().await?;
     let result = conn.query(
-      "SELECT band_start, band_end from trending_summary", 
+      "SELECT band_start, band_end, band_id from trending_summary", 
       &[]
     ).await?;
     let mut bands = Vec::new();
     for row in result {
-      bands.push((row.get("band_start"), row.get("band_end")));
+      bands.push((row.get("band_start"), row.get("band_end"), row.get("band_id")));
     }
     Ok(bands)
   }
