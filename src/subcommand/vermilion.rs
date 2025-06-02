@@ -442,7 +442,8 @@ pub struct TrendingItemActivity {
   delegate_count: i64,
   comment_count: i64,
   band_start: f64,
-  band_end: f64
+  band_end: f64,
+  band_id: Option<i64>
 }
 
 #[derive(Serialize)]
@@ -6299,10 +6300,10 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
   for i in 0..n {
     // Get available bands by filtering out already seen bands
     let mut available_bands: Vec<(f64, f64)> = all_bands
-        .clone()
-        .into_iter()
-        .filter(|band| !already_seen_bands.contains(band))
-        .collect();
+      .clone()
+      .into_iter()
+      .filter(|band| !already_seen_bands.contains(band))
+      .collect();
 
     log::info!("i: {}, Valid range count: {}, already seen band count: {}", i, available_bands.len(), already_seen_bands.len());
 
@@ -6367,7 +6368,8 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
       delegate_count: random_inscription_band.get("delegate_count"),
       comment_count: random_inscription_band.get("comment_count"),
       band_start: random_inscription_band.get("band_start"),
-      band_end: random_inscription_band.get("band_end")
+      band_end: random_inscription_band.get("band_end"),
+      band_id: random_inscription_band.get("band_id"),
     };
     let result = conn.query(
       "SELECT * from ordinals_full_v where id=ANY($1)", 
@@ -8564,7 +8566,8 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
           CAST(coalesce(d.total, 0) AS INT8) as delegate_count,
           CAST(coalesce(ic.total, 0) AS INT8) as comment_count,
           CAST(sum(weight) OVER(ORDER BY block_age, ids)/sum(weight) OVER() AS FLOAT8) AS band_end, 
-          CAST(coalesce(sum(weight) OVER(ORDER BY block_age, ids ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS FLOAT8) AS band_start
+          CAST(coalesce(sum(weight) OVER(ORDER BY block_age, ids ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0)/sum(weight) OVER() AS FLOAT8) AS band_start,
+          CAST(ROW_NUMBER() OVER (ORDER BY block_age, ids) AS INT8) AS band_id
       FROM a
       left join delegates_total d on d.delegate_id=a.id
       left join inscription_comments_total ic on ic.delegate_id=a.id
