@@ -6297,32 +6297,26 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
   already_seen_bands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
   for i in 0..n {
-    // Create valid ranges from gaps between non-overlapping bands
-    let mut valid_ranges = Vec::new();
-    let mut last_end = 0.0;
-    for band in already_seen_bands.iter() {
-      if band.0 > last_end {
-        valid_ranges.push((last_end, band.0));
-      }
-      last_end = band.1;
-    }
-    if last_end < 1.0 {
-      valid_ranges.push((last_end, 1.0));
-    }
+    // Get available bands by filtering out already seen bands
+    let mut available_bands: Vec<(f64, f64)> = all_bands
+        .clone()
+        .into_iter()
+        .filter(|band| !already_seen_bands.contains(band))
+        .collect();
 
-    log::info!("i: {}, Valid range count: {}, already seen band count: {}", i, valid_ranges.len(), already_seen_bands.len());
+    log::info!("i: {}, Valid range count: {}, already seen band count: {}", i, available_bands.len(), already_seen_bands.len());
 
-    if valid_ranges.is_empty() {
+    if available_bands.is_empty() {
       log::warn!("No valid ranges remaining for trending feed, resetting already seen bands");
       already_seen_bands.clear();
-      valid_ranges = vec![(0.0, 1.0)];
+      available_bands = all_bands.clone();
     }
 
-    let total_length: f64 = valid_ranges.iter().map(|r| r.1 - r.0).sum();
+    let total_length: f64 = available_bands.iter().map(|r| r.1 - r.0).sum();
     let mut target = rng.gen::<f64>() * total_length;
     let mut selected_float = 0.0;
     
-    for range in &valid_ranges {
+    for range in &available_bands {
       let range_length = range.1 - range.0;
       if target <= range_length {
         selected_float = range.0 + target;
