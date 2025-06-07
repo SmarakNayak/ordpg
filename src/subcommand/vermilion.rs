@@ -14,10 +14,6 @@ use tokio::task::JoinSet;
 use serde::Serialize;
 use sha256::digest;
 
-use aws_sdk_s3 as s3;	
-use s3::primitives::ByteStream;	
-use s3::error::ProvideErrorMetadata;
-
 use axum::{
   routing::get,
   routing::post,
@@ -926,12 +922,6 @@ impl Vermilion {
           return;
         }
       };
-      let start_number_override = settings.start_number_override().map(|x| x as u64);
-      let s3_config = aws_config::from_env().load().await;
-      let s3client = s3::Client::new(&s3_config);
-      let s3_bucket_name = settings.s3_bucket_name().unwrap().to_string();
-      let s3_upload_start_number = settings.s3_upload_start_number().unwrap_or(0) as u64;
-      let s3_head_check = settings.s3_head_check();
       let n_threads = self.n_threads.unwrap_or(1).into();
       let sem = Arc::new(Semaphore::new(n_threads));
       let status_vector: Arc<Mutex<Vec<SequenceNumberStatus>>> = Arc::new(Mutex::new(Vec::new()));
@@ -941,36 +931,15 @@ impl Vermilion {
         println!("Error initializing db tables: {:?}", init_result.unwrap_err());
         return;
       }
-      // let collection_list_insert_result = Self::insert_collection_list_from_file(deadpool.clone()).await;
-      // let collection_insert_result = Self::insert_collections_from_file(deadpool.clone()).await;
-      // let collection_summary_result = Self::update_collection_summary(deadpool.clone()).await;
-      // if collection_list_insert_result.is_err() {
-      //   println!("Error inserting collection list: {:?}", collection_list_insert_result.unwrap_err());
-      //   return;
-      // }
-      // if collection_insert_result.is_err() {
-      //   println!("Error inserting collection: {:?}", collection_insert_result.unwrap_err());
-      //   return;
-      // }
-      // if collection_summary_result.is_err() {
-      //   println!("Error updating collection summary: {:?}", collection_summary_result.unwrap_err());
-      //   return;
-      // }
 
-      let start_number = match start_number_override {
-        Some(start_number_override) => start_number_override,
-        None => {
-          match Self::get_last_number(deadpool.clone()).await {
-            Ok(last_number) => (last_number + 1) as u64,
-            Err(err) => {
-              println!("Error getting last number from db: {:?}, stopping, try restarting process", err);
-              return;
-            }
-          }
+      let start_number = match Self::get_last_number(deadpool.clone()).await {
+        Ok(last_number) => (last_number + 1) as u64,
+        Err(err) => {
+          println!("Error getting last number from db: {:?}, stopping, try restarting process", err);
+          return;
         }
       };
       println!("Metadata in db assumed populated up to: {:?}, will only upload metadata for {:?} onwards.", start_number.checked_sub(1), start_number);
-      println!("Inscriptions in s3 assumed populated up to: {:?}, will only upload content for {:?} onwards.", std::cmp::max(s3_upload_start_number, start_number).checked_sub(1), std::cmp::max(s3_upload_start_number, start_number));
       let initial = SequenceNumberStatus {
         sequence_number: start_number,
         status: "UNKNOWN".to_string()
@@ -989,8 +958,6 @@ impl Vermilion {
         let permit = Arc::clone(&sem).acquire_owned().await;
         let cloned_index = index.clone();
         let cloned_deadpool = deadpool.clone();
-        let cloned_s3client = s3client.clone();
-        let cloned_bucket_name = s3_bucket_name.clone();
         let cloned_status_vector = status_vector.clone();
         let cloned_timing_vector = timing_vector.clone();
         tokio::task::spawn(async move {
@@ -1078,12 +1045,6 @@ impl Vermilion {
             .zip(cloned_inscriptions.into_iter())
             .map(|((x, y), z)| (x, y, z))
             .collect();          
-          for (number, inscription_id, inscription) in number_id_inscriptions.clone() {
-            if number < s3_upload_start_number {
-                continue;
-            }
-            Self::upload_ordinal_content(&cloned_s3client, &cloned_bucket_name, inscription_id, inscription, s3_head_check).await;	//TODO: Handle errors
-          }
           
           //4. Get ordinal metadata
           let t5 = Instant::now();
@@ -2329,74 +2290,6 @@ impl Vermilion {
   }
 
   //Inscription Indexer Helper functions
-  pub(crate) async fn upload_ordinal_content(client: &s3::Client, bucket_name: &str, inscription_id: InscriptionId, inscription: Inscription, head_check: bool) {
-    let id = inscription_id.to_string();	
-    let key = format!("content/{}", id);
-    if head_check {
-      let head_status = client	
-        .head_object()	
-        .bucket(bucket_name)	
-        .key(key.clone())	
-        .send()	
-        .await;
-      match head_status {	
-        Ok(_) => {	
-          log::debug!("Ordinal content already exists in S3: {}", id.clone());	
-          return;	
-        }	
-        Err(error) => {	
-          if error.to_string() == "service error" {
-            let service_error = error.into_service_error();
-            if service_error.to_string() != "NotFound" {
-              println!("Error checking if ordinal {} exists in S3: {} - {:?} code: {:?}", id.clone(), service_error, service_error.message(), service_error.code());	
-              return;	//error
-            } else {
-              log::trace!("Ordinal {} not found in S3, uploading", id.clone());
-            }
-          } else {
-            println!("Error checking if ordinal {} exists in S3: {} - {:?}", id.clone(), error, error.message());	
-            return; //error
-          }
-        }
-      };
-    }
-    
-    let body = Inscription::body(&inscription);	
-    let bytes = match body {	
-      Some(body) => body.to_vec(),	
-      None => {	
-        log::debug!("No body found for inscription: {}, filling with empty body", inscription_id);	
-        Vec::new()	
-      }	
-    };	
-    let content_type = match Inscription::content_type(&inscription) {	
-      Some(content_type) => content_type,	
-      None => {	
-        log::debug!("No content type found for inscription: {}, filling with empty content type", inscription_id);	
-        ""	
-      }	
-    };
-    let put_status = client	
-      .put_object()	
-      .bucket(bucket_name)	
-      .key(key)	
-      .body(ByteStream::from(bytes))	
-      .content_type(content_type)	
-      .send()	
-      .await;
-
-    let _ret = match put_status {	
-      Ok(put_status) => {	
-        log::debug!("Uploaded ordinal content to S3: {}", id.clone());	
-        put_status	
-      }	
-      Err(error) => {	
-        log::error!("Error uploading ordinal {} to S3: {} - {:?}", id.clone(), error, error.message());	
-        return;	
-      }	
-    };
-  }
-
   fn is_bitmap_style(input: &str) -> bool {
     let pattern = r"^[^ \n]+[.][^ \n]+$";
     let re = regex::Regex::new(pattern).unwrap();

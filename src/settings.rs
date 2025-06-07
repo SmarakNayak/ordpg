@@ -32,10 +32,6 @@ pub struct Settings {
   db_name: Option<String>,
   db_user: Option<String>,
   db_password: Option<String>,
-  start_number_override: Option<u32>,
-  s3_bucket_name: Option<String>,
-  s3_upload_start_number: Option<u32>,
-  s3_head_check: Option<bool>,
   magiceden_api_key: Option<String>,
   access_token_secret: Option<String>,
 }
@@ -155,10 +151,6 @@ impl Settings {
       db_name: self.db_name.or(source.db_name),
       db_user: self.db_user.or(source.db_user),
       db_password: self.db_password.or(source.db_password),
-      start_number_override: self.start_number_override.or(source.start_number_override),
-      s3_bucket_name: self.s3_bucket_name.or(source.s3_bucket_name),
-      s3_upload_start_number: self.s3_upload_start_number.or(source.s3_upload_start_number),
-      s3_head_check: self.s3_head_check.or(source.s3_head_check),
       magiceden_api_key: self.magiceden_api_key.or(source.magiceden_api_key),
       access_token_secret: self.access_token_secret.or(source.access_token_secret),
     }
@@ -201,10 +193,6 @@ impl Settings {
       db_name: None,
       db_user: None,
       db_password: None,
-      start_number_override: None,
-      s3_bucket_name: None,
-      s3_upload_start_number: None,
-      s3_head_check: None,
       magiceden_api_key: None,
       access_token_secret: None,
     }
@@ -299,10 +287,6 @@ impl Settings {
       db_name: get_string("DB_NAME"),
       db_user: get_string("DB_USER"),
       db_password: get_string("DB_PASSWORD"),
-      start_number_override: get_u32("START_NUMBER_OVERRIDE")?,
-      s3_bucket_name: get_string("S3_BUCKET_NAME"),
-      s3_upload_start_number: get_u32("S3_UPLOAD_START_NUMBER")?,
-      s3_head_check: Some(get_bool("S3_HEAD_CHECK")),
       magiceden_api_key: get_string("MAGICEDEN_API_KEY"),
       access_token_secret: get_string("ACCESS_TOKEN_SECRET"),
     })
@@ -339,10 +323,6 @@ impl Settings {
       db_name: None,
       db_user: None,
       db_password: None,
-      start_number_override: None,
-      s3_bucket_name: None,
-      s3_upload_start_number: None,
-      s3_head_check: None,
       magiceden_api_key: None,
       access_token_secret: None,
     }
@@ -423,10 +403,6 @@ impl Settings {
       db_name: self.db_name,
       db_user: self.db_user,
       db_password: self.db_password,
-      start_number_override: self.start_number_override,
-      s3_bucket_name: self.s3_bucket_name,
-      s3_upload_start_number: self.s3_upload_start_number,
-      s3_head_check: self.s3_head_check,
       magiceden_api_key: self.magiceden_api_key,
       access_token_secret: self.access_token_secret,
     })
@@ -655,22 +631,6 @@ impl Settings {
 
   pub fn db_password(&self) -> Option<&str> {
     self.db_password.as_deref()
-  }
-
-  pub fn start_number_override(&self) -> Option<u32> {
-    self.start_number_override
-  }
-
-  pub fn s3_bucket_name(&self) -> Option<&str> {
-    self.s3_bucket_name.as_deref()
-  }
-
-  pub fn s3_upload_start_number(&self) -> Option<u32> {
-    self.s3_upload_start_number
-  }
-
-  pub fn s3_head_check(&self) -> bool {
-    self.s3_head_check.unwrap_or_default()
   }
 
   pub fn magiceden_api_key(&self) -> Option<&str> {
@@ -1200,10 +1160,6 @@ mod tests {
         db_name: None,
         db_user: None,
         db_password: None,
-        start_number_override: None,
-        s3_bucket_name: None,
-        s3_upload_start_number: None,
-        s3_head_check: Some(true),
         magiceden_api_key: None,
         access_token_secret: None,
       }
@@ -1271,10 +1227,6 @@ mod tests {
         db_name: None,
         db_user: None,
         db_password: None,
-        start_number_override: None,
-        s3_bucket_name: None,
-        s3_upload_start_number: None,
-        s3_head_check: Some(true),
         magiceden_api_key: None,
         access_token_secret: None,
       }
