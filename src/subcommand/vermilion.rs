@@ -8,8 +8,6 @@ use crate::subcommand::server;
 use crate::index::fetcher;
 use crate::Charm;
 
-use tokio::sync::Semaphore;
-use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 use serde::Serialize;
 use sha256::digest;
@@ -38,7 +36,6 @@ use tracing::Span;
 use tracing::Level as TraceLevel;
 
 use std::collections::HashMap;
-use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::thread::JoinHandle;
 use rand::Rng;
@@ -126,11 +123,6 @@ pub(crate) struct Vermilion {
     help = "Listen on <HTTP_PORT> for incoming REST requests. [default: 81]."
   )]
   pub(crate) api_http_port: Option<u16>,
-  #[arg(
-    long,
-    help = "Number of threads to use when uploading content and metadata. [default: 1]."
-  )]
-  pub(crate) n_threads: Option<u16>,
   #[arg(long, help = "Only run api server, do not run indexer. [default: false].")]
   pub(crate) run_api_server_only: bool,
   #[arg(long, help = "Run migration script. [default: false].")]
@@ -467,11 +459,6 @@ pub struct TrendingItem {
 pub struct DiscoverItem {
   activity: DiscoverItemActivity,
   inscriptions: Vec<FullMetadata>
-}
-
-pub struct SequenceNumberStatus {
-  sequence_number: u64,
-  status: String
 }
 
 fn deserialize_date<'de, D>(deserializer: D) -> Result<i64, D::Error>
@@ -828,88 +815,6 @@ impl Vermilion {
   }
 
   pub(crate) fn run_inscription_indexer(self, settings: Settings, index: Arc<Index>) {    
-    // let rt = tokio::runtime::Builder::new_multi_thread()
-    //   .enable_all()
-    //   .build()
-    //   .unwrap();
-    // rt.block_on(async {
-    //   let deadpool = match Self::get_deadpool(settings.clone()).await {
-    //     Ok(deadpool) => deadpool,
-    //     Err(err) => {
-    //       println!("Error creating deadpool: {:?}", err);
-    //       return;
-    //     }
-    //   };      
-    //   let mut i=0;
-    //   let mut t0 = Instant::now();
-    //   loop {
-    //     // break if ctrl-c is received
-    //     if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
-    //       return;
-    //     }
-    //     let inscription = match index.get_inscription_entry_by_sequence_number(i) {
-    //       Ok(inscription) => {
-    //         match inscription {
-    //           Some(inscription) => inscription,
-    //           None => {
-    //             println!("No inscription found for sequence number: {}. Breaking from loop", i);
-    //             continue;
-    //           }
-    //         }
-    //       },
-    //       Err(err) => {
-    //         println!("Error getting inscription entry by sequence number: {:?}", err);
-    //         continue;
-    //       }
-    //     };
-    //     let info = match index.inscription_info(subcommand::server::query::Inscription::Id(inscription.id), None) {
-    //       Ok(info) => {
-    //         match info {
-    //           Some(info) => info,
-    //           None => {
-    //             println!("No inscription info found for sequence number: {}. Breaking from loop", i);
-    //             continue;
-    //           }
-    //         }
-    //       },
-    //       Err(err) => {
-    //         println!("Error getting inscription info: {:?}", err);
-    //         continue;
-    //       }
-    //     };
-    //     let address = match Self::get_last_ordinal_transfer(deadpool.clone(), inscription.id.to_string()).await {
-    //       Ok(transfer) => transfer.address,
-    //       Err(err) => {
-    //         println!("Error getting last ordinal transfer: {:?}", err);
-    //         continue;
-    //       }
-    //     };
-    //     let indexed_address = match info.0.address {
-    //       Some(address) => address,
-    //       None => {
-    //         println!("No address found for inscription: {}. Breaking from loop", inscription.id);
-    //         i+= 1;
-    //         continue;
-    //       }
-    //     };
-    //     if indexed_address != address {
-    //       println!("Address mismatch for inscription: {}. Breaking from loop", inscription.id);
-    //     }
-    //     i+= 1;
-    //     if i % 10000 == 0 {
-    //       let t1 = Instant::now();
-    //       let elapsed = t1.duration_since(t0);
-    //       println!("Checked {} addresses in {:?}", i, elapsed);
-    //       t0 = t1;
-    //     }
-    //     if i > 100_000 {
-    //       println!("Breaking from loop after 100_000 iterations");
-    //       break;
-    //     }
-    //   }
-    // });
-    // return;
-
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -922,17 +827,13 @@ impl Vermilion {
           return;
         }
       };
-      let n_threads = self.n_threads.unwrap_or(1).into();
-      let sem = Arc::new(Semaphore::new(n_threads));
-      let status_vector: Arc<Mutex<Vec<SequenceNumberStatus>>> = Arc::new(Mutex::new(Vec::new()));
-      let timing_vector: Arc<Mutex<Vec<IndexerTimings>>> = Arc::new(Mutex::new(Vec::new()));
       let init_result = Self::initialize_db_tables(deadpool.clone()).await;
       if init_result.is_err() {
         println!("Error initializing db tables: {:?}", init_result.unwrap_err());
         return;
       }
 
-      let start_number = match Self::get_last_number(deadpool.clone()).await {
+      let mut start_number = match Self::get_last_number(deadpool.clone()).await {
         Ok(last_number) => (last_number + 1) as u64,
         Err(err) => {
           println!("Error getting last number from db: {:?}, stopping, try restarting process", err);
@@ -940,298 +841,248 @@ impl Vermilion {
         }
       };
       println!("Metadata in db assumed populated up to: {:?}, will only upload metadata for {:?} onwards.", start_number.checked_sub(1), start_number);
-      let initial = SequenceNumberStatus {
-        sequence_number: start_number,
-        status: "UNKNOWN".to_string()
-      };
-      status_vector.lock().await.push(initial);
 
       // every iteration fetches 1k inscriptions
       let time = Instant::now();
       println!("Starting @ {:?}", time);
-      loop {
+      'outer: loop {
         let t0 = Instant::now();
         //break if ctrl-c is received
         if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
           break;
         }
-        let permit = Arc::clone(&sem).acquire_owned().await;
         let cloned_index = index.clone();
         let cloned_deadpool = deadpool.clone();
-        let cloned_status_vector = status_vector.clone();
-        let cloned_timing_vector = timing_vector.clone();
-        tokio::task::spawn(async move {
-          let t1 = Instant::now();
-          let _permit = permit;
-          let needed_numbers = Self::get_needed_sequence_numbers(cloned_status_vector.clone()).await;
-          let mut should_sleep = false;
-          let first_number = needed_numbers[0];
-          let mut last_number = needed_numbers[needed_numbers.len()-1];
-          log::info!("Trying Numbers: {:?}-{:?}", first_number, last_number);          
+        let t1 = Instant::now();
+        let needed_numbers: Vec<u64> = (start_number..start_number + INDEX_BATCH_SIZE as u64).collect(); // convert this to vec
+        let mut should_sleep = false;
+        let first_number = needed_numbers[0];
+        let mut last_number = needed_numbers[needed_numbers.len()-1];
+        log::info!("Trying Numbers: {:?}-{:?}", first_number, last_number);
 
-          //1. Get ids
-          let t2 = Instant::now();
-          let mut inscription_ids: Vec<InscriptionId> = Vec::new();
-          for j in needed_numbers.clone() {
-            let inscription_entry = cloned_index.get_inscription_entry_by_sequence_number(j.try_into().unwrap()).unwrap();
-            match inscription_entry {
-              Some(inscription_entry) => {
-                inscription_ids.push(inscription_entry.id);
-              },
-              None => {
-                log::info!("No inscription found for sequence number: {}. Marking as not found. Breaking from loop, sleeping a minute", j);
+        //1. Get ids
+        let t2 = Instant::now();
+        let mut inscription_ids: Vec<InscriptionId> = Vec::new();
+        for j in needed_numbers.clone() {
+          let inscription_entry = cloned_index.get_inscription_entry_by_sequence_number(j.try_into().unwrap()).unwrap();
+          match inscription_entry {
+            Some(inscription_entry) => {
+              inscription_ids.push(inscription_entry.id);
+            },
+            None => {
+              if j == first_number {
+                log::info!("No inscription found for sequence number: {}. Will retry in a minute", j);
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                continue 'outer; // retry the whole batch
+              } else {
+                log::info!("No inscription found beyond sequence number: {}. Will sleep a minute after indexing from {}", j, first_number);
                 last_number = j;
-                let status_vector = cloned_status_vector.clone();
-                let mut locked_status_vector = status_vector.lock().await;
-                for l in needed_numbers.clone() {                  
-                  let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == l).unwrap();
-                  if l >= j {
-                    status.status = "NOT_FOUND_LOCKED".to_string();
-                  }                
-                }
                 should_sleep = true;
                 break;
               }
             }
           }
-          
-          //2. Get inscriptions
-          let t3 = Instant::now();
-          let cloned_ids = inscription_ids.clone();
-          let txs = cloned_index.get_transactions(cloned_ids.into_iter().map(|x| x.txid).collect());
-          let err_txs = match txs {
-              Ok(txs) => Some(txs),
-              Err(error) => {
-                println!("Error getting transactions {}-{}: {:?}", first_number, last_number, error);
-                let status_vector = cloned_status_vector.clone();
-                { //Enclosing braces to drop the mutex so sleep doesn't block
-                  let mut locked_status_vector = status_vector.lock().await;
-                  for j in needed_numbers.clone() {                  
-                    let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == j).unwrap();
-                    status.status = "ERROR".to_string();
-                  }
-                }
-                println!("error string: {}", error.to_string());
-                if  error.to_string().contains("Failed to fetch raw transaction") || 
-                    error.to_string().contains("connection closed") || 
-                    error.to_string().contains("error trying to connect") || 
-                    error.to_string().contains("end of file") {
-                  println!("Pausing for 60s & Breaking from loop");
-                  //std::mem::drop(locked_status_vector); //Drop the mutex so sleep doesn't block
-                  tokio::time::sleep(Duration::from_secs(60)).await;
-                }
-                return;
-              }
-          };
-          let clean_txs = err_txs.unwrap();
-          let cloned_ids = inscription_ids.clone();
-          let id_txs: Vec<_> = cloned_ids.into_iter().zip(clean_txs.into_iter()).collect();
-          let mut inscriptions: Vec<Inscription> = Vec::new();
-          for (inscription_id, tx) in id_txs {
-            let inscription = ParsedEnvelope::from_transaction(&tx)
-              .into_iter()
-              .nth(inscription_id.index as usize)
-              .map(|envelope| envelope.payload)
-              .unwrap();
-            inscriptions.push(inscription);
-          }
-
-          //3. Upload ordinal content to s3 (optional)
-          let t4 = Instant::now();
-          let cloned_ids = inscription_ids.clone();
-          let cloned_inscriptions = inscriptions.clone();
-          let number_id_inscriptions: Vec<_> = needed_numbers.clone().into_iter()
-            .zip(cloned_ids.into_iter())
-            .zip(cloned_inscriptions.into_iter())
-            .map(|((x, y), z)| (x, y, z))
-            .collect();          
-          
-          //4. Get ordinal metadata
-          let t5 = Instant::now();
-          let status_vector = cloned_status_vector.clone();
-
-          let mut retrieval = Duration::from_millis(0);
-          let mut metadata_vec: Vec<Metadata> = Vec::new();
-          let mut sat_metadata_vec: Vec<SatMetadata> = Vec::new();
-          for (number, inscription_id, inscription) in number_id_inscriptions {
-            let t0 = Instant::now();
-            let (metadata, sat_metadata) =  match Self::extract_ordinal_metadata(cloned_index.clone(), inscription_id, inscription.clone()) {
-                Ok((metadata, sat_metadata)) => (metadata, sat_metadata),
-                Err(error) => {
-                  println!("Error: {} extracting metadata for sequence number: {}. Marking as error, will retry", error, number);
-                  let mut locked_status_vector = status_vector.lock().await;
-                  let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == number).unwrap();
-                  status.status = "ERROR_LOCKED".to_string();
-                  continue;
-                }
-            };
-            metadata_vec.push(metadata);            
-            match sat_metadata {
-              Some(sat_metadata) => {
-                sat_metadata_vec.push(sat_metadata);
-              },
-              None => {}                
-            }
-            let t1 = Instant::now();            
-            retrieval += t1.duration_since(t0);
-          }
-
-          //4.1 Insert metadata
-          let mut client = match cloned_deadpool.get().await {
-            Ok(client) => client,
-            Err(err) => {
-              log::info!("Error getting db client: {:?}, waiting a minute", err);
-              let mut locked_status_vector = status_vector.lock().await;
-              for j in needed_numbers.clone() {              
-                let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == j).unwrap();
-                status.status = "ERROR".to_string();
-              }
-              return;
-            }
-          };
-          let tx = match client.transaction().await{
-            Ok(tx) => tx,
-            Err(err) => {
-              log::info!("Error starting db transaction: {:?}, waiting a minute", err);
-              let mut locked_status_vector = status_vector.lock().await;
-              for j in needed_numbers.clone() {
-                let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == j).unwrap();
-                status.status = "ERROR".to_string();
-              }
-              return;
-            }
-          };
-          let t51 = Instant::now();
-          let insert_result = Self::bulk_insert_metadata(&tx, metadata_vec.clone()).await;
-          let edition_result = Self::bulk_insert_editions(&tx, metadata_vec).await;
-          let t51a = Instant::now();
-          let sat_insert_result = Self::bulk_insert_sat_metadata(&tx, sat_metadata_vec.clone()).await;
-          let t51b = Instant::now();
-          let mut satributes_vec = Vec::new();
-          for sat_metadata in sat_metadata_vec.iter() {
-            let sat = Sat(sat_metadata.sat as u64);
-            for block_rarity in sat.block_rarities().iter() {
-              let satribute = Satribute {
-                sat: sat_metadata.sat,
-                satribute: block_rarity.to_string()
-              };
-              satributes_vec.push(satribute);
-            }
-            let sat_rarity = sat.rarity();
-            if sat_rarity != Rarity::Common {
-              let rarity = Satribute {
-                sat: sat_metadata.sat,
-                satribute: sat_rarity.to_string()
-              };
-              satributes_vec.push(rarity);
-            }
-          }
-          let satribute_insert_result = Self::bulk_insert_satributes(&tx, satributes_vec).await;
-          let t51c = Instant::now();
-          //4.2 Upload content to db
-          let number_inscriptions: Vec<_> = needed_numbers.clone().into_iter()
-            .zip(inscriptions.into_iter())
-            .collect();
-          let mut content_vec: Vec<(i64,ContentBlob)> = Vec::new();
-          for (number, inscription) in number_inscriptions {
-            if let Some(content) = inscription.body() {
-              let content_type = match inscription.content_type() {
-                  Some(content_type) => content_type,
-                  None => ""
-              };
-              let content_encoding = inscription.content_encoding().map(|x| x.to_str().ok().map(|s| s.to_string())).flatten();
-              let sha256 = digest(content);
-              let content_blob = ContentBlob {
-                sha256: sha256.to_string(),
-                content: content.to_vec(),
-                content_type: content_type.to_string(),
-                content_encoding: content_encoding
-              };
-              content_vec.push((number as i64, content_blob));
-            }
-          }
-          let content_result = Self::bulk_insert_content(&tx, content_vec).await;
-          let commit_result = tx.commit().await;
-          //4.3 Update status
-          let t52 = Instant::now();
-          if insert_result.is_err() || sat_insert_result.is_err() || content_result.is_err() || satribute_insert_result.is_err() || commit_result.is_err() || edition_result.is_err() {
-            log::info!("Error bulk inserting into db for sequence numbers: {}-{}. Will retry after 60s", first_number, last_number);
-            if insert_result.is_err() {
-              log::info!("Metadata Error: {:?}", insert_result.unwrap_err());
-            }
-            if sat_insert_result.is_err() {
-              log::info!("Sat Error: {:?}", sat_insert_result.unwrap_err());
-            }
-            if satribute_insert_result.is_err() {
-              log::info!("Satribute Error: {:?}", satribute_insert_result.unwrap_err());
-            }
-            if content_result.is_err() {
-              log::info!("Content Error: {:?}", content_result.unwrap_err());
-            }
-            if commit_result.is_err() {
-              log::info!("Commit Error: {:?}", commit_result.unwrap_err());
-            }
-            if edition_result.is_err() {
-              log::info!("Edition Error: {:?}", edition_result.unwrap_err());
-            }
-            should_sleep = true;
-            let mut locked_status_vector = status_vector.lock().await;
-            for j in needed_numbers.clone() {              
-              let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == j).unwrap();
-              status.status = "ERROR".to_string();
-            }
-          } else {
-            let mut locked_status_vector = status_vector.lock().await;
-            for j in needed_numbers.clone() {              
-              let status = locked_status_vector.iter_mut().find(|x| x.sequence_number == j).unwrap();
-              //_LOCKED state to prevent other threads from changing status before current thread completes
-              if status.status != "NOT_FOUND_LOCKED" && status.status != "ERROR_LOCKED" {
-                status.status = "SUCCESS".to_string();
-              } else if status.status == "NOT_FOUND_LOCKED" {
-                status.status = "NOT_FOUND".to_string();
-              } else if status.status == "ERROR_LOCKED" {
-                status.status = "ERROR".to_string();
-              }
-            }
-          }
-          
-          //5. Log timings
-          let t6 = Instant::now();
-          if first_number != last_number {
-            log::info!("Finished numbers {} - {}", first_number, last_number);
-          }
-          let timing = IndexerTimings {
-            inscription_start: first_number,
-            inscription_end: last_number + 1,
-            acquire_permit_start: t0,
-            acquire_permit_end: t1,
-            get_numbers_start: t1,
-            get_numbers_end: t2,
-            get_id_start: t2,
-            get_id_end: t3,
-            get_inscription_start: t3,
-            get_inscription_end: t4,
-            upload_content_start: t4,
-            upload_content_end: t5,
-            get_metadata_start: t5,
-            get_metadata_end: t6,
-            retrieval: retrieval,
-            insertion: t52.duration_since(t51),
-            metadata_insertion: t51a.duration_since(t51),
-            sat_insertion: t51b.duration_since(t51a),
-            edition_insertion: t51c.duration_since(t51b),
-            content_insertion: t52.duration_since(t51c),
-            locking: t6.duration_since(t52)
-          };
-          cloned_timing_vector.lock().await.push(timing);
-          Self::print_index_timings(cloned_timing_vector, n_threads as u32).await;
-
-          //6. Sleep thread if up to date.
-          if should_sleep {
-            tokio::time::sleep(Duration::from_secs(60)).await;
-          }
-        });        
+        }
         
+        //2. Get inscriptions
+        let t3 = Instant::now();
+        let cloned_ids = inscription_ids.clone();
+        let txs = cloned_index.get_transactions(cloned_ids.into_iter().map(|x| x.txid).collect());
+        let err_txs = match txs {
+          Ok(txs) => Some(txs),
+          Err(error) => {
+            println!("Error getting transactions {}-{}: {:?}", first_number, last_number, error);
+            println!("error string: {}", error.to_string());
+            if  error.to_string().contains("Failed to fetch raw transaction") || 
+                error.to_string().contains("connection closed") || 
+                error.to_string().contains("error trying to connect") || 
+                error.to_string().contains("end of file") {
+              println!("Pausing for 60s & Breaking from loop");
+              tokio::time::sleep(Duration::from_secs(60)).await;
+            }
+            continue 'outer; // retry the whole batch
+          }
+        };
+        let clean_txs = err_txs.unwrap();
+        let cloned_ids = inscription_ids.clone();
+        let id_txs: Vec<_> = cloned_ids.into_iter().zip(clean_txs.into_iter()).collect();
+        let mut inscriptions: Vec<Inscription> = Vec::new();
+        for (inscription_id, tx) in id_txs {
+          let inscription = ParsedEnvelope::from_transaction(&tx)
+            .into_iter()
+            .nth(inscription_id.index as usize)
+            .map(|envelope| envelope.payload)
+            .unwrap();
+          inscriptions.push(inscription);
+        }
+
+        //3. Create tuple vectors
+        let t4 = Instant::now();
+        let cloned_ids = inscription_ids.clone();
+        let cloned_inscriptions = inscriptions.clone();
+        let number_id_inscriptions: Vec<_> = needed_numbers.clone().into_iter()
+          .zip(cloned_ids.into_iter())
+          .zip(cloned_inscriptions.into_iter())
+          .map(|((x, y), z)| (x, y, z))
+          .collect();
+        
+        //4. Get ordinal metadata
+        let t5 = Instant::now();
+        let mut retrieval = Duration::from_millis(0);
+        let mut metadata_vec: Vec<Metadata> = Vec::new();
+        let mut sat_metadata_vec: Vec<SatMetadata> = Vec::new();
+        for (number, inscription_id, inscription) in number_id_inscriptions {
+          let t0 = Instant::now();
+          let (metadata, sat_metadata) =  match Self::extract_ordinal_metadata(cloned_index.clone(), inscription_id, inscription.clone()) {
+              Ok((metadata, sat_metadata)) => (metadata, sat_metadata),
+              Err(error) => {
+                println!("Error: {} extracting metadata for sequence number: {}. Will retry in a minute", error, number);
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                continue 'outer;
+              }
+          };
+          metadata_vec.push(metadata);            
+          match sat_metadata {
+            Some(sat_metadata) => {
+              sat_metadata_vec.push(sat_metadata);
+            },
+            None => {}                
+          }
+          let t1 = Instant::now();            
+          retrieval += t1.duration_since(t0);
+        }
+
+        //4.1 Insert metadata
+        let mut client = match cloned_deadpool.get().await {
+          Ok(client) => client,
+          Err(err) => {
+            log::info!("Error getting db client: {:?}, waiting a minute", err);
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            continue 'outer;
+          }
+        };
+        let tx = match client.transaction().await{
+          Ok(tx) => tx,
+          Err(err) => {
+            log::info!("Error starting db transaction: {:?}, waiting a minute", err);
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            continue 'outer;
+          }
+        };
+        let t51 = Instant::now();
+        let insert_result = Self::bulk_insert_metadata(&tx, metadata_vec.clone()).await;
+        let edition_result = Self::bulk_insert_editions(&tx, metadata_vec).await;
+        let t51a = Instant::now();
+        let sat_insert_result = Self::bulk_insert_sat_metadata(&tx, sat_metadata_vec.clone()).await;
+        let t51b = Instant::now();
+        let mut satributes_vec = Vec::new();
+        for sat_metadata in sat_metadata_vec.iter() {
+          let sat = Sat(sat_metadata.sat as u64);
+          for block_rarity in sat.block_rarities().iter() {
+            let satribute = Satribute {
+              sat: sat_metadata.sat,
+              satribute: block_rarity.to_string()
+            };
+            satributes_vec.push(satribute);
+          }
+          let sat_rarity = sat.rarity();
+          if sat_rarity != Rarity::Common {
+            let rarity = Satribute {
+              sat: sat_metadata.sat,
+              satribute: sat_rarity.to_string()
+            };
+            satributes_vec.push(rarity);
+          }
+        }
+        let satribute_insert_result = Self::bulk_insert_satributes(&tx, satributes_vec).await;
+        let t51c = Instant::now();
+        //4.2 Upload content to db
+        let number_inscriptions: Vec<_> = needed_numbers.clone().into_iter()
+          .zip(inscriptions.into_iter())
+          .collect();
+        let mut content_vec: Vec<(i64,ContentBlob)> = Vec::new();
+        for (number, inscription) in number_inscriptions {
+          if let Some(content) = inscription.body() {
+            let content_type = match inscription.content_type() {
+                Some(content_type) => content_type,
+                None => ""
+            };
+            let content_encoding = inscription.content_encoding().map(|x| x.to_str().ok().map(|s| s.to_string())).flatten();
+            let sha256 = digest(content);
+            let content_blob = ContentBlob {
+              sha256: sha256.to_string(),
+              content: content.to_vec(),
+              content_type: content_type.to_string(),
+              content_encoding: content_encoding
+            };
+            content_vec.push((number as i64, content_blob));
+          }
+        }
+        let content_result = Self::bulk_insert_content(&tx, content_vec).await;
+        let commit_result = tx.commit().await;
+        //4.3 Update status
+        let t52 = Instant::now();
+        if insert_result.is_err() || sat_insert_result.is_err() || content_result.is_err() || satribute_insert_result.is_err() || commit_result.is_err() || edition_result.is_err() {
+          log::info!("Error bulk inserting into db for sequence numbers: {}-{}. Will retry after 60s", first_number, last_number);
+          if insert_result.is_err() {
+            log::info!("Metadata Error: {:?}", insert_result.unwrap_err());
+          }
+          if sat_insert_result.is_err() {
+            log::info!("Sat Error: {:?}", sat_insert_result.unwrap_err());
+          }
+          if satribute_insert_result.is_err() {
+            log::info!("Satribute Error: {:?}", satribute_insert_result.unwrap_err());
+          }
+          if content_result.is_err() {
+            log::info!("Content Error: {:?}", content_result.unwrap_err());
+          }
+          if commit_result.is_err() {
+            log::info!("Commit Error: {:?}", commit_result.unwrap_err());
+          }
+          if edition_result.is_err() {
+            log::info!("Edition Error: {:?}", edition_result.unwrap_err());
+          }
+          tokio::time::sleep(Duration::from_secs(60)).await;
+          continue 'outer;
+        }
+        
+        //5. Log timings
+        let t6 = Instant::now();
+        if first_number != last_number {
+          log::info!("Finished numbers {} - {}", first_number, last_number);
+        }
+        let timing = IndexerTimings {
+          inscription_start: first_number,
+          inscription_end: last_number + 1,
+          acquire_permit_start: t0,
+          acquire_permit_end: t1,
+          get_numbers_start: t1,
+          get_numbers_end: t2,
+          get_id_start: t2,
+          get_id_end: t3,
+          get_inscription_start: t3,
+          get_inscription_end: t4,
+          upload_content_start: t4,
+          upload_content_end: t5,
+          get_metadata_start: t5,
+          get_metadata_end: t6,
+          retrieval: retrieval,
+          insertion: t52.duration_since(t51),
+          metadata_insertion: t51a.duration_since(t51),
+          sat_insertion: t51b.duration_since(t51a),
+          edition_insertion: t51c.duration_since(t51b),
+          content_insertion: t52.duration_since(t51c),
+          locking: t6.duration_since(t52)
+        };
+        Self::print_index_timings_simple(timing);
+        
+        //6. Update start number for next iteration
+        start_number = last_number + 1;
+
+        //7. Sleep thread if up to date.
+        if should_sleep {
+          tokio::time::sleep(Duration::from_secs(60)).await;
+        }
       }
     })
   }
@@ -3345,151 +3196,36 @@ impl Vermilion {
     Ok(last_number.unwrap_or(-1))
   }
 
-  pub(crate) async fn get_needed_sequence_numbers(status_vector: Arc<Mutex<Vec<SequenceNumberStatus>>>) -> Vec<u64> {
-    let mut status_vector = status_vector.lock().await;
-    let largest_number_in_vec = status_vector.iter().max_by_key(|status| status.sequence_number).unwrap().sequence_number;
-    let mut needed_inscription_numbers: Vec<u64> = Vec::new();
-    //Find start of needed numbers
-    let mut pending_count=0;
-    let mut unknown_count=0;
-    let mut error_count=0;
-    let mut not_found_count=0;
-    let mut success_count=0;
-    for status in status_vector.iter() {
-      if status.status == "UNKNOWN" || status.status == "ERROR" || status.status == "NOT_FOUND" {
-        needed_inscription_numbers.push(status.sequence_number);
-      }
-      if status.status == "PENDING" {
-        pending_count = pending_count + 1;
-      }
-      if status.status == "UNKNOWN" {
-        unknown_count = unknown_count + 1;
-      }
-      if status.status == "ERROR" || status.status == "ERROR_LOCKED"  {
-        error_count = error_count + 1;
-      }
-      if status.status == "NOT_FOUND" || status.status == "NOT_FOUND_LOCKED" {
-        not_found_count = not_found_count + 1;
-      }
-      if status.status == "SUCCESS" {
-        success_count = success_count + 1;
-      }
-    }
-    log::info!("Pending: {}, Unknown: {}, Error: {}, Not Found: {}, Success: {}", pending_count, unknown_count, error_count, not_found_count, success_count);
-    //Fill in needed numbers
-    let mut needed_length = needed_inscription_numbers.len();
-    needed_inscription_numbers.sort();
-    if needed_length < INDEX_BATCH_SIZE {
-      let mut i = 0;
-      while needed_length < INDEX_BATCH_SIZE {        
-        i = i + 1;
-        needed_inscription_numbers.push(largest_number_in_vec + i);
-        needed_length = needed_inscription_numbers.len();
-      }
-    } else {
-      needed_inscription_numbers = needed_inscription_numbers[0..INDEX_BATCH_SIZE].to_vec();
-    }
-    //Mark as pending
-    for number in needed_inscription_numbers.clone() {
-      match status_vector.iter_mut().find(|status| status.sequence_number == number) {
-        Some(status) => {
-          status.status = "PENDING".to_string();
-        },
-        None => {
-          let status = SequenceNumberStatus{
-            sequence_number: number,
-            status: "PENDING".to_string(),
-          };
-          status_vector.push(status);
-        }
-      };
-    }
-    //Remove successfully processed numbers from vector
-    status_vector.retain(|status| status.status != "SUCCESS");
-    needed_inscription_numbers
-  }
-
-  pub(crate) async fn print_index_timings(timings: Arc<Mutex<Vec<IndexerTimings>>>, n_threads: u32) {
-    let mut locked_timings = timings.lock().await;
-    // sort & remove incomplete entries    
-    locked_timings.retain(|e| e.inscription_start + INDEX_BATCH_SIZE as u64 == e.inscription_end);
-    locked_timings.sort_by(|a, b| a.inscription_start.cmp(&b.inscription_start));
-    if locked_timings.len() < 1 {
-      return;
-    }
-    //First get the relevant entries
-    let mut relevant_timings: Vec<IndexerTimings> = Vec::new();
-    let mut last = locked_timings.last().unwrap().inscription_start + INDEX_BATCH_SIZE as u64;
-    for timing in locked_timings.iter().rev() {
-      if timing.inscription_start == last - INDEX_BATCH_SIZE as u64 {
-        relevant_timings.push(timing.clone());
-        if relevant_timings.len() == n_threads as usize {
-          break;
-        }
-      } else {
-        relevant_timings = Vec::new();
-        relevant_timings.push(timing.clone());
-      }      
-      last = timing.inscription_start;
-    }
-    if relevant_timings.len() < n_threads as usize {
-      return;
-    }    
-    relevant_timings.sort_by(|a, b| a.inscription_start.cmp(&b.inscription_start));    
-    let mut queueing_total = Duration::new(0,0);
-    let mut acquire_permit_total = Duration::new(0,0);
-    let mut get_numbers_total = Duration::new(0,0);
-    let mut get_id_total = Duration::new(0,0);
-    let mut get_inscription_total = Duration::new(0,0);
-    let mut upload_content_total = Duration::new(0,0);
-    let mut get_metadata_total = Duration::new(0,0);
-    let mut retrieval_total = Duration::new(0,0);
-    let mut insertion_total = Duration::new(0,0);
-    let mut metadata_insertion_total = Duration::new(0,0);
-    let mut sat_insertion_total = Duration::new(0,0);
-    let mut edition_insertion_total = Duration::new(0,0);
-    let mut content_insertion_total = Duration::new(0,0);
-    let mut locking_total = Duration::new(0,0);
-    let mut last_start = relevant_timings.first().unwrap().acquire_permit_start;
-    for timing in relevant_timings.iter() {
-      queueing_total = queueing_total + timing.acquire_permit_start.duration_since(last_start);
-      acquire_permit_total = acquire_permit_total + timing.acquire_permit_end.duration_since(timing.acquire_permit_start);
-      get_numbers_total = get_numbers_total + timing.get_numbers_end.duration_since(timing.get_numbers_start);
-      get_id_total = get_id_total + timing.get_id_end.duration_since(timing.get_id_start);
-      get_inscription_total = get_inscription_total + timing.get_inscription_end.duration_since(timing.get_inscription_start);
-      upload_content_total = upload_content_total + timing.upload_content_end.duration_since(timing.upload_content_start);
-      get_metadata_total = get_metadata_total + timing.get_metadata_end.duration_since(timing.get_metadata_start);
-      retrieval_total = retrieval_total + timing.retrieval;
-      insertion_total = insertion_total + timing.insertion;
-      metadata_insertion_total = metadata_insertion_total + timing.metadata_insertion;
-      sat_insertion_total = sat_insertion_total + timing.sat_insertion;
-      edition_insertion_total = edition_insertion_total + timing.edition_insertion;
-      content_insertion_total = content_insertion_total + timing.content_insertion;
-      locking_total = locking_total + timing.locking;
-      last_start = timing.acquire_permit_start;
-    }
-    let count = relevant_timings.last().unwrap().inscription_end - relevant_timings.first().unwrap().inscription_start+1;
-    let total_time = relevant_timings.last().unwrap().get_metadata_end.duration_since(relevant_timings.first().unwrap().get_numbers_start);
-    log::info!("Inscriptions {}-{}", relevant_timings.first().unwrap().inscription_start, relevant_timings.last().unwrap().inscription_end);
+  pub(crate) fn print_index_timings_simple(timing: IndexerTimings) {
+    //let last_start = timing.acquire_permit_start;
+    //let mut queueing_total = timing.acquire_permit_start.duration_since(last_start);
+    //let mut acquire_permit_total = timing.acquire_permit_end.duration_since(timing.acquire_permit_start);
+    let get_numbers_total = timing.get_numbers_end.duration_since(timing.get_numbers_start);
+    let get_id_total = timing.get_id_end.duration_since(timing.get_id_start);
+    let get_inscription_total = timing.get_inscription_end.duration_since(timing.get_inscription_start);
+    //let mut upload_content_total = timing.upload_content_end.duration_since(timing.upload_content_start);
+    let get_metadata_total = timing.get_metadata_end.duration_since(timing.get_metadata_start);
+    let retrieval_total = timing.retrieval;
+    let insertion_total = timing.insertion;
+    let metadata_insertion_total = timing.metadata_insertion;
+    let sat_insertion_total = timing.sat_insertion;
+    let edition_insertion_total = timing.edition_insertion;
+    let content_insertion_total = timing.content_insertion;
+    //let mut locking_total = timing.locking;
+    let count = timing.inscription_end - timing.inscription_start+1;
+    let total_time = timing.get_metadata_end.duration_since(timing.get_numbers_start);
+    log::info!("Inscriptions {}-{}", timing.inscription_start, timing.inscription_end);
     log::info!("Total time: {:?}, avg per inscription: {:?}", total_time, total_time/count as u32);
-    log::info!("Queueing time avg per thread: {:?}", queueing_total/n_threads); //9 because the first one doesn't have a recorded queueing time
-    log::info!("Acquiring Permit time avg per thread: {:?}", acquire_permit_total/n_threads); //should be similar to queueing time
-    log::info!("Get numbers time avg per thread: {:?}", get_numbers_total/n_threads);
-    log::info!("Get id time avg per thread: {:?}", get_id_total/n_threads);
-    log::info!("Get inscription time avg per thread: {:?}", get_inscription_total/n_threads);
-    log::info!("Upload content time avg per thread: {:?}", upload_content_total/n_threads);
-    log::info!("Get metadata time avg per thread: {:?}", get_metadata_total/n_threads);
-    log::info!("--Retrieval time avg per thread: {:?}", retrieval_total/n_threads);
-    log::info!("--Insertion time avg per thread: {:?}", insertion_total/n_threads);
-    log::info!("--Metadata Insertion time avg per thread: {:?}", metadata_insertion_total/n_threads);
-    log::info!("--Sat Insertion time avg per thread: {:?}", sat_insertion_total/n_threads);
-    log::info!("--Satribute Insertion time avg per thread: {:?}", edition_insertion_total/n_threads);
-    log::info!("--Content Insertion time avg per thread: {:?}", content_insertion_total/n_threads);
-    log::info!("--Locking time avg per thread: {:?}", locking_total/n_threads);
-
-    //Remove printed timings
-    let to_remove = BTreeSet::from_iter(relevant_timings);
-    locked_timings.retain(|e| !to_remove.contains(e));
+    log::info!("Get numbers time avg per thread: {:?}", get_numbers_total);
+    log::info!("Get id time avg per thread: {:?}", get_id_total);
+    log::info!("Get inscription time avg per thread: {:?}", get_inscription_total);
+    log::info!("Get metadata time avg per thread: {:?}", get_metadata_total);
+    log::info!("--Retrieval time avg per thread: {:?}", retrieval_total);
+    log::info!("--Insertion time avg per thread: {:?}", insertion_total);
+    log::info!("--Metadata Insertion time avg per thread: {:?}", metadata_insertion_total);
+    log::info!("--Sat Insertion time avg per thread: {:?}", sat_insertion_total);
+    log::info!("--Satribute Insertion time avg per thread: {:?}", edition_insertion_total);
+    log::info!("--Content Insertion time avg per thread: {:?}", content_insertion_total);
 
   }
 
