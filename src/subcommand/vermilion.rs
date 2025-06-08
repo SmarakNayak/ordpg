@@ -2994,6 +2994,8 @@ impl Vermilion {
       Type::BOOL,
       Type::VARCHAR
     ];
+    let insert_start = Instant::now();
+
     let sink = tx.copy_in(copy_stm).await?;
     let writer = BinaryCopyInWriter::new(sink, &col_types);
     pin_mut!(writer);
@@ -3034,8 +3036,10 @@ impl Vermilion {
       row.push(&m.spaced_rune);
       writer.as_mut().write(&row).await?;
     }
-  
+    let finish_start = Instant::now();  
     let _x = writer.finish().await?;
+    let finish_end = Instant::now();
+    println!("Bulk insert metadata took: {:?} to write rows, {:?} to finish", finish_start.duration_since(insert_start), finish_end.elapsed());
     //println!("Finished writing metadata: {:?}", x);
     //tx.simple_query("INSERT INTO ordinals SELECT * FROM inserts_ordinals ON CONFLICT DO NOTHING").await?;
     Ok(())
