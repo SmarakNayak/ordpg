@@ -3,7 +3,6 @@ use axum_server::Handle;
 use rune_indexer::run_runes_indexer;
 use social::initialize_social_tables;
 use social_api::social_router;
-use tokio::io::AsyncReadExt;
 use crate::subcommand::server;
 use crate::index::fetcher;
 use crate::Charm;
@@ -777,7 +776,7 @@ impl Vermilion {
     //4. Run Collection Indexer
     println!("Collection Indexer Starting");
     let collection_indexer_clone = self.clone();
-    let collection_indexer_thread = collection_indexer_clone.run_collection_indexer(settings.clone(), index.clone());
+    let collection_indexer_thread = collection_indexer_clone.run_collection_indexer(settings.clone());
 
     //5. Run Runes Indexer
     println!("Runes Indexer Starting");
@@ -1699,7 +1698,7 @@ impl Vermilion {
     return server_thread;
   }
 
-  pub(crate) fn run_collection_indexer(self, settings: Settings, index: Arc<Index>) -> JoinHandle<()> {
+  pub(crate) fn run_collection_indexer(self, settings: Settings) -> JoinHandle<()> {
     let address_indexer_thread = thread::spawn(move ||{
       let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -4860,114 +4859,7 @@ impl Vermilion {
     }
   }
 
-  async fn shutdown_signal() {
-    tokio::signal::ctrl_c()
-        .await
-        .expect("expect tokio signal ctrl-c");
-  }
-
   //DB functions
-  async fn insert_collection_list_from_file(pool: deadpool) -> anyhow::Result<()> {
-    let mut conn = pool.get().await?;
-    let tx = conn.transaction().await?;
-    let file = tokio::fs::File::open(std::path::Path::new("../ordinal-collections/collection_list.json")).await?;
-    let mut rdr = tokio::io::BufReader::new(file);
-    let mut content = String::new();
-    rdr.read_to_string(&mut content).await?;
-    let collection_list: Vec<CollectionMetadata> = serde_json::from_str(&mut content)?;
-    tx.simple_query("CREATE TEMP TABLE inserts_collection_list ON COMMIT DROP AS TABLE collection_list WITH NO DATA").await?;
-    let copy_stm = r#"COPY inserts_collection_list (
-      collection_symbol,
-      name,
-      image_uri,
-      inscription_icon,
-      description,
-      supply,
-      twitter,
-      discord,
-      website,
-      min_inscription_number,
-      max_inscription_number,
-      date_created
-    ) FROM STDIN BINARY"#;
-    let col_types = vec![
-      Type::VARCHAR,
-      Type::TEXT,
-      Type::TEXT,
-      Type::VARCHAR,
-      Type::TEXT,
-      Type::INT8,
-      Type::TEXT,
-      Type::TEXT,
-      Type::TEXT,
-      Type::INT8,
-      Type::INT8,
-      Type::INT8
-    ];
-    let sink = tx.copy_in(copy_stm).await?;
-    let writer = BinaryCopyInWriter::new(sink, &col_types);
-    pin_mut!(writer);
-    for m in collection_list {
-      let mut row: Vec<&'_ (dyn ToSql + Sync)> = Vec::new();
-      row.push(&m.collection_symbol);
-      row.push(&m.name);
-      row.push(&m.image_uri);
-      let icon_short = &m.inscription_icon.map(|s| s.chars().take(80).collect::<String>());
-      row.push(icon_short);
-      row.push(&m.description);
-      row.push(&m.supply);
-      row.push(&m.twitter);
-      row.push(&m.discord);
-      row.push(&m.website);
-      row.push(&m.min_inscription_number);
-      row.push(&m.max_inscription_number);
-      row.push(&m.date_created);
-      writer.as_mut().write(&row).await?;
-    }  
-    writer.finish().await?;
-    tx.simple_query("INSERT INTO collection_list SELECT * FROM inserts_collection_list ON CONFLICT DO NOTHING").await?;
-    tx.commit().await?;
-    Ok(())
-  }
-
-  async fn insert_collections_from_file(pool: deadpool) -> anyhow::Result<()> {
-    let mut conn = pool.get().await?;
-    let tx = conn.transaction().await?;
-    let file = tokio::fs::File::open(std::path::Path::new("../ordinal-collections/collections.json")).await?;
-    let mut rdr = tokio::io::BufReader::new(file);
-    let mut content = String::new();
-    rdr.read_to_string(&mut content).await?;
-    let collections: Vec<Collection> = serde_json::from_str(&mut content)?;
-    tx.simple_query("CREATE TEMP TABLE inserts_collections ON COMMIT DROP AS TABLE collections WITH NO DATA").await?;
-    let copy_stm = r#"COPY inserts_collections (
-      id,
-      number,
-      collection_symbol,
-      off_chain_metadata
-    ) FROM STDIN BINARY"#;
-    let col_types = vec![
-      Type::VARCHAR,
-      Type::INT8,
-      Type::VARCHAR,
-      Type::JSONB
-    ];
-    let sink = tx.copy_in(copy_stm).await?;
-    let writer = BinaryCopyInWriter::new(sink, &col_types);
-    pin_mut!(writer);
-    for m in collections {
-      let mut row: Vec<&'_ (dyn ToSql + Sync)> = Vec::new();
-      row.push(&m.id);
-      row.push(&m.number);
-      row.push(&m.collection_symbol);
-      row.push(&m.off_chain_metadata);
-      writer.as_mut().write(&row).await?;
-    }
-    writer.finish().await?;
-    tx.simple_query("INSERT INTO collections SELECT * FROM inserts_collections ON CONFLICT DO NOTHING").await?;
-    tx.commit().await?;
-    Ok(())
-  }
-
   async fn insert_collection_list(tx: &deadpool_postgres::Transaction<'_>, collection_list: Vec<CollectionMetadata>) -> anyhow::Result<()> {
     tx.simple_query("CREATE TEMP TABLE inserts_collection_list ON COMMIT DROP AS TABLE collection_list WITH NO DATA").await?;
     let copy_stm = r#"COPY inserts_collection_list (
@@ -5282,39 +5174,6 @@ impl Vermilion {
     let id = result.get(0);
     let content = Self::get_ordinal_content(pool, id).await?;
     Ok(content)
-  }
-
-  fn map_row_to_metadata(row: tokio_postgres::Row) -> Metadata {
-    Metadata {
-      id: row.get("id"),
-      content_length: row.get("content_length"),
-      content_type: row.get("content_type"), 
-      content_encoding: row.get("content_encoding"),
-      content_category: row.get("content_category"),
-      genesis_fee: row.get("genesis_fee"),
-      genesis_height: row.get("genesis_height"),
-      genesis_transaction: row.get("genesis_transaction"),
-      pointer: row.get("pointer"),
-      number: row.get("number"),
-      sequence_number: row.get("sequence_number"),
-      parents: row.get("parents"),
-      delegate: row.get("delegate"),
-      metaprotocol: row.get("metaprotocol"),
-      on_chain_metadata: row.get("on_chain_metadata"),
-      sat: row.get("sat"),
-      sat_block: row.get("sat_block"),
-      satributes: row.get("satributes"),
-      charms: row.get("charms"),
-      timestamp: row.get("timestamp"),
-      sha256: row.get("sha256"),
-      text: row.get("text"),
-      referenced_ids: row.get("referenced_ids"),
-      is_json: row.get("is_json"),
-      is_maybe_json: row.get("is_maybe_json"),
-      is_bitmap_style: row.get("is_bitmap_style"),
-      is_recursive: row.get("is_recursive"),
-      spaced_rune: row.get("spaced_rune"),
-    }
   }
 
   fn map_row_to_fullmetadata(row: tokio_postgres::Row) -> FullMetadata {
