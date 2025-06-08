@@ -21,11 +21,15 @@ use {
     inscriptions::{
       inscription_id,
       media::{self, ImageRendering, Media},
-      teleburn, ParsedEnvelope,
+      teleburn,
     },
+    into_u64::IntoU64,
     into_usize::IntoUsize,
+    option_ext::OptionExt,
     outgoing::Outgoing,
+    properties::Properties,
     representation::Representation,
+    satscard::Satscard,
     settings::Settings,
     signer::Signer,
     subcommand::{OutputFormat, Subcommand, SubcommandResult},
@@ -43,10 +47,10 @@ use {
     hash_types::{BlockHash, TxMerkleNode},
     hashes::Hash,
     policy::MAX_STANDARD_TX_WEIGHT,
-    script,
+    script, secp256k1,
     transaction::Version,
-    Amount, Block, Network, OutPoint, Script, ScriptBuf, Sequence, SignedAmount, Transaction, TxIn,
-    TxOut, Txid, Witness,
+    Amount, Block, KnownHrp, Network, OutPoint, Script, ScriptBuf, Sequence, SignedAmount,
+    Transaction, TxIn, TxOut, Txid, Witness,
   },
   bitcoincore_rpc::{Client, RpcApi},
   chrono::{DateTime, TimeZone, Utc},
@@ -93,7 +97,7 @@ pub use self::{
   chain::Chain,
   fee_rate::FeeRate,
   index::{Index, RuneEntry},
-  inscriptions::{Envelope, Inscription, InscriptionId},
+  inscriptions::{Envelope, Inscription, InscriptionId, ParsedEnvelope, RawEnvelope},
   object::Object,
   options::Options,
   wallet::transaction_builder::{Target, TransactionBuilder},
@@ -116,14 +120,18 @@ mod error;
 mod fee_rate;
 pub mod index;
 mod inscriptions;
+mod into_u64;
 mod into_usize;
 mod macros;
 mod object;
+mod option_ext;
 pub mod options;
 pub mod outgoing;
+mod properties;
 mod re;
 mod representation;
 pub mod runes;
+mod satscard;
 pub mod settings;
 mod signer;
 pub mod subcommand;
@@ -271,6 +279,17 @@ fn gracefully_shut_down_indexer() {
       log::warn!("Index thread panicked; join failed");
     }
   }
+}
+
+/// Nota bene: This function extracts the leaf script from a witness if the
+/// witness could represent a taproot script path spend, respecting and
+/// ignoring the taproot script annex, if present. Note that the witness may
+/// not actually be for a P2TR output, and the leaf script version is ignored.
+/// This means that this function will return scripts for any witness program
+/// version, past and present, as well as for any leaf script version.
+fn unversioned_leaf_script_from_witness(witness: &Witness) -> Option<&Script> {
+  #[allow(deprecated)]
+  witness.tapscript()
 }
 
 pub fn main() {

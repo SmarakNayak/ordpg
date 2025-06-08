@@ -212,9 +212,14 @@ a.mythic {
 
 .thumbnails > a {
   border-radius: 2%;
+  border: 1px solid #222;
   margin: 1%;
   overflow: hidden;
   width: 23%;
+}
+
+.thumbnails > a:hover {
+  border-color: #444;
 }
 
 .thumbnails iframe {
@@ -248,6 +253,18 @@ a.mythic {
 
 .inscription > a > iframe {
   width: 100%;
+}
+
+.satscard-error {
+  color: red;
+}
+
+.satscard-sealed {
+  color: green;
+}
+
+.satscard-unsealed {
+  color: yellow;
 }
 
 .tabs {
