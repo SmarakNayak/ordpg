@@ -158,6 +158,7 @@ pub struct Metadata {
   is_bitmap_style: bool,
   is_recursive: bool,
   spaced_rune: Option<String>,
+  raw_properties: serde_json::Value,
 }
 
 #[derive(Clone, Serialize)]
@@ -175,6 +176,11 @@ pub struct SatMetadata {
   rarity: String,
   percentile: String,
   timestamp: i64
+}
+
+pub struct GalleryMetadata {
+  gallery_id: String,
+  inscription_id: String,
 }
 
 #[derive(Serialize)]
@@ -248,6 +254,7 @@ pub struct TransferWithMetadata {
   is_bitmap_style: bool,
   is_recursive: bool,
   spaced_rune: Option<String>,
+  raw_properties: serde_json::Value,
 }
 
 #[derive(Clone, Serialize)]
@@ -616,6 +623,7 @@ pub struct MetadataWithCollectionMetadata {
   is_bitmap_style: bool,
   is_recursive: bool,
   spaced_rune: Option<String>,
+  raw_properties: serde_json::Value,
   collection_symbol: String,
   off_chain_metadata: serde_json::Value,
 }
@@ -650,6 +658,7 @@ pub struct FullMetadata {
   is_bitmap_style: bool,
   is_recursive: bool,
   spaced_rune: Option<String>,
+  raw_properties: serde_json::Value,
   collection_symbol: Option<String>,
   off_chain_metadata: Option<serde_json::Value>,
   collection_name: Option<String>
@@ -685,6 +694,7 @@ pub struct BoostFullMetadata {
   is_bitmap_style: bool,
   is_recursive: bool,
   spaced_rune: Option<String>,
+  raw_properties: serde_json::Value,
   collection_symbol: Option<String>,
   off_chain_metadata: Option<serde_json::Value>,
   collection_name: Option<String>,
@@ -727,7 +737,8 @@ pub struct IndexerTimings {
   insertion: Duration,
   metadata_insertion: Duration,
   sat_insertion: Duration,
-  edition_insertion: Duration,
+  satribute_insertion: Duration,
+  gallery_insertion: Duration,
   content_insertion: Duration,
   locking: Duration
 }
@@ -930,10 +941,11 @@ impl Vermilion {
         let mut retrieval = Duration::from_millis(0);
         let mut metadata_vec: Vec<Metadata> = Vec::new();
         let mut sat_metadata_vec: Vec<SatMetadata> = Vec::new();
+        let mut gallery_vec: Vec<GalleryMetadata> = Vec::new();
         for (number, inscription_id, inscription) in number_id_inscriptions {
           let t0 = Instant::now();
-          let (metadata, sat_metadata) =  match Self::extract_ordinal_metadata(cloned_index.clone(), inscription_id, inscription.clone()) {
-              Ok((metadata, sat_metadata)) => (metadata, sat_metadata),
+          let (metadata, sat_metadata, mut gallery) =  match Self::extract_ordinal_metadata(cloned_index.clone(), inscription_id, inscription.clone()) {
+              Ok((metadata, sat_metadata, gallery)) => (metadata, sat_metadata, gallery),
               Err(error) => {
                 println!("Error: {} extracting metadata for sequence number: {}. Will retry in a minute", error, number);
                 tokio::time::sleep(Duration::from_secs(60)).await;
@@ -947,6 +959,7 @@ impl Vermilion {
             },
             None => {}                
           }
+          gallery_vec.append(&mut gallery);
           let t1 = Instant::now();            
           retrieval += t1.duration_since(t0);
         }
@@ -995,6 +1008,8 @@ impl Vermilion {
         }
         let satribute_insert_result = Self::bulk_insert_satributes(&tx, satributes_vec).await;
         let t51c = Instant::now();
+        let gallery_insert_result = Self::bulk_insert_gallery_metadata(&tx, gallery_vec).await;
+        let t51d = Instant::now();
         //4.2 Upload content to db
         let number_inscriptions: Vec<_> = needed_numbers.clone().into_iter()
           .zip(inscriptions.into_iter())
@@ -1031,6 +1046,9 @@ impl Vermilion {
           }
           if satribute_insert_result.is_err() {
             log::info!("Satribute Error: {:?}", satribute_insert_result.unwrap_err());
+          }
+          if gallery_insert_result.is_err() {
+            log::info!("Gallery Error: {:?}", gallery_insert_result.unwrap_err());
           }
           if content_result.is_err() {
             log::info!("Content Error: {:?}", content_result.unwrap_err());
@@ -1069,8 +1087,9 @@ impl Vermilion {
           insertion: t52.duration_since(t51),
           metadata_insertion: t51a.duration_since(t51),
           sat_insertion: t51b.duration_since(t51a),
-          edition_insertion: t51c.duration_since(t51b),
-          content_insertion: t52.duration_since(t51c),
+          satribute_insertion: t51c.duration_since(t51b),
+          gallery_insertion: t51d.duration_since(t51c),
+          content_insertion: t52.duration_since(t51d),
           locking: t6.duration_since(t52)
         };
         Self::print_index_timings_simple(timing);
@@ -2201,7 +2220,11 @@ impl Vermilion {
     }
   }
 
-  pub(crate) fn extract_ordinal_metadata(index: Arc<Index>, inscription_id: InscriptionId, inscription: Inscription) -> Result<(Metadata, Option<SatMetadata>)> {
+  fn raw_inscription_properties(inscription: &Inscription) -> Option<CborValue> {
+    ciborium::from_reader(Cursor::new(inscription.properties.as_ref()?)).ok()
+  }
+
+  pub(crate) fn extract_ordinal_metadata(index: Arc<Index>, inscription_id: InscriptionId, inscription: Inscription) -> Result<(Metadata, Option<SatMetadata>, Vec<GalleryMetadata>)> {
     let t0 = Instant::now();
     let entry = index
       .get_inscription_entry(inscription_id)
@@ -2274,6 +2297,7 @@ impl Vermilion {
         None
       }
     };
+    let raw_properties = Self::raw_inscription_properties(&inscription).map(|cbor| Self::cbor_to_json(cbor)).unwrap_or_default();
     let text = match inscription.body() {
       Some(body) => {
         let text = String::from_utf8(body.to_vec());
@@ -2407,6 +2431,7 @@ impl Vermilion {
       is_bitmap_style: is_bitmap_style,
       is_recursive: is_recursive,
       spaced_rune: rune.map(|rune| rune.to_string()),
+      raw_properties: raw_properties,
     };
     let t2 = Instant::now();
     let sat_metadata = match entry.sat {
@@ -2432,9 +2457,17 @@ impl Vermilion {
       None => None
     };
     let t3 = Instant::now();
+    let gallery_metadata = inscription.gallery()
+      .iter()
+      .map(|id| GalleryMetadata {
+        gallery_id: id.to_string(),
+        inscription_id: inscription_id.to_string(),
+      })
+      .collect::<Vec<GalleryMetadata>>();
+    let t4 = Instant::now();
 
-    log::trace!("index: {:?} metadata: {:?} sat: {:?} total: {:?}", t1.duration_since(t0), t2.duration_since(t1), t3.duration_since(t2), t3.duration_since(t0));
-    Ok((metadata, sat_metadata))
+    log::trace!("index: {:?} metadata: {:?} sat: {:?} gallery: {:?} total: {:?}", t1.duration_since(t0), t2.duration_since(t1), t3.duration_since(t2), t4.duration_since(t3), t4.duration_since(t0));
+    Ok((metadata, sat_metadata, gallery_metadata))
   }
 
   pub(crate) async fn initialize_db_tables(pool: deadpool_postgres::Pool) -> anyhow::Result<()> {
@@ -2458,6 +2491,7 @@ impl Vermilion {
     Self::create_collections_summary_table(pool.clone()).await.context("Failed to create collections summary table")?;
     Self::create_recently_stored_collection_table(pool.clone()).await.context("Failed to create recently traded collection table")?;
     Self::create_on_chain_collection_summary_table(pool.clone()).await.context("Failed to create on chain collection summary table")?;
+    Self::create_gallery_table(pool.clone()).await.context("Failed to create gallery table")?;
     
     Self::create_procedure_log(pool.clone()).await.context("Failed to create proc log")?;
     Self::create_collection_summary_procedure(pool.clone()).await.context("Failed to create collection summary proc")?;
@@ -2520,7 +2554,8 @@ impl Vermilion {
         is_maybe_json boolean,
         is_bitmap_style boolean,
         is_recursive boolean,
-        spaced_rune varchar(100)
+        spaced_rune varchar(100),
+        raw_properties jsonb
       )").await?;
     conn.simple_query(r"
       CREATE INDEX IF NOT EXISTS index_metadata_id ON ordinals (id);
@@ -2559,7 +2594,6 @@ impl Vermilion {
     Ok(())
   }
   
-  
   pub(crate) async fn create_full_metadata_table(pool: deadpool_postgres::Pool) -> anyhow::Result<()> {
     let conn = pool.get().await?;
     conn.simple_query(
@@ -2592,6 +2626,7 @@ impl Vermilion {
         is_bitmap_style boolean,
         is_recursive boolean,
         spaced_rune varchar(100),
+        raw_properties jsonb,
         collection_symbol varchar(50),
         off_chain_metadata jsonb,
         collection_name text
@@ -2731,7 +2766,6 @@ impl Vermilion {
       )").await?;
     Ok(())
   }
-
   
   pub(crate) async fn create_inscription_comments_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
@@ -2933,6 +2967,20 @@ impl Vermilion {
     Ok(())
   }
 
+  pub(crate) async fn create_gallery_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
+      r"CREATE TABLE IF NOT EXISTS inscription_galleries (
+        gallery_id varchar(80) not null,
+        inscription_id varchar(80) not null
+      )").await?;
+    conn.simple_query(r"
+      CREATE INDEX IF NOT EXISTS index_gallery_gallery_id ON inscription_galleries (gallery_id);
+      CREATE INDEX IF NOT EXISTS index_gallery_inscription_id ON inscription_galleries (inscription_id);
+    ").await?;
+    Ok(())
+  }
+
   async fn bulk_insert_metadata(tx: &deadpool_postgres::Transaction<'_>, data: Vec<Metadata>) -> anyhow::Result<()> {
     //tx.simple_query("CREATE TEMP TABLE inserts_ordinals ON COMMIT DROP AS TABLE ordinals WITH NO DATA").await?;
     let copy_stm = r#"COPY ordinals (
@@ -2963,7 +3011,8 @@ impl Vermilion {
       is_maybe_json, 
       is_bitmap_style, 
       is_recursive,
-      spaced_rune) FROM STDIN BINARY"#;
+      spaced_rune,
+      raw_properties) FROM STDIN BINARY"#;
     let col_types = vec![
       Type::INT8,
       Type::VARCHAR,
@@ -3034,6 +3083,7 @@ impl Vermilion {
       row.push(&m.is_bitmap_style);
       row.push(&m.is_recursive);
       row.push(&m.spaced_rune);
+      row.push(&m.raw_properties);
       writer.as_mut().write(&row).await?;
     }
     let finish_start = Instant::now();  
@@ -3192,6 +3242,27 @@ impl Vermilion {
     Ok(())
   }
 
+  async fn bulk_insert_gallery_metadata(tx: &deadpool_postgres::Transaction<'_>, data: Vec<GalleryMetadata>) -> anyhow::Result<()> {
+    let copy_stm = r#"COPY inscription_galleries (
+      gallery_id,
+      inscription_id) FROM STDIN BINARY"#;
+    let col_types = vec![
+      Type::VARCHAR,
+      Type::VARCHAR
+    ];
+    let sink = tx.copy_in(copy_stm).await?;
+    let writer = BinaryCopyInWriter::new(sink, &col_types);
+    pin_mut!(writer);
+    for m in data {
+      let mut row: Vec<&'_ (dyn ToSql + Sync)> = Vec::new();
+      row.push(&m.gallery_id);
+      row.push(&m.inscription_id);
+      writer.as_mut().write(&row).await?;
+    }  
+    writer.finish().await?;
+    Ok(())
+  }
+
   pub(crate) async fn get_last_number(pool: deadpool_postgres::Pool<>) -> anyhow::Result<i64> {
     let conn = pool.get().await?;
     let row = conn.query_one("SELECT max(sequence_number) from ordinals", &[]).await?;
@@ -3212,23 +3283,24 @@ impl Vermilion {
     let insertion_total = timing.insertion;
     let metadata_insertion_total = timing.metadata_insertion;
     let sat_insertion_total = timing.sat_insertion;
-    let edition_insertion_total = timing.edition_insertion;
+    let satribute_insertion_total = timing.satribute_insertion;
     let content_insertion_total = timing.content_insertion;
     //let mut locking_total = timing.locking;
     let count = timing.inscription_end - timing.inscription_start+1;
     let total_time = timing.get_metadata_end.duration_since(timing.get_numbers_start);
     log::info!("Inscriptions {}-{}", timing.inscription_start, timing.inscription_end);
     log::info!("Total time: {:?}, avg per inscription: {:?}", total_time, total_time/count as u32);
-    log::info!("Get numbers time avg per thread: {:?}", get_numbers_total);
-    log::info!("Get id time avg per thread: {:?}", get_id_total);
-    log::info!("Get inscription time avg per thread: {:?}", get_inscription_total);
-    log::info!("Get metadata time avg per thread: {:?}", get_metadata_total);
-    log::info!("--Retrieval time avg per thread: {:?}", retrieval_total);
-    log::info!("--Insertion time avg per thread: {:?}", insertion_total);
-    log::info!("--Metadata Insertion time avg per thread: {:?}", metadata_insertion_total);
-    log::info!("--Sat Insertion time avg per thread: {:?}", sat_insertion_total);
-    log::info!("--Satribute Insertion time avg per thread: {:?}", edition_insertion_total);
-    log::info!("--Content Insertion time avg per thread: {:?}", content_insertion_total);
+    log::info!("Get numbers time: {:?}", get_numbers_total);
+    log::info!("Get id time: {:?}", get_id_total);
+    log::info!("Get inscription time: {:?}", get_inscription_total);
+    log::info!("Get metadata time: {:?}", get_metadata_total);
+    log::info!("--Retrieval time: {:?}", retrieval_total);
+    log::info!("--Insertion time: {:?}", insertion_total);
+    log::info!("--Metadata Insertion time: {:?}", metadata_insertion_total);
+    log::info!("--Sat Insertion time: {:?}", sat_insertion_total);
+    log::info!("--Satribute Insertion time: {:?}", satribute_insertion_total);
+    log::info!("--Galley Insertion time: {:?}", timing.gallery_insertion);
+    log::info!("--Content Insertion time: {:?}", content_insertion_total);
 
   }
 
@@ -5210,6 +5282,7 @@ impl Vermilion {
       is_bitmap_style: row.get("is_bitmap_style"),
       is_recursive: row.get("is_recursive"),
       spaced_rune: row.get("spaced_rune"),
+      raw_properties: row.get("raw_properties"),
       collection_symbol: row.get("collection_symbol"),
       off_chain_metadata: row.get("off_chain_metadata"),      
       collection_name: row.get("collection_name"),
@@ -5751,6 +5824,7 @@ impl Vermilion {
         is_bitmap_style: row.get("is_bitmap_style"),
         is_recursive: row.get("is_recursive"),
         spaced_rune: row.get("spaced_rune"),
+        raw_properties: row.get("raw_properties"),
         collection_symbol: row.get("collection_symbol"),
         off_chain_metadata: row.get("off_chain_metadata"),
         collection_name: row.get("collection_name"),
@@ -7410,6 +7484,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
           is_bitmap_style,
           is_recursive,
           spaced_rune,
+          raw_properties,
           collection_symbol,
           off_chain_metadata,
           collection_name
