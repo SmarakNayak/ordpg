@@ -59,6 +59,7 @@ pub fn run_runes_indexer(settings: Settings, index: Arc<Index>) -> JoinHandle<()
       };
       log::info!("Starting rune indexing at block: {}", i);
       loop {
+        log::info!("Indexing runes in block: {}", i);
         // break if ctrl-c is received
         if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
           break;

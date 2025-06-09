@@ -92,7 +92,9 @@ impl Subcommand {
       Self::Wallet(wallet) => wallet.run(settings),
       Self::Wallets => wallets::run(settings),
       Self::Vermilion(vermilion) => {        
-        vermilion.run(settings)
+        let result = vermilion.run(settings);
+        println!("Vermilion exited");
+        result
       },
       Self::Migrate(migrator) => {
         let index = Arc::new(Index::open(&settings)?);

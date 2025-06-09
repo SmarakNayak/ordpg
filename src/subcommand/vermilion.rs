@@ -821,6 +821,7 @@ impl Vermilion {
     if runes_thread_result.is_err() {
       println!("Error joining runes indexer thread: {:?}", runes_thread_result.unwrap_err());
     }
+    println!("All threads joined, exiting Vermilion");
     Ok(None)
   }
 
@@ -1758,6 +1759,36 @@ impl Vermilion {
       })
     });
     return address_indexer_thread;
+  }
+
+  pub(crate) fn run_block_indexer(self, settings: Settings, index: Arc<Index>) -> JoinHandle<()> {
+    let block_indexer_thread = thread::spawn(move || {
+      let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+      rt.block_on(async move {
+        let first_inscription_height = settings.first_inscription_height();
+        let first_rune_height = settings.first_rune_height();
+        let deadpool = match Self::get_deadpool(settings.clone()).await {
+          Ok(deadpool) => deadpool,
+          Err(err) => {
+            println!("Error creating deadpool: {:?}, exiting", err);
+            return;
+          }
+        };
+        let mut block_number = match Self::get_start_block(deadpool.clone()).await {
+          Ok(block_number) => block_number,
+          Err(err) => {
+            log::info!("Error getting start block from db: {:?}, exiting", err);
+            return;
+          }
+        };
+
+
+      })
+    });
+    return block_indexer_thread;
   }
 
   //Collection indexer helper functions
@@ -3090,7 +3121,7 @@ impl Vermilion {
     let finish_start = Instant::now();  
     let _x = writer.finish().await?;
     let finish_end = Instant::now();
-    println!("Bulk insert metadata took: {:?} to write rows, {:?} to finish", finish_start.duration_since(insert_start), finish_end.elapsed());
+    println!("Bulk insert metadata took: {:?} to write rows, {:?} to finish", finish_start.duration_since(insert_start), finish_end.duration_since(finish_start));
     //println!("Finished writing metadata: {:?}", x);
     //tx.simple_query("INSERT INTO ordinals SELECT * FROM inserts_ordinals ON CONFLICT DO NOTHING").await?;
     Ok(())
@@ -3300,7 +3331,7 @@ impl Vermilion {
     log::info!("--Metadata Insertion time: {:?}", metadata_insertion_total);
     log::info!("--Sat Insertion time: {:?}", sat_insertion_total);
     log::info!("--Satribute Insertion time: {:?}", satribute_insertion_total);
-    log::info!("--Galley Insertion time: {:?}", timing.gallery_insertion);
+    log::info!("--Gallery Insertion time: {:?}", timing.gallery_insertion);
     log::info!("--Content Insertion time: {:?}", content_insertion_total);
 
   }
