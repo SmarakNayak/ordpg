@@ -29,7 +29,6 @@ pub struct RuneRow {
 
 pub fn run_runes_indexer(settings: Settings, index: Arc<Index>) -> JoinHandle<()> {
   println!("Running runes indexer");
-  //CODE GOES HERE
   let runes_indexer_thread = thread::spawn(move ||{
     let rt = tokio::runtime::Builder::new_multi_thread()
       .enable_all()
@@ -50,17 +49,15 @@ pub fn run_runes_indexer(settings: Settings, index: Arc<Index>) -> JoinHandle<()
         println!("Error initializing runes tables: {:?}", init_result.unwrap_err());
         return;
       }
-      
-      
-      let mut i = match get_start_rune_number(pool.clone()).await {
-        Ok(start_number) => start_number as usize,
+
+      let mut i = match get_start_rune_block(pool.clone()).await {
+        Ok(start_block) => start_block,
         Err(err) => {
-          println!("Error getting start rune number: {:?}", err);
+          println!("Error getting start rune block: {:?}", err);
           return;
         }
       };
-      log::info!("Starting rune indexing at number: {}", i);
-      let mut elapsed = Duration::from_secs(0);
+      log::info!("Starting rune indexing at block: {}", i);
       loop {
         // break if ctrl-c is received
         if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
@@ -68,61 +65,68 @@ pub fn run_runes_indexer(settings: Settings, index: Arc<Index>) -> JoinHandle<()
         }
 
         let start_time = Instant::now();
-        let rune = match index.get_rune_by_number(i) {
-          Ok(Some(rune)) => rune,
-          Ok(None) => {
-            println!("Rune number {} not found, pausing 60s", i);
-            tokio::time::sleep(Duration::from_secs(60)).await;
-            continue;
-          },
+        let indexed_height = index.get_blocks_indexed().unwrap();
+        if i as u32 > indexed_height {
+          log::info!("Requesting runes for block: {:?}, only indexed up to: {:?}. Waiting a minute", i, indexed_height);
+          tokio::time::sleep(Duration::from_secs(60)).await;
+          continue;
+        }
+        let spaced_runes = match index.get_runes_in_block(i as u64) {
+          Ok(runes) => runes,
           Err(err) => {
-            println!("Error getting rune for number {}: {:?}, pausing 60s", i, err);
+            println!("Error getting runes in block {}: {:?}, pausing 60s", i, err);
             tokio::time::sleep(Duration::from_secs(60)).await;
             continue;
           }
         };
-
-        let full_rune = match index.rune(rune) {
-          Ok(Some(full_rune)) => full_rune,
-          Ok(None) => {
-            println!("Rune number {} not found, pausing 60s", i);
-            tokio::time::sleep(Duration::from_secs(60)).await;
-            continue;
-          },
-          Err(err) => {
-            println!("Error getting full rune: {:?}, pausing 60s", err);
-            tokio::time::sleep(Duration::from_secs(60)).await;
-            continue;
-          }
-        };
-
-        let (id, entry, parent) = full_rune;
-        let row = RuneRow {
-          block: id.block as i64,
-          tx_index: id.tx as i64,
-          burned: u128_to_decimal(entry.burned),
-          divisibility: entry.divisibility as i64,
-          etching: entry.etching.to_string(),
-          mints: u128_to_decimal(entry.mints),
-          number: entry.number as i64,
-          premine: u128_to_decimal(entry.premine),
-          spaced_rune: entry.spaced_rune.to_string(),
-          unspaced_rune: entry.spaced_rune.rune.to_string(),
-          rune_u128: entry.spaced_rune.rune.0.to_string(),
-          spacers: entry.spaced_rune.spacers as i64,
-          symbol: entry.symbol.and_then(|s| Some(s.to_string())),
-          mint_amount: entry.terms.and_then(|t| t.amount.map(|a| u128_to_decimal(a))),
-          mint_cap: entry.terms.and_then(|t| t.cap.map(|c| u128_to_decimal(c))),
-          mint_height_lower: entry.terms.and_then(|t| t.height.0.map(|h| h as i64)),
-          mint_height_upper: entry.terms.and_then(|t| t.height.1.map(|h| h as i64)),
-          mint_offset_lower: entry.terms.and_then(|t| t.offset.0.map(|o| o as i64)),
-          mint_offset_upper: entry.terms.and_then(|t| t.offset.1.map(|o| o as i64)),
-          timestamp: entry.timestamp as i64,
-          turbo: entry.turbo,
-          parent: parent.map(|p| p.to_string()),
-        };
-        
-        let rows = vec![row];
+        if spaced_runes.is_empty() {
+          log::info!("No runes found in block {}, indexing next block", i);
+          i += 1;
+          continue;
+        }
+        let len = spaced_runes.len();
+        let mut rows = Vec::new();
+        for spaced_rune in spaced_runes {
+          let full_rune = match index.rune(spaced_rune.rune) {
+            Ok(Some(full_rune)) => full_rune,
+            Ok(None) => {
+              println!("Rune number {} not found, pausing 60s", i);
+              tokio::time::sleep(Duration::from_secs(60)).await;
+              continue;
+            },
+            Err(err) => {
+              println!("Error getting full rune: {:?}, pausing 60s", err);
+              tokio::time::sleep(Duration::from_secs(60)).await;
+              continue;
+            }
+          };
+          let (id, entry, parent) = full_rune;
+          let row = RuneRow {
+            block: id.block as i64,
+            tx_index: id.tx as i64,
+            burned: u128_to_decimal(entry.burned),
+            divisibility: entry.divisibility as i64,
+            etching: entry.etching.to_string(),
+            mints: u128_to_decimal(entry.mints),
+            number: entry.number as i64,
+            premine: u128_to_decimal(entry.premine),
+            spaced_rune: entry.spaced_rune.to_string(),
+            unspaced_rune: entry.spaced_rune.rune.to_string(),
+            rune_u128: entry.spaced_rune.rune.0.to_string(),
+            spacers: entry.spaced_rune.spacers as i64,
+            symbol: entry.symbol.and_then(|s| Some(s.to_string())),
+            mint_amount: entry.terms.and_then(|t| t.amount.map(|a| u128_to_decimal(a))),
+            mint_cap: entry.terms.and_then(|t| t.cap.map(|c| u128_to_decimal(c))),
+            mint_height_lower: entry.terms.and_then(|t| t.height.0.map(|h| h as i64)),
+            mint_height_upper: entry.terms.and_then(|t| t.height.1.map(|h| h as i64)),
+            mint_offset_lower: entry.terms.and_then(|t| t.offset.0.map(|o| o as i64)),
+            mint_offset_upper: entry.terms.and_then(|t| t.offset.1.map(|o| o as i64)),
+            timestamp: entry.timestamp as i64,
+            turbo: entry.turbo,
+            parent: parent.map(|p| p.to_string()),
+          };
+          rows.push(row);
+        }
         let insert_result = bulk_insert_runes(pool.clone(), rows).await;
         if insert_result.is_err() {
           println!("Error bulk inserting runes: {:?}", insert_result.unwrap_err());
@@ -132,11 +136,8 @@ pub fn run_runes_indexer(settings: Settings, index: Arc<Index>) -> JoinHandle<()
 
         i += 1;
 
-        elapsed += start_time.elapsed();
-        if i % 100 == 0 {
-          log::info!("Indexed {} runes in {:?}", i, elapsed);
-          elapsed = Duration::from_secs(0);
-        }
+        let elapsed = start_time.elapsed();
+        log::info!("Block {}: Indexed {} runes in {:?}", i, len, elapsed);
 
       }
 
@@ -274,12 +275,12 @@ async fn bulk_insert_runes(pool: deadpool, data: Vec<RuneRow>) -> anyhow::Result
   Ok(())
 }
 
-async fn get_start_rune_number(pool: deadpool) -> anyhow::Result<i64> {
+async fn get_start_rune_block(pool: deadpool) -> anyhow::Result<i64> {
   let conn = pool.get().await?;
-  let row = conn.query_one("SELECT MAX(number) FROM runes", &[]).await?;
-  let last_number: Option<i64> = row.get(0);
-  let start_number = last_number.and_then(|n| Some(n + 1)).unwrap_or(0);
-  Ok(start_number)
+  let row = conn.query_one("SELECT MAX(block) FROM runes", &[]).await?;
+  let last_block: Option<i64> = row.get(0);
+  let start_block = last_block.and_then(|n| Some(n + 1)).unwrap_or(1);
+  Ok(start_block)
 }
 
 fn u128_to_decimal(u: u128) -> Decimal {
