@@ -3041,7 +3041,8 @@ impl Vermilion {
       Type::BOOL,
       Type::BOOL,
       Type::BOOL,
-      Type::VARCHAR
+      Type::VARCHAR,
+      Type::JSONB
     ];
     let insert_start = Instant::now();
 
