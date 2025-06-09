@@ -1,10 +1,13 @@
 use super::*;
 use axum_server::Handle;
 use rune_indexer::run_runes_indexer;
+use rune_indexer::process_runes;
+use rune_indexer::initialize_runes_tables;
 use social::initialize_social_tables;
 use social_api::social_router;
 use crate::subcommand::server;
 use crate::index::fetcher;
+use crate::index::fetcher::Fetcher;
 use crate::Charm;
 
 use tokio::task::JoinSet;
@@ -781,19 +784,15 @@ impl Vermilion {
     let ordinals_server_clone = self.clone();
     let ordinals_server_thread = ordinals_server_clone.run_ordinals_server(settings.clone(), index.clone(), handle);
 
-    //3. Run Address Indexer
-    println!("Address Indexer Starting");
-    let address_indexer_clone = self.clone();
-    let address_indexer_thread = address_indexer_clone.run_address_indexer(settings.clone(), index.clone());
+    //3. Run Block Indexer
+    println!("Block Indexer Starting");
+    let block_indexer_clone = self.clone();
+    let block_indexer_thread = block_indexer_clone.run_block_indexer(settings.clone(), index.clone());
 
     //4. Run Collection Indexer
     println!("Collection Indexer Starting");
     let collection_indexer_clone = self.clone();
     let collection_indexer_thread = collection_indexer_clone.run_collection_indexer(settings.clone());
-
-    //5. Run Runes Indexer
-    println!("Runes Indexer Starting");
-    let runes_indexer_thread = run_runes_indexer(settings.clone(), index.clone());
 
     //6. Run Inscription Indexer
     println!("Inscription Indexer Starting");
@@ -804,23 +803,18 @@ impl Vermilion {
     //Wait for other threads to finish before exiting
     let server_thread_result = ordinals_server_thread.join();
     println!("Server thread joined");
-    let address_thread_result = address_indexer_thread.join();
-    println!("Address thread joined");
+    let block_thread_result = block_indexer_thread.join();
+    println!("Block thread joined");
     let collection_thread_result = collection_indexer_thread.join();
     println!("Collection thread joined");
-    let runes_thread_result = runes_indexer_thread.join();
-    println!("Runes thread joined");
     if server_thread_result.is_err() {
       println!("Error joining ordinals server thread: {:?}", server_thread_result.unwrap_err());
     }
-    if address_thread_result.is_err() {
-      println!("Error joining address indexer thread: {:?}", address_thread_result.unwrap_err());
+    if block_thread_result.is_err() {
+      println!("Error joining address indexer thread: {:?}", block_thread_result.unwrap_err());
     }
     if collection_thread_result.is_err() {
       println!("Error joining collection indexer thread: {:?}", collection_thread_result.unwrap_err());
-    }
-    if runes_thread_result.is_err() {
-      println!("Error joining runes indexer thread: {:?}", runes_thread_result.unwrap_err());
     }
     // Shutdown api server last
     vermilion_handle.graceful_shutdown(Some(Duration::from_millis(1000)));
@@ -1784,6 +1778,21 @@ impl Vermilion {
             return;
           }
         };
+        let init_result = Self::initialize_db_tables(deadpool.clone()).await;
+        if init_result.is_err() {
+          println!("Error initializing db tables: {:?}", init_result.unwrap_err());
+          return;
+        }
+        let init_runes_result = initialize_runes_tables(deadpool.clone()).await;
+        if init_runes_result.is_err() {
+          println!("Error initializing runes table: {:?}", init_runes_result.unwrap_err());
+          return;
+        }
+        let init_transfers_result = Self::initialize_transfer_tables(deadpool.clone()).await;
+        if init_transfers_result.is_err() {
+          println!("Error initializing transfers table: {:?}", init_transfers_result.unwrap_err());
+          return;
+        }
         let mut block_number = match Self::get_start_block(deadpool.clone()).await {
           Ok(block_number) => block_number,
           Err(err) => {
@@ -1798,8 +1807,16 @@ impl Vermilion {
             return;
           }
         };
+        let fetcher = match Fetcher::new(&settings.clone()) {
+          Ok(fetcher) => fetcher,
+          Err(err) => {
+            log::info!("Error creating fetcher: {:?}, exiting", err);
+            return;
+          }
+        };
         loop {
           // 0. break if ctrl-c is received
+          let t0 = Instant::now();
           if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
             break;
           }
@@ -1825,23 +1842,72 @@ impl Vermilion {
               continue;
             }
           };
+          let t1 = Instant::now();
           // 2. Process block stats
           match Self::process_blockstats(index.clone(), &deadpool_tx, block_number).await {
-            Ok(_) => {
-              log::debug!("Processed block stats for block: {:?}", block_number);
-            },
+            Ok(_) => {},
             Err(err) => {
               log::info!("Error processing block stats for block {:?}: {:?}, waiting a minute", block_number, err);
               tokio::time::sleep(Duration::from_secs(60)).await;
               continue;
             }
           };
+          let t2 = Instant::now();
 
           // 3. Process runes
+          if block_number >= first_rune_height || block_number == 0 {
+            match process_runes(index.clone(), &deadpool_tx, settings.clone(), block_number).await {
+              Ok(_) => {},
+              Err(err) => {
+                log::info!("Error processing runes for block {:?}: {:?}, waiting a minute", block_number, err);
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                continue;
+              }
+            };
+          }
+          let t3 = Instant::now();
 
           // 4. Process inscriptions
 
+          let t4 = Instant::now();
+
           // 5. Process transfers
+          if block_number >= first_inscription_height {
+            match Self::process_transfers(index.clone(), &deadpool_tx, settings.clone(), &fetcher, block_number).await {
+              Ok(_) => {},
+              Err(err) => {
+                log::info!("Error processing transfers for block {:?}: {:?}, waiting a minute", block_number, err);
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                continue;
+              }
+            };
+          }
+          let t5 = Instant::now();
+
+          // 6. Commit transaction
+          match deadpool_tx.commit().await {
+            Ok(_) => {
+              log::info!("Successfully processed block: {:?}", block_number);
+            },
+            Err(err) => {
+              log::info!("Error committing transaction for block {:?}: {:?}, waiting a minute", block_number, err);
+              tokio::time::sleep(Duration::from_secs(60)).await;
+              continue;
+            }
+          };
+          let t6 = Instant::now();
+
+          // 7. Increment block number
+          log::info!("Block indexer: Processed block: {:?} - Height check: {:?} - Block stats: {:?} - Runes: {:?} - Inscriptions: {:?} - Transfers: {:?} - Commit: {:?}", 
+            block_number, 
+            t1.duration_since(t0), 
+            t2.duration_since(t1), 
+            t3.duration_since(t2), 
+            t4.duration_since(t3), 
+            t5.duration_since(t4), 
+            t6.duration_since(t5)
+          );
+          block_number += 1;
         }
       })
     });
@@ -1870,6 +1936,250 @@ impl Vermilion {
     Self::bulk_insert_blockstats(&tx, blockstats.clone()).await
       .map_err(|err| anyhow::anyhow!("Failed to insert blockstats for block {}: {}",block_number, err))?;
 
+    Ok(())
+  }
+
+  async fn process_transfers(index: Arc<Index>, deadpool_tx: &deadpool_postgres::Transaction<'_>, settings: Settings, fetcher: &Fetcher, block_number: u32) -> anyhow::Result<()> {
+    let t1 = Instant::now();
+    let transfers = index.get_transfers_by_block_height(block_number)
+      .with_context(|| format!("Failed to get transfers for block {}", block_number))?;
+    
+    if transfers.len() == 0 {
+      log::debug!("No transfers found for block height: {:?}, skipping", block_number);
+      Self::bulk_insert_inscription_blockstats(&deadpool_tx, block_number as i64).await
+        .map_err(|err| anyhow::anyhow!("Failed to insert inscription blockstats for block {}: {}", block_number, err))?;
+      return Ok(());
+    }
+    let t2 = Instant::now();
+    let mut tx_id_list = transfers.clone().into_iter().map(|(_id, _tx_offset, _,satpoint)| satpoint.outpoint.txid).collect::<Vec<_>>();
+    let transfer_counts: HashMap<Txid, u64> = tx_id_list.iter().fold(HashMap::new(), |mut acc, &x| {
+      *acc.entry(x).or_insert(0) += 1;
+      acc
+    });
+    let mut prev_tx_id_list = transfers.clone().into_iter().map(|(_id, _tx_offset, previous_satpoint,_)| previous_satpoint.outpoint.txid).collect::<Vec<_>>();
+    tx_id_list.append(&mut prev_tx_id_list);
+    tx_id_list.retain(|x| *x != Hash::all_zeros());
+    let tx_id_list: Vec<Txid> = tx_id_list.into_iter().unique().collect();
+    
+    let txs = match fetcher.get_transactions(tx_id_list.clone()).await {
+      Ok(txs) => {
+        txs.into_iter().map(|tx| Some(tx)).collect::<Vec<_>>()
+      }
+      Err(e) => {
+        log::info!("Error getting transfer transactions for block height: {:?} - {:?}", block_number, e);
+        if e.to_string().contains("No such mempool or blockchain transaction") || e.to_string().contains("Broken pipe") || e.to_string().contains("end of file") || e.to_string().contains("EOF while parsing") {
+          log::info!("Attempting 1 at a time");
+          let mut txs = Vec::new();
+          for tx_id in tx_id_list {
+            if tx_id == Hash::all_zeros() {
+              continue;
+            };
+            let tx = match fetcher.get_transactions(vec![tx_id]).await {
+              Ok(mut tx) => Some(tx.pop().unwrap()),
+              Err(e) => {                      
+                anyhow::bail!("ERROR: skipped non-miner transfer: {:?} - {:?}, trying again in a minute", tx_id, e);
+              }
+            };
+            txs.push(tx);
+          }
+          txs
+        } else {
+          anyhow::bail!("Unknown error getting transfer transactions for block height: {:?} - {:?}", block_number, e);
+        }              
+      }
+    };
+
+    let mut tx_map: HashMap<Txid, Transaction> = HashMap::new();
+    for tx in txs {
+      if let Some(tx) = tx {
+        tx_map.insert(tx.compute_txid(), tx);
+      }
+    }
+
+    let t3 = Instant::now();          
+    let mut seq_point_transfer_details = Vec::new();
+    for (sequence_number, tx_offset, old_satpoint, satpoint) in transfers {
+      //1. Get ordinal receive address
+      let (address, prev_address, price, tx_fee, tx_size) = if satpoint.outpoint == unbound_outpoint() && (old_satpoint.outpoint == unbound_outpoint() || old_satpoint.outpoint.is_null()) {
+        ("unbound".to_string(), "unbound".to_string(), 0, 0, 0)
+      } else if satpoint.outpoint == unbound_outpoint() {
+        let prev_tx = tx_map.get(&old_satpoint.outpoint.txid).unwrap();
+        let prev_output = prev_tx
+          .clone()
+          .output
+          .into_iter()
+          .nth(old_satpoint.outpoint.vout.try_into().unwrap())
+          .unwrap();
+        let prev_address = settings
+          .chain()
+          .address_from_script(&prev_output.script_pubkey)
+          .map(|address| address.to_string())
+          .unwrap_or_else(|e| e.to_string());
+        ("unbound".to_string(), prev_address, 0, 0, 0)
+      } else if old_satpoint.outpoint == unbound_outpoint() || old_satpoint.outpoint.is_null() {
+        let tx = tx_map.get(&satpoint.outpoint.txid).unwrap();
+        //1. Get address
+        let output = tx
+          .clone()
+          .output
+          .into_iter()
+          .nth(satpoint.outpoint.vout.try_into().unwrap())
+          .unwrap();
+        let address = settings
+          .chain()
+          .address_from_script(&output.script_pubkey)
+          .map(|address| address.to_string())
+          .unwrap_or_else(|e| e.to_string());
+        //2. Get fee
+        let tx_fee = index.get_tx_fee(satpoint.outpoint.txid)
+          .with_context(|| format!("Failed to get tx fee for {:?}", satpoint.outpoint.txid))?;
+        //3. Get size
+        let tx_size = tx.vsize();
+        //4. Get transfer count
+        let transfer_count = transfer_counts.get(&satpoint.outpoint.txid).unwrap();
+
+        (address, "unbound".to_string(), 0, tx_fee/transfer_count, (tx_size as u64)/transfer_count)
+      } else {
+        let tx = tx_map.get(&satpoint.outpoint.txid).unwrap();
+        let prev_tx = tx_map.get(&old_satpoint.outpoint.txid).unwrap();
+        //1a. Get address
+        let output = tx
+          .clone()
+          .output
+          .into_iter()
+          .nth(satpoint.outpoint.vout.try_into().unwrap())
+          .unwrap();
+        let address = settings
+          .chain()
+          .address_from_script(&output.script_pubkey)
+          .map(|address| address.to_string())
+          .unwrap_or_else(|e| e.to_string());
+        //1b. Get previous address
+        let prev_output = prev_tx
+          .clone()
+          .output
+          .into_iter()
+          .nth(old_satpoint.outpoint.vout.try_into().unwrap())
+          .unwrap();
+        let prev_address = settings
+          .chain()
+          .address_from_script(&prev_output.script_pubkey)
+          .map(|address| address.to_string())
+          .unwrap_or_else(|e| e.to_string());
+
+        //2. Get price
+        let mut price = 0;
+        for (input_index, txin) in tx.input.iter().enumerate() {
+          if txin.previous_output == old_satpoint.outpoint {
+            let first_script_instruction = txin.script_sig.instructions().next();
+            let last_sig_byte = match first_script_instruction {
+              Some(first_script_instruction) => {
+                match first_script_instruction.clone() {
+                  Ok(first_script_instruction) => {
+                    let last_sig_byte = first_script_instruction.push_bytes().map(|x| x.as_bytes().last()).flatten().cloned();
+                    last_sig_byte
+                  },
+                  Err(_) => None
+                }
+              },
+              None => {
+                match txin.witness.nth(0) {
+                  Some(witness_element_bytes) => witness_element_bytes.last().cloned(),
+                  None => None
+                }
+              }
+            };
+            price = match last_sig_byte {
+              Some(last_sig_byte) => {                      
+                // IF SIG_SINGLE|ANYONECANPAY (0x83), Then price is on same output index as the ordinal's input index
+                if last_sig_byte == 0x83 {
+                  price = match tx.output.clone().into_iter().nth(input_index) {
+                    Some(output) => {
+                      //Check previous tx value to see if it's splitting off an ordinal within a large UTXO
+                      let prev_tx_value = prev_tx.output.clone().into_iter().nth(old_satpoint.outpoint.vout.try_into().unwrap()).unwrap().value;
+                      if prev_tx_value.to_sat() > 20000 {
+                        0
+                      } else {
+                        output.value.to_sat()
+                      }
+                    },
+                    None => 0
+                  };
+                }
+                // This gives shoddy data - ignore for now
+                // IF SIG_ALL (0x01), Then price is on second output index (for offers)
+                // } else if last_sig_byte == &0x01 {
+                //   price = match tx.output.clone().into_iter().nth(1) {
+                //     Some(output) => output.value,
+                //     None => 0
+                //   };
+                // }
+                price
+              },
+              None => 0
+            };
+          }
+        }
+        
+        //3. Get fee
+        let tx_fee = index.get_tx_fee(satpoint.outpoint.txid)
+          .with_context(|| format!("Failed to get tx fee for {:?}", satpoint.outpoint.txid))?;
+
+        //4. Get size
+        let tx_size = tx.vsize();
+        //5. Get transfer count
+        let transfer_count = transfer_counts.get(&satpoint.outpoint.txid).unwrap();
+
+        (address, prev_address, price, tx_fee/transfer_count, (tx_size as u64)/transfer_count)
+      };
+      seq_point_transfer_details.push((sequence_number, tx_offset, satpoint, address, prev_address, price, tx_fee, tx_size));
+    }
+
+    let t4 = Instant::now();
+    let block_time = index.block_time(Height(block_number)).unwrap();
+    let mut transfer_vec = Vec::new();
+    for (sequence_number, tx_offset, point, address, prev_address, price, tx_fee, tx_size) in seq_point_transfer_details {
+      let entry = index.get_inscription_entry_by_sequence_number(sequence_number).unwrap();
+      let id = entry.unwrap().id;
+      let transfer = Transfer {
+        id: id.to_string(),
+        block_number: block_number.try_into().unwrap(),
+        block_timestamp: block_time.timestamp().timestamp_millis(),
+        satpoint: point.to_string(),
+        tx_offset: tx_offset as i64,
+        transaction: point.outpoint.txid.to_string(),
+        vout: point.outpoint.vout as i32,
+        offset: point.offset as i64,
+        address: address,
+        previous_address: prev_address,
+        price: price as i64,
+        tx_fee: tx_fee as i64,
+        tx_size: tx_size as i64,
+        is_genesis: point.outpoint.txid == id.txid
+      };
+      transfer_vec.push(transfer);
+    }
+    let t5 = Instant::now();
+    Self::bulk_insert_transfers(&deadpool_tx, transfer_vec.clone()).await
+      .map_err(|err| anyhow::anyhow!("Failed to insert transfers for block {}: {}", block_number, err))?;
+    let t6 = Instant::now();
+    Self::bulk_insert_addresses(&deadpool_tx, transfer_vec).await
+      .map_err(|err| anyhow::anyhow!("Failed to insert addresses for block {}: {}", block_number, err))?;
+    let t7 = Instant::now();
+    Self::bulk_insert_inscription_blockstats(&deadpool_tx, block_number as i64).await
+      .map_err(|err| anyhow::anyhow!("Failed to insert inscription blockstats for block {}: {}", block_number, err))?;
+    let t8 = Instant::now();
+    log::info!("Transfer indexer: Indexed block: {:?}", block_number);
+    log::info!("Get transfers: {:?} - Get txs: {:?} - Get addresses {:?} - Create Vec: {:?} - Insert transfers: {:?} - Insert addresses: {:?} - Insert blockstats: {:?} TOTAL: {:?}", 
+      t2.duration_since(t1), 
+      t3.duration_since(t2), 
+      t4.duration_since(t3), 
+      t5.duration_since(t4), 
+      t6.duration_since(t5), 
+      t7.duration_since(t6), 
+      t8.duration_since(t7), 
+      t8.duration_since(t1)
+    );
     Ok(())
   }
 
@@ -2633,6 +2943,14 @@ impl Vermilion {
     Self::create_collections_table(pool.clone()).await.context("Failed to create collections table")?;
     Self::create_collections_summary_table(pool.clone()).await.context("Failed to create collections summary table")?;
     Self::create_recently_stored_collection_table(pool.clone()).await.context("Failed to create recently traded collection table")?;
+    Ok(())
+  }
+
+  pub(crate) async fn initialize_transfer_tables(pool: deadpool_postgres::Pool) -> anyhow::Result<()> {
+    Self::create_transfers_table(pool.clone()).await.context("Failed to create transfers table")?;
+    Self::create_address_table(pool.clone()).await.context("Failed to create address table")?;
+    Self::create_blockstats_table(pool.clone()).await.context("Failed to create blockstats table")?;
+    Self::create_inscription_blockstats_table(pool.clone()).await.context("Failed to create inscription blockstats table")?;
     Ok(())
   }
 
