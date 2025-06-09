@@ -756,7 +756,8 @@ impl Vermilion {
     //1. Run Vermilion Server
     println!("Vermilion Server Starting");
     let vermilion_server_clone = self.clone();
-    let _vermilion_server_thread = vermilion_server_clone.run_vermilion_server(settings.clone());
+    let vermilion_handle = axum_server::Handle::new();
+    let vermilion_server_thread = vermilion_server_clone.run_vermilion_server(settings.clone(), vermilion_handle.clone());
 
     if self.run_api_server_only {//If only running api server, block here, early return on ctrl-c
       let rt = Runtime::new().unwrap();
@@ -768,6 +769,7 @@ impl Vermilion {
           tokio::time::sleep(Duration::from_secs(10)).await;
         }          
       });
+      vermilion_handle.graceful_shutdown(Some(Duration::from_millis(1000)));
       return Ok(None);
     }
 
@@ -800,7 +802,6 @@ impl Vermilion {
     println!("Inscription Indexer Stopped");
 
     //Wait for other threads to finish before exiting
-    // vermilion_server_thread.join().unwrap();
     let server_thread_result = ordinals_server_thread.join();
     println!("Server thread joined");
     let address_thread_result = address_indexer_thread.join();
@@ -820,6 +821,12 @@ impl Vermilion {
     }
     if runes_thread_result.is_err() {
       println!("Error joining runes indexer thread: {:?}", runes_thread_result.unwrap_err());
+    }
+    // Shutdown api server last
+    vermilion_handle.graceful_shutdown(Some(Duration::from_millis(1000)));
+    let vermilion_thread_result = vermilion_server_thread.join();
+    if vermilion_thread_result.is_err() {
+      println!("Error joining vermilion server thread: {:?}", vermilion_thread_result.unwrap_err());
     }
     println!("All threads joined, exiting Vermilion");
     Ok(None)
@@ -1557,7 +1564,7 @@ impl Vermilion {
     return address_indexer_thread;
   }
 
-  pub(crate) fn run_vermilion_server(self, settings: Settings) -> JoinHandle<()> {    
+  pub(crate) fn run_vermilion_server(self, settings: Settings, handle: axum_server::Handle) -> JoinHandle<()> {    
     let verm_server_thread = thread::spawn(move ||{
       let rt = Runtime::new().unwrap();
       rt.block_on(async move {
@@ -1675,12 +1682,12 @@ impl Vermilion {
         let addr = SocketAddr::from(([127, 0, 0, 1], self.api_http_port.unwrap_or(81)));
         println!("listening on {}", addr);
         axum_server::Server::bind(addr)
+            .handle(handle)
             .serve(app.into_make_service())
-            //.with_graceful_shutdown(Self::shutdown_signal())
             .await
             .unwrap();
       });
-      println!("Vermilion server stopped");
+      println!("Vermilion api server stopped");
     });
     return verm_server_thread;
   }
@@ -1784,11 +1791,86 @@ impl Vermilion {
             return;
           }
         };
+        let mut conn = match deadpool.get().await {
+          Ok(conn) => conn,
+          Err(err) => {
+            log::info!("Error getting db connection: {:?}, exiting", err);
+            return;
+          }
+        };
+        loop {
+          // 0. break if ctrl-c is received
+          if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
+            break;
+          }
+          // 1. make sure block is indexed before requesting transfers
+          let indexed_height = match index.get_blocks_indexed() {
+            Ok(indexed_height) => indexed_height,
+            Err(err) => {
+              log::info!("Error getting blocks indexed: {:?}, waiting a minute", err);
+              tokio::time::sleep(Duration::from_secs(60)).await;
+              continue;
+            }
+          };
+          if block_number > indexed_height {
+            log::info!("Waiting for blocks to be indexed, current block: {:?}, only indexed up to: {:?}", block_number, indexed_height);
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            continue;
+          }
+          let deadpool_tx = match conn.transaction().await {
+            Ok(tx) => tx,
+            Err(err) => {
+              log::info!("Error starting db transaction: {:?}, waiting a minute", err);
+              tokio::time::sleep(Duration::from_secs(60)).await;
+              continue;
+            }
+          };
+          // 2. Process block stats
+          match Self::process_blockstats(index.clone(), &deadpool_tx, block_number).await {
+            Ok(_) => {
+              log::debug!("Processed block stats for block: {:?}", block_number);
+            },
+            Err(err) => {
+              log::info!("Error processing block stats for block {:?}: {:?}, waiting a minute", block_number, err);
+              tokio::time::sleep(Duration::from_secs(60)).await;
+              continue;
+            }
+          };
 
+          // 3. Process runes
 
+          // 4. Process inscriptions
+
+          // 5. Process transfers
+        }
       })
     });
     return block_indexer_thread;
+  }
+
+  async fn process_blockstats(index: Arc<Index>, tx: &deadpool_postgres::Transaction<'_>, block_number: u32) -> anyhow::Result<()> {
+    let blockstat_result = index.get_block_stats(block_number as u64)
+      .with_context(|| format!("Failed to get blockstats for {}", block_number))?
+      .ok_or_else(|| anyhow::anyhow!("No blockstats found for block {}", block_number))?;
+
+    let block_size_result = index.get_block_size(block_number)
+      .with_context(|| format!("Failed to get block size for {}", block_number))?;
+
+    let blockstat = BlockStats {
+      block_number: block_number as i64,
+      block_timestamp: blockstat_result.time.map(|y| 1000 * y as i64), //Convert to millis
+      block_tx_count: blockstat_result.txs.map(|y| y as i64),
+      block_size: Some(block_size_result as i64),
+      block_fees: blockstat_result.total_fee.map(|y| y.to_sat() as i64),
+      min_fee: blockstat_result.min_fee_rate.map(|y| y.to_sat() as i64),
+      max_fee: blockstat_result.max_fee_rate.map(|y| y.to_sat() as i64),
+      average_fee: blockstat_result.fee_rate_percentiles.map(|y| y.fr_50th.to_sat() as i64),
+    };
+    let blockstats = vec![blockstat];
+    Self::bulk_insert_blockstats(&tx, blockstats.clone()).await
+      .map_err(|err| anyhow::anyhow!("Failed to insert blockstats for block {}: {}",block_number, err))?;
+
+    Ok(())
   }
 
   //Collection indexer helper functions
