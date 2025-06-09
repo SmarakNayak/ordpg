@@ -27,7 +27,7 @@ pub struct RuneRow {
   parent: Option<String>,
 }
 
-pub async fn process_runes(index: Arc<Index>, tx: &deadpool_postgres::Transaction<'_>, settings: Settings, block_number: u32) -> anyhow::Result<()> {
+pub async fn process_runes(index: Arc<Index>, tx: &deadpool_postgres::Transaction<'_>, block_number: u32) -> anyhow::Result<()> {
   let start_time = Instant::now();
   let spaced_runes = index.get_runes_in_block(block_number as u64)
     .with_context(|| format!("Error getting runes in block {}", block_number))?;

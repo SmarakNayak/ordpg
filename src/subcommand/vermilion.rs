@@ -1856,7 +1856,7 @@ impl Vermilion {
 
           // 3. Process runes
           if block_number >= first_rune_height || block_number == 0 {
-            match process_runes(index.clone(), &deadpool_tx, settings.clone(), block_number).await {
+            match process_runes(index.clone(), &deadpool_tx, block_number).await {
               Ok(_) => {},
               Err(err) => {
                 log::info!("Error processing runes for block {:?}: {:?}, waiting a minute", block_number, err);
