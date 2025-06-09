@@ -794,12 +794,6 @@ impl Vermilion {
     let collection_indexer_clone = self.clone();
     let collection_indexer_thread = collection_indexer_clone.run_collection_indexer(settings.clone());
 
-    //6. Run Inscription Indexer
-    println!("Inscription Indexer Starting");
-    let inscription_indexer_clone = self.clone();
-    inscription_indexer_clone.run_inscription_indexer(settings.clone(), index.clone()); //this blocks
-    println!("Inscription Indexer Stopped");
-
     //Wait for other threads to finish before exiting
     let server_thread_result = ordinals_server_thread.join();
     println!("Server thread joined");
@@ -1868,7 +1862,16 @@ impl Vermilion {
           let t3 = Instant::now();
 
           // 4. Process inscriptions
-
+          if block_number >= first_inscription_height {
+            match Self::process_inscriptions(index.clone(), &deadpool_tx, block_number).await {
+              Ok(_) => {},
+              Err(err) => {
+                log::info!("Error processing inscriptions for block {:?}: {:?}, waiting a minute", block_number, err);
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                continue;
+              }
+            };
+          }
           let t4 = Instant::now();
 
           // 5. Process transfers
@@ -1886,9 +1889,7 @@ impl Vermilion {
 
           // 6. Commit transaction
           match deadpool_tx.commit().await {
-            Ok(_) => {
-              log::info!("Successfully processed block: {:?}", block_number);
-            },
+            Ok(_) => {},
             Err(err) => {
               log::info!("Error committing transaction for block {:?}: {:?}, waiting a minute", block_number, err);
               tokio::time::sleep(Duration::from_secs(60)).await;
@@ -1898,7 +1899,7 @@ impl Vermilion {
           let t6 = Instant::now();
 
           // 7. Increment block number
-          log::info!("Block indexer: Processed block: {:?} - Height check: {:?} - Block stats: {:?} - Runes: {:?} - Inscriptions: {:?} - Transfers: {:?} - Commit: {:?}", 
+          log::info!("Indexed block: {:?} - Height check: {:?} - Block stats: {:?} - Runes: {:?} - Inscriptions: {:?} - Transfers: {:?} - Commit: {:?}", 
             block_number, 
             t1.duration_since(t0), 
             t2.duration_since(t1), 
@@ -2179,6 +2180,158 @@ impl Vermilion {
       t7.duration_since(t6), 
       t8.duration_since(t7), 
       t8.duration_since(t1)
+    );
+    Ok(())
+  }
+
+  async fn process_inscriptions(index: Arc<Index>, deadpool_tx: &deadpool_postgres::Transaction<'_>, block_number: u32) -> anyhow::Result<()> {
+    // 1. Get ids
+    let t0 = Instant::now();
+    let inscription_ids = index.get_inscriptions_in_block(block_number)
+      .with_context(|| format!("Failed to get inscriptions for block {}", block_number))?;
+    if inscription_ids.is_empty() {
+      log::info!("No inscriptions found for block height: {:?}, skipping", block_number);
+      return Ok(());
+    }
+
+    //2. Get inscriptions
+    let t1 = Instant::now();
+    let cloned_ids = inscription_ids.clone();
+    let txs = index.get_transactions(cloned_ids.into_iter().map(|x| x.txid).collect());
+    let txs = match txs {
+      Ok(txs) => txs,
+      Err(error) => {
+        println!("Error getting inscription transactions for block: {}: {:?}", block_number, error);
+        if  error.to_string().contains("Failed to fetch raw transaction") || 
+            error.to_string().contains("connection closed") || 
+            error.to_string().contains("error trying to connect") || 
+            error.to_string().contains("end of file") {
+          anyhow::bail!("Retrying inscriptions in block {} due to known fetch transaction error: {:?}", block_number, error);
+        }
+        anyhow::bail!("Retrying inscriptions in block {} due to UNKNOWN fetch transaction error: {:?}", block_number, error);
+      }
+    };
+    let cloned_ids = inscription_ids.clone();
+    let id_txs: Vec<_> = cloned_ids.into_iter().zip(txs.into_iter()).collect();
+    let mut inscriptions: Vec<Inscription> = Vec::new();
+    for (inscription_id, tx) in id_txs {
+      let inscription = ParsedEnvelope::from_transaction(&tx)
+        .into_iter()
+        .nth(inscription_id.index as usize)
+        .map(|envelope| envelope.payload)
+        .unwrap();
+      inscriptions.push(inscription);
+    }
+
+    //3. Get Ordinal metadata
+    let t2 = Instant::now();
+    let cloned_ids = inscription_ids.clone();
+    let cloned_inscriptions = inscriptions.clone();
+    let id_inscriptions: Vec<_> = cloned_ids.into_iter().zip(cloned_inscriptions.into_iter()).collect();
+
+    let mut metadata_vec: Vec<Metadata> = Vec::new();
+    let mut sat_metadata_vec: Vec<SatMetadata> = Vec::new();
+    let mut gallery_vec: Vec<GalleryMetadata> = Vec::new();
+    for (inscription_id, inscription) in id_inscriptions {
+      let (metadata, sat_metadata, mut gallery) = Self::extract_ordinal_metadata(index.clone(), inscription_id, inscription.clone())
+        .with_context(|| format!("Failed to extract metadata for inscription id: {}", inscription_id))?;
+      metadata_vec.push(metadata);            
+      match sat_metadata {
+        Some(sat_metadata) => {
+          sat_metadata_vec.push(sat_metadata);
+        },
+        None => {}                
+      }
+      gallery_vec.append(&mut gallery);
+    }
+    
+    //4. Insert metadata
+    let t3 = Instant::now();
+    Self::bulk_insert_metadata(&deadpool_tx, metadata_vec.clone()).await
+      .map_err(|err| anyhow::anyhow!("Failed to insert metadata for block {}: {}", block_number, err))?;
+    
+    //5. Insert editions
+    let t4 = Instant::now();
+    Self::bulk_insert_editions(&deadpool_tx, metadata_vec.clone()).await
+      .map_err(|err| anyhow::anyhow!("Failed to insert editions for block {}: {}", block_number, err))?;
+    
+    //6. Insert sat metadata
+    let t5 = Instant::now();
+    Self::bulk_insert_sat_metadata(&deadpool_tx, sat_metadata_vec.clone()).await
+      .map_err(|err| anyhow::anyhow!("Failed to insert sat metadata for block {}: {}", block_number, err))?;
+    
+    //7. Insert satributes
+    let t6 = Instant::now();
+    let mut satributes_vec = Vec::new();
+    for sat_metadata in sat_metadata_vec.iter() {
+      let sat = Sat(sat_metadata.sat as u64);
+      for block_rarity in sat.block_rarities().iter() {
+        let satribute = Satribute {
+          sat: sat_metadata.sat,
+          satribute: block_rarity.to_string()
+        };
+        satributes_vec.push(satribute);
+      }
+      let sat_rarity = sat.rarity();
+      if sat_rarity != Rarity::Common {
+        let rarity = Satribute {
+          sat: sat_metadata.sat,
+          satribute: sat_rarity.to_string()
+        };
+        satributes_vec.push(rarity);
+      }
+    }
+    Self::bulk_insert_satributes(&deadpool_tx, satributes_vec).await
+      .map_err(|err| anyhow::anyhow!("Failed to insert satributes for block {}: {}", block_number, err))?;
+    
+    //8. Insert galleries
+    let t7 = Instant::now();
+    Self::bulk_insert_gallery_metadata(&deadpool_tx, gallery_vec).await
+      .map_err(|err| anyhow::anyhow!("Failed to insert galleries for block {}: {}", block_number, err))?;
+    
+    //9. Upload content to db
+    let t8 = Instant::now();
+    let sequence_numbers = metadata_vec.iter().map(|m| m.sequence_number).collect::<Vec<_>>();
+    let number_inscriptions: Vec<_> = sequence_numbers.clone().into_iter()
+      .zip(inscriptions.into_iter())
+      .collect();
+    let mut content_vec: Vec<(i64,ContentBlob)> = Vec::new();
+    for (number, inscription) in number_inscriptions {
+      if let Some(content) = inscription.body() {
+        let content_type = match inscription.content_type() {
+            Some(content_type) => content_type,
+            None => ""
+        };
+        let content_encoding = inscription.content_encoding().map(|x| x.to_str().ok().map(|s| s.to_string())).flatten();
+        let sha256 = digest(content);
+        let content_blob = ContentBlob {
+          sha256: sha256.to_string(),
+          content: content.to_vec(),
+          content_type: content_type.to_string(),
+          content_encoding: content_encoding
+        };
+        content_vec.push((number as i64, content_blob));
+      }
+    }
+    Self::bulk_insert_content(&deadpool_tx, content_vec).await
+      .map_err(|err| anyhow::anyhow!("Failed to insert content for block {}: {}", block_number, err))?;
+
+    //10. Log timings
+    let t9 = Instant::now();
+    let first_number = sequence_numbers.first().unwrap_or(&0);
+    let last_number = sequence_numbers.last().unwrap_or(&0);
+    log::info!("Inscription indexer: Indexed block: {:?}, Sequence numbers: {}-{}", block_number, first_number, last_number);
+    log::info!("Get ids: {:?} - Get inscriptions: {:?} - Get metadata: {:?} - Insert metadata: {:?} - Insert editions: {:?} - Insert sat metadata: {:?} - Insert satributes: {:?} - Insert galleries: {:?} - Upload content: {:?} TOTAL: {:?}", 
+      t1.duration_since(t0), 
+      t2.duration_since(t1),
+      t3.duration_since(t2), 
+      t4.duration_since(t3), 
+      t5.duration_since(t4), 
+      t6.duration_since(t5), 
+      t7.duration_since(t6), 
+      t8.duration_since(t7), 
+      t9.duration_since(t8),
+      t9.duration_since(t0)
     );
     Ok(())
   }
