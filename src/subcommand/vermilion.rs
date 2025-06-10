@@ -1899,14 +1899,15 @@ impl Vermilion {
           let t6 = Instant::now();
 
           // 7. Increment block number
-          log::info!("Indexed block: {:?} - Height check: {:?} - Block stats: {:?} - Runes: {:?} - Inscriptions: {:?} - Transfers: {:?} - Commit: {:?}", 
+          log::info!("Indexed block: {:?} - Height check: {:?} - Block stats: {:?} - Runes: {:?} - Inscriptions: {:?} - Transfers: {:?} - Commit: {:?} - Total: {:?}", 
             block_number, 
             t1.duration_since(t0), 
             t2.duration_since(t1), 
             t3.duration_since(t2), 
             t4.duration_since(t3), 
             t5.duration_since(t4), 
-            t6.duration_since(t5)
+            t6.duration_since(t5),
+            t6.duration_since(t0)
           );
           block_number += 1;
         }
