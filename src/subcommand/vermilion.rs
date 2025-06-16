@@ -263,6 +263,7 @@ pub struct TransferWithMetadata {
 #[derive(Clone, Serialize)]
 pub struct BlockStats {
   block_number: i64,
+  block_hash: Option<String>,
   block_timestamp: Option<i64>,
   block_tx_count: Option<i64>,
   block_size: Option<i64>,
@@ -1186,6 +1187,7 @@ impl Vermilion {
           };
           let blockstat = BlockStats {
             block_number: height as i64,
+            block_hash: blockstat_result.block_hash.map(|y| y.to_string()),
             block_timestamp: blockstat_result.time.map(|y| 1000 * y as i64), //Convert to millis
             block_tx_count: blockstat_result.txs.map(|y| y as i64),
             block_size: Some(block_size_result as i64),
@@ -1926,6 +1928,7 @@ impl Vermilion {
 
     let blockstat = BlockStats {
       block_number: block_number as i64,
+      block_hash: blockstat_result.block_hash.map(|y| y.to_string()),
       block_timestamp: blockstat_result.time.map(|y| 1000 * y as i64), //Convert to millis
       block_tx_count: blockstat_result.txs.map(|y| y as i64),
       block_size: Some(block_size_result as i64),
@@ -4087,6 +4090,7 @@ impl Vermilion {
   pub(crate) async fn bulk_insert_blockstats(tx: &deadpool_postgres::Transaction<'_>, blockstats: Vec<BlockStats>) -> Result<(), Box<dyn std::error::Error>> {
     let copy_stm = r#"COPY blockstats (
       block_number,
+      block_hash,
       block_timestamp,
       block_tx_count,
       block_size,
@@ -4097,6 +4101,7 @@ impl Vermilion {
     ) FROM STDIN BINARY"#;
     let col_types = vec![
       Type::INT8,
+      Type::VARCHAR,
       Type::INT8,
       Type::INT8,
       Type::INT8,
@@ -4111,6 +4116,7 @@ impl Vermilion {
     for m in blockstats {
       let mut row: Vec<&'_ (dyn ToSql + Sync)> = Vec::new();
       row.push(&m.block_number);
+      row.push(&m.block_hash);
       row.push(&m.block_timestamp);
       row.push(&m.block_tx_count);
       row.push(&m.block_size);
@@ -4146,6 +4152,7 @@ impl Vermilion {
     conn.simple_query(
       r"CREATE TABLE IF NOT EXISTS blockstats (
         block_number bigint not null primary key,
+        block_hash varchar(64) not null,
         block_timestamp bigint not null,
         block_tx_count bigint,
         block_size bigint,
