@@ -1,5 +1,4 @@
 use super::*;
-use self::database;
 use rust_decimal::{prelude::FromPrimitive, Decimal};
 
 pub struct RuneRow {
@@ -68,135 +67,12 @@ pub async fn process_runes(index: Arc<Index>, tx: &deadpool_postgres::Transactio
     };
     rows.push(row);
   }
-  bulk_insert_runes_tx(&tx, rows).await
+  bulk_insert_runes(&tx, rows).await
     .with_context(|| format!("Error bulk inserting runes for block {}", block_number))?;
   let elapsed = start_time.elapsed();
   log::info!("Block {}: Indexed {} runes in {:?}", block_number, len, elapsed);
   Ok(())
 }
-
-pub fn run_runes_indexer(settings: Settings, index: Arc<Index>) -> JoinHandle<()> {
-  println!("Running runes indexer");
-  let runes_indexer_thread = thread::spawn(move ||{
-    let rt = tokio::runtime::Builder::new_multi_thread()
-      .enable_all()
-      .build()
-      .unwrap();
-
-    rt.block_on(async move {
-      let pool = match database::get_deadpool(settings.clone()).await {
-        Ok(deadpool) => deadpool,
-        Err(err) => {
-          println!("Error creating deadpool: {:?}", err);
-          return;
-        }
-      };
-
-      let init_result = initialize_runes_tables(pool.clone()).await;
-      if init_result.is_err() {
-        println!("Error initializing runes tables: {:?}", init_result.unwrap_err());
-        return;
-      }
-
-      let mut i = match get_start_rune_block(pool.clone()).await {
-        Ok(start_block) => start_block,
-        Err(err) => {
-          println!("Error getting start rune block: {:?}", err);
-          return;
-        }
-      };
-      log::info!("Starting rune indexing at block: {}", i);
-      loop {
-        log::info!("Indexing runes in block: {}", i);
-        // break if ctrl-c is received
-        if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
-          break;
-        }
-
-        let start_time = Instant::now();
-        let indexed_height = index.get_blocks_indexed().unwrap();
-        if i as u32 > indexed_height {
-          log::info!("Requesting runes for block: {:?}, only indexed up to: {:?}. Waiting a minute", i, indexed_height);
-          tokio::time::sleep(Duration::from_secs(60)).await;
-          continue;
-        }
-        let spaced_runes = match index.get_runes_in_block(i as u64) {
-          Ok(runes) => runes,
-          Err(err) => {
-            println!("Error getting runes in block {}: {:?}, pausing 60s", i, err);
-            tokio::time::sleep(Duration::from_secs(60)).await;
-            continue;
-          }
-        };
-        if spaced_runes.is_empty() {
-          log::info!("No runes found in block {}, indexing next block", i);
-          i += 1;
-          continue;
-        }
-        let len = spaced_runes.len();
-        let mut rows = Vec::new();
-        for spaced_rune in spaced_runes {
-          let full_rune = match index.rune(spaced_rune.rune) {
-            Ok(Some(full_rune)) => full_rune,
-            Ok(None) => {
-              println!("Rune number {} not found, pausing 60s", i);
-              tokio::time::sleep(Duration::from_secs(60)).await;
-              continue;
-            },
-            Err(err) => {
-              println!("Error getting full rune: {:?}, pausing 60s", err);
-              tokio::time::sleep(Duration::from_secs(60)).await;
-              continue;
-            }
-          };
-          let (id, entry, parent) = full_rune;
-          let row = RuneRow {
-            block: id.block as i64,
-            tx_index: id.tx as i64,
-            burned: u128_to_decimal(entry.burned),
-            divisibility: entry.divisibility as i64,
-            etching: entry.etching.to_string(),
-            mints: u128_to_decimal(entry.mints),
-            number: entry.number as i64,
-            premine: u128_to_decimal(entry.premine),
-            spaced_rune: entry.spaced_rune.to_string(),
-            unspaced_rune: entry.spaced_rune.rune.to_string(),
-            rune_u128: entry.spaced_rune.rune.0.to_string(),
-            spacers: entry.spaced_rune.spacers as i64,
-            symbol: entry.symbol.and_then(|s| Some(s.to_string())),
-            mint_amount: entry.terms.and_then(|t| t.amount.map(|a| u128_to_decimal(a))),
-            mint_cap: entry.terms.and_then(|t| t.cap.map(|c| u128_to_decimal(c))),
-            mint_height_lower: entry.terms.and_then(|t| t.height.0.map(|h| h as i64)),
-            mint_height_upper: entry.terms.and_then(|t| t.height.1.map(|h| h as i64)),
-            mint_offset_lower: entry.terms.and_then(|t| t.offset.0.map(|o| o as i64)),
-            mint_offset_upper: entry.terms.and_then(|t| t.offset.1.map(|o| o as i64)),
-            timestamp: entry.timestamp as i64,
-            turbo: entry.turbo,
-            parent: parent.map(|p| p.to_string()),
-          };
-          rows.push(row);
-        }
-        let insert_result = bulk_insert_runes(pool.clone(), rows).await;
-        if insert_result.is_err() {
-          println!("Error bulk inserting runes: {:?}", insert_result.unwrap_err());
-          tokio::time::sleep(Duration::from_secs(60)).await;
-          continue;
-        }
-
-        i += 1;
-
-        let elapsed = start_time.elapsed();
-        log::info!("Block {}: Indexed {} runes in {:?}", i, len, elapsed);
-
-      }
-
-    });
-
-  });
-
-  return runes_indexer_thread;
-}
-
 pub async fn initialize_runes_tables(pool: deadpool) -> anyhow::Result<()> {
   create_runes_table(pool).await.context("Error creating runes table")?;
   Ok(())
@@ -239,92 +115,7 @@ async fn create_runes_table(pool: deadpool) -> anyhow::Result<()> {
   Ok(())
 }
 
-async fn bulk_insert_runes(pool: deadpool, data: Vec<RuneRow>) -> anyhow::Result<()> {
-  let conn = pool.get().await?;
-  let copy_stm = r#"COPY runes (
-    block,
-    tx_index,
-    burned,
-    divisibility,
-    etching,
-    mints,
-    number,
-    premine,
-    spaced_rune,
-    unspaced_rune,
-    rune_u128,
-    spacers,
-    symbol,
-    mint_amount,
-    mint_cap,
-    mint_height_lower,
-    mint_height_upper,
-    mint_offset_lower,
-    mint_offset_upper,
-    timestamp,
-    turbo,
-    parent
-  ) FROM STDIN BINARY"#;
-  let col_types = vec![
-    Type::INT8,
-    Type::INT8,
-    Type::NUMERIC,
-    Type::INT8,
-    Type::VARCHAR,
-    Type::NUMERIC,
-    Type::INT8,
-    Type::NUMERIC,
-    Type::VARCHAR,
-    Type::VARCHAR,
-    Type::VARCHAR,
-    Type::INT8,
-    Type::VARCHAR,
-    Type::NUMERIC,
-    Type::NUMERIC,
-    Type::INT8,
-    Type::INT8,
-    Type::INT8,
-    Type::INT8,
-    Type::INT8,
-    Type::BOOL,
-    Type::VARCHAR,
-  ];
-  let sink = conn.copy_in(copy_stm).await?;
-  let writer = BinaryCopyInWriter::new(sink, &col_types);
-  pin_mut!(writer);
-  for m in data {
-    let mut row: Vec<&'_ (dyn ToSql + Sync)> = Vec::new();
-    row.push(&m.block);
-    row.push(&m.tx_index);
-    row.push(&m.burned);
-    row.push(&m.divisibility);
-    row.push(&m.etching);
-    row.push(&m.mints);
-    row.push(&m.number);
-    row.push(&m.premine);
-    row.push(&m.spaced_rune);
-    row.push(&m.unspaced_rune);
-    row.push(&m.rune_u128);
-    row.push(&m.spacers);
-    let clean_symbol = &m.symbol.map(|s| s.replace("\0", ""));
-    row.push(clean_symbol);
-    row.push(&m.mint_amount);
-    row.push(&m.mint_cap);
-    row.push(&m.mint_height_lower);
-    row.push(&m.mint_height_upper);
-    row.push(&m.mint_offset_lower);
-    row.push(&m.mint_offset_upper);
-    row.push(&m.timestamp);
-    row.push(&m.turbo);
-    row.push(&m.parent);
-    writer.as_mut().write(&row).await?;
-  }
-  let _x = writer.finish().await?;
-  //println!("Finished writing metadata: {:?}", x);
-  Ok(())
-}
-
-async fn bulk_insert_runes_tx(tx: &deadpool_postgres::Transaction<'_>, data: Vec<RuneRow>) -> anyhow::Result<()> {
+async fn bulk_insert_runes(tx: &deadpool_postgres::Transaction<'_>, data: Vec<RuneRow>) -> anyhow::Result<()> {
   let copy_stm = r#"COPY runes (
     block,
     tx_index,
@@ -406,14 +197,6 @@ async fn bulk_insert_runes_tx(tx: &deadpool_postgres::Transaction<'_>, data: Vec
   let _x = writer.finish().await?;
   //println!("Finished writing metadata: {:?}", x);
   Ok(())
-}
-
-async fn get_start_rune_block(pool: deadpool) -> anyhow::Result<i64> {
-  let conn = pool.get().await?;
-  let row = conn.query_one("SELECT MAX(block) FROM runes", &[]).await?;
-  let last_block: Option<i64> = row.get(0);
-  let start_block = last_block.and_then(|n| Some(n + 1)).unwrap_or(1);
-  Ok(start_block)
 }
 
 fn u128_to_decimal(u: u128) -> Decimal {

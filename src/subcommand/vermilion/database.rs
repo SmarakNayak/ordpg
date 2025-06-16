@@ -1,6 +1,6 @@
 use super::*;
 
-pub async fn get_deadpool(settings: Settings) -> anyhow::Result<deadpool> {
+pub async fn _get_deadpool(settings: Settings) -> anyhow::Result<deadpool> {
   let mut deadpool_cfg = deadpool_postgres::Config::new();
   deadpool_cfg.host = settings.db_host().map(|s| s.to_string());
   deadpool_cfg.dbname = settings.db_name().map(|s| s.to_string());
