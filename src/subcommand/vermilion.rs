@@ -4414,8 +4414,18 @@ impl Vermilion {
     ).into_response()
   }
 
-  async fn inscription_children(Path(inscription_id): Path<InscriptionId>, params: Query<PaginationParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let editions = match Self::get_inscription_children(server_config.deadpool, inscription_id.to_string(), params.0).await {
+  async fn inscription_children(Path(inscription_id): Path<InscriptionId>, params: Query<InscriptionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let parsed_params = match Self::parse_and_validate_inscription_params(params.0) {
+      Ok(parsed_params) => parsed_params,
+      Err(error) => {
+        log::warn!("Error getting /inscription_children: {}", error);
+        return (
+          StatusCode::BAD_REQUEST,
+          format!("Error parsing and validating params: {}", error),
+        ).into_response();
+      }
+    };
+    let editions = match Self::get_inscription_children(server_config.deadpool, inscription_id.to_string(), parsed_params).await {
       Ok(editions) => editions,
       Err(error) => {
         log::warn!("Error getting /inscription_children: {}", error);
@@ -4431,8 +4441,18 @@ impl Vermilion {
     ).into_response()
   }
 
-  async fn inscription_children_number(Path(number): Path<i64>, params: Query<PaginationParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let editions = match Self::get_inscription_children_by_number(server_config.deadpool, number, params.0).await {
+  async fn inscription_children_number(Path(number): Path<i64>, params: Query<InscriptionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let parsed_params = match Self::parse_and_validate_inscription_params(params.0) {
+      Ok(parsed_params) => parsed_params,
+      Err(error) => {
+        log::warn!("Error getting /inscription_children_number: {}", error);
+        return (
+          StatusCode::BAD_REQUEST,
+          format!("Error parsing and validating params: {}", error),
+        ).into_response();
+      }
+    };
+    let editions = match Self::get_inscription_children_by_number(server_config.deadpool, number, parsed_params).await {
       Ok(editions) => editions,
       Err(error) => {
         log::warn!("Error getting /inscription_children_number: {}", error);
@@ -4449,8 +4469,18 @@ impl Vermilion {
     ).into_response()
   }
 
-  async fn inscription_referenced_by(Path(inscription_id): Path<InscriptionId>, params: Query<PaginationParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let referenced_by = match Self::get_inscription_referenced_by(server_config.deadpool, inscription_id.to_string(), params.0).await {
+  async fn inscription_referenced_by(Path(inscription_id): Path<InscriptionId>, params: Query<InscriptionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let parsed_params = match Self::parse_and_validate_inscription_params(params.0) {
+      Ok(parsed_params) => parsed_params,
+      Err(error) => {
+        log::warn!("Error getting /inscription_referenced_by: {}", error);
+        return (
+          StatusCode::BAD_REQUEST,
+          format!("Error parsing and validating params: {}", error),
+        ).into_response();
+      }
+    };
+    let referenced_by = match Self::get_inscription_referenced_by(server_config.deadpool, inscription_id.to_string(), parsed_params).await {
       Ok(referenced_by) => referenced_by,
       Err(error) => {
         log::warn!("Error getting /inscription_referenced_by: {}", error);
@@ -4466,8 +4496,18 @@ impl Vermilion {
     ).into_response()
   }
 
-  async fn inscription_referenced_by_number(Path(number): Path<i64>, params: Query<PaginationParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
-    let referenced_by = match Self::get_inscription_referenced_by_number(server_config.deadpool, number, params.0).await {
+  async fn inscription_referenced_by_number(Path(number): Path<i64>, params: Query<InscriptionQueryParams>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let parsed_params = match Self::parse_and_validate_inscription_params(params.0) {
+      Ok(parsed_params) => parsed_params,
+      Err(error) => {
+        log::warn!("Error getting /inscription_referenced_by_number: {}", error);
+        return (
+          StatusCode::BAD_REQUEST,
+          format!("Error parsing and validating params: {}", error),
+        ).into_response();
+      }
+    };
+    let referenced_by = match Self::get_inscription_referenced_by_number(server_config.deadpool, number, parsed_params).await {
       Ok(referenced_by) => referenced_by,
       Err(error) => {
         log::warn!("Error getting /inscription_referenced_by_number: {}", error);
@@ -5950,19 +5990,12 @@ impl Vermilion {
     Ok(editions)
   }
 
-  async fn get_inscription_children(pool: deadpool, inscription_id: String, params: PaginationParams) -> anyhow::Result<Vec<FullMetadata>> {
+  async fn get_inscription_children(pool: deadpool, inscription_id: String, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
-    let page_size = params.page_size.unwrap_or(10);
-    let offset = params.page_number.unwrap_or(0) * page_size;
-    let mut query = "SELECT * FROM ordinals_full_v WHERE parents && ARRAY[$1::varchar]".to_string();
-    if page_size > 0 {
-      query.push_str(format!(" LIMIT {}", page_size).as_str());
-    }
-    if offset > 0 {
-      query.push_str(format!(" OFFSET {}", offset).as_str());
-    }
+    let base_query = "SELECT * FROM ordinals_full_v WHERE parents && ARRAY[$1::varchar]".to_string();
+    let full_query = Self::create_inscription_query_string(base_query, params);
     let result = conn.query(
-      query.as_str(), 
+      full_query.as_str(), 
       &[&inscription_id]
     ).await?;
     let mut inscriptions = Vec::new();
@@ -5972,7 +6005,7 @@ impl Vermilion {
     Ok(inscriptions)
   }
 
-  async fn get_inscription_children_by_number(pool: deadpool, number: i64, params: PaginationParams) -> anyhow::Result<Vec<FullMetadata>> {
+  async fn get_inscription_children_by_number(pool: deadpool, number: i64, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
     let query = "Select id from ordinals where number=$1";
     let result = conn.query_one(
@@ -5984,19 +6017,12 @@ impl Vermilion {
     inscriptions
   }
 
-  async fn get_inscription_referenced_by(pool: deadpool, inscription_id: String, params: PaginationParams) -> anyhow::Result<Vec<FullMetadata>> {
+  async fn get_inscription_referenced_by(pool: deadpool, inscription_id: String, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
-    let page_size = params.page_size.unwrap_or(10);
-    let offset = params.page_number.unwrap_or(0) * page_size;
-    let mut query = "SELECT * FROM ordinals_full_v WHERE referenced_ids && ARRAY[$1::varchar]".to_string();
-    if page_size > 0 {
-      query.push_str(format!(" LIMIT {}", page_size).as_str());
-    }
-    if offset > 0 {
-      query.push_str(format!(" OFFSET {}", offset).as_str());
-    }
+    let base_query = "SELECT * FROM ordinals_full_v WHERE referenced_ids && ARRAY[$1::varchar]".to_string();
+    let full_query = Self::create_inscription_query_string(base_query, params);
     let result = conn.query(
-      query.as_str(), 
+      full_query.as_str(), 
       &[&inscription_id]
     ).await?;
     let mut inscriptions = Vec::new();
@@ -6006,7 +6032,7 @@ impl Vermilion {
     Ok(inscriptions)
   }
 
-  async fn get_inscription_referenced_by_number(pool: deadpool, number: i64, params: PaginationParams) -> anyhow::Result<Vec<FullMetadata>> {
+  async fn get_inscription_referenced_by_number(pool: deadpool, number: i64, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
     let query = "Select id from ordinals where number=$1";
     let result = conn.query_one(
