@@ -286,6 +286,7 @@ pub struct InscriptionBlockStats {
 #[derive(Clone, Serialize)]
 pub struct CombinedBlockStats {
   block_number: i64,
+  block_hash: Option<String>,
   block_timestamp: Option<i64>,
   block_tx_count: Option<i64>,
   block_size: Option<i64>,
@@ -1101,6 +1102,21 @@ impl Vermilion {
               continue;
             }
           };
+          //1b. Check for reorg
+          let last_good_block = match Self::detect_last_good_block(index.clone(), deadpool.clone(), block_number).await {
+            Ok(last_good_block) => last_good_block,
+            Err(err) => {
+              log::info!("Error detecting last good block: {:?}, waiting a minute", err);
+              tokio::time::sleep(Duration::from_secs(60)).await;
+              continue;
+            }
+          };
+          if last_good_block < block_number - 1 {
+            log::info!("Detected reorg, resetting block number to last good block: {:?}", last_good_block);
+            //handle_reorg()
+            block_number = last_good_block + 1;
+            continue;
+          }
           let t1 = Instant::now();
           // 2. Process block stats
           match Self::process_blockstats(index.clone(), &deadpool_tx, block_number).await {
@@ -1205,6 +1221,34 @@ impl Vermilion {
       .map_err(|err| anyhow::anyhow!("Failed to insert blockstats for block {}: {}",block_number, err))?;
 
     Ok(())
+  }
+
+  async fn detect_last_good_block(index: Arc<Index>, pool: deadpool_postgres::Pool<>, block_number: u32) -> anyhow::Result<u32> {
+    let mut previous_block_number = block_number;
+    loop {
+      previous_block_number = match previous_block_number.checked_sub(1) {
+        Some(num) => num,
+        None => {
+          return Ok(0);
+        }
+      };
+      let previous_index_block_hash = index.get_block_stats(previous_block_number as u64)
+        .with_context(|| format!("Failed to get prev blockstats for {}", previous_block_number))?
+        .ok_or_else(|| anyhow::anyhow!("No prev blockstats found for block {}", previous_block_number))?
+        .block_hash
+        .ok_or_else(|| anyhow::anyhow!("No block hash found for block {}", previous_block_number))?;
+      let previous_db_block_hash = Self::get_block_statistics(pool.clone(), previous_block_number as i64)
+        .await
+        .with_context(|| format!("Failed to get previous block hash from db for block {}", previous_block_number))?
+        .block_hash
+        .ok_or_else(|| anyhow::anyhow!("No block hash found in db for block {}", previous_block_number))?;
+      if previous_index_block_hash.to_string() != previous_db_block_hash {
+        log::warn!("Reorg detected at block {}, index block hash: {:?}, db block hash: {:?}. Checking for last good block", previous_block_number, previous_index_block_hash, previous_db_block_hash);
+      } else {
+        break;
+      }
+    }
+    Ok(previous_block_number)
   }
 
   async fn process_transfers(index: Arc<Index>, deadpool_tx: &deadpool_postgres::Transaction<'_>, settings: Settings, fetcher: &Fetcher, block_number: u32) -> anyhow::Result<()> {
@@ -3114,7 +3158,7 @@ impl Vermilion {
     writer.finish().await?;
     Ok(())
   }
-  
+
   //Address Indexer Helper functions
   pub(crate) async fn create_transfers_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
@@ -6863,6 +6907,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
     ).await?;
     let block_stats = CombinedBlockStats {
       block_number: result.get("block_number"),
+      block_hash: result.get("block_hash"),
       block_timestamp: result.get("block_timestamp"),
       block_tx_count: result.get("block_tx_count"),
       block_size: result.get("block_size"),
@@ -6974,6 +7019,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
     for row in result {
       let block = CombinedBlockStats {
         block_number: row.get("block_number"),
+        block_hash: row.get("block_hash"),
         block_timestamp: row.get("block_timestamp"),
         block_tx_count: row.get("block_tx_count"),
         block_size: row.get("block_size"),

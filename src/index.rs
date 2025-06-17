@@ -1181,14 +1181,15 @@ impl Index {
   }
 
   pub(crate) fn get_block_stats(&self, height: u64) -> Result<Option<GetBlockStatsResultPartial>> {
-    let fields: [BlockStatsFields; 8] = [BlockStatsFields::Time, 
+    let fields: [BlockStatsFields; 9] = [BlockStatsFields::Time, 
                                          BlockStatsFields::Txs, 
                                          BlockStatsFields::TotalSize, 
                                          BlockStatsFields::TotalFee, 
                                          BlockStatsFields::MinFeeRate, 
                                          BlockStatsFields::MaxFeeRate, 
                                          BlockStatsFields::AverageFeeRate,
-                                         BlockStatsFields::FeeRatePercentiles];
+                                         BlockStatsFields::FeeRatePercentiles,
+                                         BlockStatsFields::BlockHash];
     self.client.get_block_stats_fields(height, &fields).into_option()
   }
 
