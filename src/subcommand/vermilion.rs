@@ -1205,9 +1205,13 @@ impl Vermilion {
     let block_size_result = index.get_block_size(block_number)
       .with_context(|| format!("Failed to get block size for {}", block_number))?;
 
+    let block_hash = index.block_hash(Some(block_number))
+      .with_context(|| format!("Failed to get block hash for {}", block_number))?
+      .ok_or_else(|| anyhow::anyhow!("No block hash found for block {}", block_number))?;
+
     let blockstat = BlockStats {
       block_number: block_number as i64,
-      block_hash: blockstat_result.block_hash.map(|y| y.to_string()),
+      block_hash: Some(block_hash.to_string()),
       block_timestamp: blockstat_result.time.map(|y| 1000 * y as i64), //Convert to millis
       block_tx_count: blockstat_result.txs.map(|y| y as i64),
       block_size: Some(block_size_result as i64),
@@ -1232,11 +1236,9 @@ impl Vermilion {
           return Ok(0);
         }
       };
-      let previous_index_block_hash = index.get_block_stats(previous_block_number as u64)
+      let previous_index_block_hash = index.block_hash(Some(previous_block_number))
         .with_context(|| format!("Failed to get prev blockstats for {}", previous_block_number))?
-        .ok_or_else(|| anyhow::anyhow!("No prev blockstats found for block {}", previous_block_number))?
-        .block_hash
-        .ok_or_else(|| anyhow::anyhow!("No block hash found for block {}", previous_block_number))?;
+        .ok_or_else(|| anyhow::anyhow!("No prev blockstats found for block {}", previous_block_number))?;
       let previous_db_block_hash = Self::get_block_statistics(pool.clone(), previous_block_number as i64)
         .await
         .with_context(|| format!("Failed to get previous block hash from db for block {}", previous_block_number))?
