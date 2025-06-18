@@ -1111,9 +1111,18 @@ impl Vermilion {
               continue;
             }
           };
-          if last_good_block < block_number - 1 {
-            log::info!("Detected reorg, resetting block number to last good block: {:?}", last_good_block);
-            //handle_reorg()
+          if last_good_block < block_number.saturating_sub(1) {
+            log::warn!("Detected reorg, resetting block number to last good block: {:?}", last_good_block);
+            match Self::handle_reorg(deadpool.clone(), last_good_block).await {
+              Ok(_) => {
+                log::info!("Successfully handled reorg, reset block number to {:?}", last_good_block);
+              },
+              Err(err) => {
+                log::error!("CRITICAL Error handling reorg: {:?}, waiting a minute", err);
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                continue;
+              }
+            }
             block_number = last_good_block + 1;
             continue;
           }
@@ -1251,6 +1260,33 @@ impl Vermilion {
       }
     }
     Ok(previous_block_number)
+  }
+
+  async fn handle_reorg(pool: deadpool_postgres::Pool<>, last_good_block: u32) -> anyhow::Result<()> {
+    log::info!("Rolling back db to block number: {}", last_good_block);
+    // tables to rollback: rest should be fine
+    // ordinals
+    // - editions
+    // - sat_metadata (SKIP - this data is immutable)
+    // - satributes (SKIP - this data is immutable)
+    // - inscription_galleries
+    // ordinals_full_t
+    // runes
+    // transfers
+    // inscription_blockstats
+    // blockstats
+    let mut conn = pool.get().await?;
+    let tx = conn.transaction().await?;
+    tx.execute("DELETE FROM blockstats WHERE block_number > $1", &[&(last_good_block as i64)]).await?;
+    tx.execute("DELETE FROM inscription_blockstats WHERE block_number > $1", &[&(last_good_block as i64)]).await?;
+    tx.execute("DELETE FROM runes WHERE block > $1", &[&(last_good_block as i64)]).await?;
+    tx.execute("DELETE FROM ordinals_full_t WHERE genesis_height > $1", &[&(last_good_block as i64)]).await?;
+    tx.execute("DELETE FROM transfers WHERE block_number > $1", &[&(last_good_block as i64)]).await?;
+    tx.execute("DELETE FROM editions WHERE id IN (SELECT id from ordinals WHERE genesis_height > $1)", &[&(last_good_block as i64)]).await?;
+    tx.execute("DELETE FROM inscription_galleries WHERE gallery_id IN (SELECT id from ordinals WHERE genesis_height > $1)", &[&(last_good_block as i64)]).await?;
+    tx.execute("DELETE FROM ordinals WHERE genesis_height > $1", &[&(last_good_block as i64)]).await?;
+    tx.execute("CALL update_trending_weights()", &[]).await?;
+    Ok(())
   }
 
   async fn process_transfers(index: Arc<Index>, deadpool_tx: &deadpool_postgres::Transaction<'_>, settings: Settings, fetcher: &Fetcher, block_number: u32) -> anyhow::Result<()> {
@@ -2397,6 +2433,10 @@ impl Vermilion {
 
     Self::create_metadata_full_insert_trigger(pool.clone()).await.context("Failed to create metadata full trigger")?;
     Self::create_collection_insert_trigger(pool.clone()).await.context("Failed to create collection trigger")?;
+
+    Self::create_metadata_delete_trigger(pool.clone()).await.context("Failed to create metadata delete trigger")?;
+    Self::create_edition_delete_trigger(pool.clone()).await.context("Failed to create edition delete trigger")?;
+    Self::create_transfer_delete_trigger(pool.clone()).await.context("Failed to create transfer delete trigger")?;
 
     Self::create_ordinals_full_view(pool.clone()).await.context("Failed to create ordinals full view")?;
 
@@ -7266,6 +7306,127 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
     Ok(())
   }
 
+  async fn create_metadata_delete_trigger(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(r"CREATE OR REPLACE FUNCTION before_metadata_delete() RETURNS TRIGGER AS $$
+      DECLARE ref_id VARCHAR(80);
+      DECLARE inscription_satribute VARCHAR(30);
+      BEGIN
+        LOCK TABLE ordinals IN EXCLUSIVE MODE;
+
+        -- 1a. Update delegates (remove bootleg and decrement total)
+        IF OLD.delegate IS NOT NULL THEN
+          -- Remove the delegate entry
+          DELETE FROM delegates WHERE bootleg_id = OLD.id;
+          -- Decrement the total in delegates_total
+          UPDATE delegates_total 
+          SET total = total - 1 
+          WHERE delegate_id = OLD.delegate;
+          -- Remove the record if total reaches 0
+          DELETE FROM delegates_total 
+          WHERE delegate_id = OLD.delegate AND total <= 0;
+        END IF;
+
+        -- 1b. Update comments (remove comment and decrement total)
+        IF OLD.delegate IS NOT NULL AND OLD.content_length > 0 THEN
+          -- Remove the comment entry
+          DELETE FROM inscription_comments WHERE comment_id = OLD.id;
+          -- Decrement the total in inscription_comments_total
+          UPDATE inscription_comments_total 
+          SET total = total - 1 
+          WHERE delegate_id = OLD.delegate;
+          -- Remove the record if total reaches 0
+          DELETE FROM inscription_comments_total 
+          WHERE delegate_id = OLD.delegate AND total <= 0;
+        END IF;
+
+        -- 2. Update references (remove references and decrement totals)
+        FOREACH ref_id IN ARRAY OLD.referenced_ids
+        LOOP
+          -- Remove the reference entry
+          DELETE FROM inscription_references 
+          WHERE reference_id = ref_id AND recursive_id = OLD.id;
+          -- Decrement the total in inscription_references_total
+          UPDATE inscription_references_total 
+          SET total = total - 1 
+          WHERE reference_id = ref_id;
+          -- Remove the record if total reaches 0
+          DELETE FROM inscription_references_total 
+          WHERE reference_id = ref_id AND total <= 0;
+        END LOOP;
+
+        -- 3. Update satributes (remove satributes and decrement totals)
+        FOREACH inscription_satribute IN ARRAY OLD.satributes
+        LOOP
+          -- Remove the satribute entry
+          DELETE FROM inscription_satributes 
+          WHERE satribute = inscription_satribute AND inscription_id = OLD.id;
+          -- Decrement the total in inscription_satributes_total
+          UPDATE inscription_satributes_total 
+          SET total = total - 1 
+          WHERE satribute = inscription_satribute;
+          -- Remove the record if total reaches 0
+          DELETE FROM inscription_satributes_total 
+          WHERE satribute = inscription_satribute AND total <= 0;
+        END LOOP;
+
+        -- 4. Update on chain collection summary (subtract inscription and related transfers)
+        IF array_length(OLD.parents, 1) > 0 THEN          
+          LOCK TABLE transfers IN EXCLUSIVE MODE;
+          -- RAISE NOTICE 'delete_metadata (on chain summary): transfers lock acquired';
+          WITH a AS (
+            SELECT 
+              SUM(price) AS total_volume,
+              SUM(tx_fee) AS transfer_fees,
+              SUM(tx_size) AS transfer_footprint
+            FROM transfers t
+            WHERE id = OLD.id
+            AND is_genesis = false
+          ),
+          remaining_inscriptions AS (
+            SELECT 
+              MIN(timestamp) as new_first_date,
+              MAX(timestamp) as new_last_date,
+              MIN(number) as new_range_start,
+              MAX(number) as new_range_end
+            FROM ordinals
+            WHERE parents = OLD.parents
+            AND id != OLD.id
+          )
+          UPDATE on_chain_collection_summary AS ocs
+          SET
+            total_inscription_fees = coalesce(ocs.total_inscription_fees, 0) - OLD.genesis_fee,
+            total_inscription_size = coalesce(ocs.total_inscription_size, 0) - OLD.content_length,
+            supply = coalesce(ocs.supply, 0) - 1,
+            first_inscribed_date = COALESCE(r.new_first_date, ocs.first_inscribed_date),
+            last_inscribed_date = COALESCE(r.new_last_date, ocs.last_inscribed_date),
+            range_start = COALESCE(r.new_range_start, ocs.range_start),
+            range_end = COALESCE(r.new_range_end, ocs.range_end),
+            total_volume = coalesce(ocs.total_volume, 0) - a.total_volume,
+            transfer_fees = coalesce(ocs.transfer_fees, 0) - a.transfer_fees,
+            transfer_footprint = coalesce(ocs.transfer_footprint, 0) - a.transfer_footprint,
+            total_fees = coalesce(ocs.total_fees, 0) - OLD.genesis_fee - a.transfer_fees,
+            total_on_chain_footprint = coalesce(ocs.total_on_chain_footprint, 0) - OLD.content_length - a.transfer_footprint
+          FROM a, remaining_inscriptions r
+          WHERE ocs.parents_hash = hash_array(ARRAY(SELECT unnest(OLD.parents) ORDER BY 1));
+          
+          -- Remove the collection if supply reaches 0
+          DELETE FROM on_chain_collection_summary 
+          WHERE parents_hash = hash_array(ARRAY(SELECT unnest(OLD.parents) ORDER BY 1)) 
+          AND supply <= 0;
+        END IF;
+
+        RETURN OLD;
+      END;
+      $$ LANGUAGE plpgsql;").await?;
+    conn.simple_query(
+      r#"CREATE OR REPLACE TRIGGER before_metadata_delete
+      BEFORE DELETE ON ordinals
+      FOR EACH ROW
+      EXECUTE PROCEDURE before_metadata_delete();"#).await?;
+    Ok(())
+  }
+
   async fn create_transfer_insert_trigger(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
     conn.simple_query(r"CREATE OR REPLACE FUNCTION before_transfer_insert() RETURNS TRIGGER AS $$
@@ -7311,6 +7472,86 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
     Ok(())
   }
 
+  async fn create_transfer_delete_trigger(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(r"CREATE OR REPLACE FUNCTION before_transfer_delete() RETURNS TRIGGER AS $$
+      DECLARE v_collection_symbol TEXT;
+      DECLARE v_parents VARCHAR(80)[];
+      BEGIN
+        -- RAISE NOTICE 'delete_transfer: waiting for lock';
+        LOCK TABLE transfers IN EXCLUSIVE MODE;
+        -- RAISE NOTICE 'delete_transfer: lock acquired';
+
+        -- 1. Update off chain collections (subtract transfer data)
+        SELECT collection_symbol INTO v_collection_symbol FROM collections WHERE id = OLD.id;
+        IF EXISTS (SELECT 1 FROM collections WHERE id = OLD.id) AND OLD.is_genesis = false THEN
+          UPDATE collection_summary
+          SET total_volume = coalesce(total_volume, 0) - OLD.price,
+              transfer_fees = coalesce(transfer_fees, 0) - OLD.tx_fee,
+              transfer_footprint = coalesce(transfer_footprint, 0) - OLD.tx_size,
+              total_fees = coalesce(total_fees, 0) - OLD.tx_fee,
+              total_on_chain_footprint = coalesce(total_on_chain_footprint, 0) - OLD.tx_size
+            WHERE collection_symbol = v_collection_symbol;
+        END IF;
+
+        --2. Update on chain collections (subtract transfer data)
+        SELECT parents INTO v_parents FROM ordinals WHERE id = OLD.id;
+        IF array_length(v_parents, 1) > 0 AND OLD.is_genesis = false THEN
+          UPDATE on_chain_collection_summary
+          SET total_volume = coalesce(total_volume, 0) - OLD.price,
+              transfer_fees = coalesce(transfer_fees, 0) - OLD.tx_fee,
+              transfer_footprint = coalesce(transfer_footprint, 0) - OLD.tx_size,
+              total_fees = coalesce(total_fees, 0) - OLD.tx_fee,
+              total_on_chain_footprint = coalesce(total_on_chain_footprint, 0) - OLD.tx_size
+            WHERE parents = v_parents;
+        END IF;
+
+        -- 3. Update addresses table with the latest remaining transfer
+        UPDATE addresses 
+        SET 
+          block_number = latest_transfer.block_number,
+          block_timestamp = latest_transfer.block_timestamp,
+          satpoint = latest_transfer.satpoint,
+          tx_offset = latest_transfer.tx_offset,
+          transaction = latest_transfer.transaction,
+          vout = latest_transfer.vout,
+          satpoint_offset = latest_transfer.satpoint_offset,
+          address = latest_transfer.address,
+          previous_address = latest_transfer.previous_address,
+          price = latest_transfer.price,
+          tx_fee = latest_transfer.tx_fee,
+          tx_size = latest_transfer.tx_size,
+          is_genesis = latest_transfer.is_genesis
+        FROM (
+          SELECT * 
+          FROM transfers 
+          WHERE id = OLD.id 
+            AND NOT block_number = OLD.block_number
+          ORDER BY block_number DESC, tx_offset DESC 
+          LIMIT 1
+        ) AS latest_transfer
+        WHERE addresses.id = OLD.id;
+
+        -- 4. If no remaining transfers, delete from addresses table
+        IF NOT EXISTS (
+          SELECT 1 FROM transfers 
+          WHERE id = OLD.id 
+            AND NOT block_number = OLD.block_number
+        ) THEN
+          DELETE FROM addresses WHERE id = OLD.id;
+        END IF;
+
+        RETURN OLD;
+      END;
+      $$ LANGUAGE plpgsql;").await?;
+    conn.simple_query(
+      r#"CREATE OR REPLACE TRIGGER before_transfer_delete
+      BEFORE DELETE ON transfers
+      FOR EACH ROW
+      EXECUTE PROCEDURE before_transfer_delete();"#).await?;
+    Ok(())
+  }
+
   async fn create_edition_insert_trigger(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
     conn.simple_query(r#"
@@ -7337,6 +7578,31 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
       BEFORE INSERT ON editions
       FOR EACH ROW
       EXECUTE PROCEDURE before_edition_insert();"#).await?;
+    Ok(())
+  }
+
+  async fn create_edition_delete_trigger(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(r#"
+      CREATE OR REPLACE FUNCTION before_edition_delete() RETURNS TRIGGER AS $$
+      BEGIN
+        -- Decrement the total in editions_total
+        UPDATE editions_total 
+        SET total = total - 1 
+        WHERE sha256 = OLD.sha256;
+        
+        -- Remove the record if total reaches 0
+        DELETE FROM editions_total 
+        WHERE sha256 = OLD.sha256 AND total <= 0;
+        
+        RETURN OLD;
+      END;
+      $$ LANGUAGE plpgsql;"#).await?;
+    conn.simple_query(
+      r#"CREATE OR REPLACE TRIGGER before_edition_delete
+      BEFORE DELETE ON editions
+      FOR EACH ROW
+      EXECUTE PROCEDURE before_edition_delete();"#).await?;
     Ok(())
   }
 
