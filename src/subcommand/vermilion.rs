@@ -1250,13 +1250,13 @@ impl Vermilion {
       let previous_index_block_hash = index.block_hash(Some(previous_block_number))
         .with_context(|| format!("Failed to get prev blockstats for {}", previous_block_number))?
         .ok_or_else(|| anyhow::anyhow!("No prev blockstats found for block {}", previous_block_number))?;
-      log::info!("Previous index block hash: {:?}", previous_index_block_hash);
+      log::info!("Previous index block hash: {:?}", previous_index_block_hash.to_string());
       let previous_db_block_hash = Self::get_block_statistics(pool.clone(), previous_block_number as i64)
         .await
         .with_context(|| format!("Failed to get previous block hash from db for block {}", previous_block_number))?
         .block_hash
         .ok_or_else(|| anyhow::anyhow!("No block hash found in db for block {}", previous_block_number))?;
-      log::info!("Previous db block hash: {:?}", previous_db_block_hash);
+      log::info!("Previous    db block hash: {:?}", previous_db_block_hash);
       if previous_index_block_hash.to_string() != previous_db_block_hash {
         log::warn!("Reorg detected at block {}, index block hash: {:?}, db block hash: {:?}. Checking if previous block is good", previous_block_number, previous_index_block_hash, previous_db_block_hash);
       } else {
@@ -1290,6 +1290,8 @@ impl Vermilion {
     tx.execute("DELETE FROM inscription_galleries WHERE gallery_id IN (SELECT id from ordinals WHERE genesis_height > $1)", &[&(last_good_block as i64)]).await?;
     tx.execute("DELETE FROM ordinals WHERE genesis_height > $1", &[&(last_good_block as i64)]).await?;
     tx.execute("CALL update_trending_weights()", &[]).await?;
+    tx.commit().await?;
+    log::info!("Rolled back db to block number: {}", last_good_block);
     Ok(())
   }
 
