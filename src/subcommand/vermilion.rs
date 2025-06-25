@@ -1103,19 +1103,19 @@ impl Vermilion {
             }
           };
           //1b. Check for reorg
-          let last_good_block = match Self::detect_last_good_block(index.clone(), deadpool.clone(), block_number).await {
-            Ok(last_good_block) => last_good_block,
+          let last_consistent_block = match Self::find_last_consistent_block(index.clone(), deadpool.clone(), block_number).await {
+            Ok(last_consistent_block) => last_consistent_block,
             Err(err) => {
-              log::info!("Error detecting last good block: {:?}, waiting a minute", err);
+              log::info!("Error detecting last consistent block: {:?}, waiting a minute", err);
               tokio::time::sleep(Duration::from_secs(60)).await;
               continue;
             }
           };
-          if last_good_block < block_number.saturating_sub(1) {
-            log::warn!("Detected reorg, resetting block number to last good block: {:?}", last_good_block);
-            match Self::handle_reorg(deadpool.clone(), last_good_block).await {
+          if last_consistent_block < block_number.saturating_sub(1) {
+            log::warn!("Detected reorg, resetting block number to last consistent block: {:?}", last_consistent_block);
+            match Self::handle_reorg(deadpool.clone(), last_consistent_block).await {
               Ok(_) => {
-                log::info!("Successfully handled reorg, reset block number to {:?}", last_good_block);
+                log::info!("Successfully handled reorg, reset block number to {:?}", last_consistent_block);
               },
               Err(err) => {
                 log::error!("CRITICAL Error handling reorg: {:?}, waiting a minute", err);
@@ -1123,7 +1123,7 @@ impl Vermilion {
                 continue;
               }
             }
-            block_number = last_good_block + 1;
+            block_number = last_consistent_block + 1;
             continue;
           }
           let t1 = Instant::now();
@@ -1236,8 +1236,8 @@ impl Vermilion {
     Ok(())
   }
 
-  async fn detect_last_good_block(index: Arc<Index>, pool: deadpool_postgres::Pool<>, block_number: u32) -> anyhow::Result<u32> {
-    log::info!("Detecting last good block before block number: {}", block_number);
+  async fn find_last_consistent_block(index: Arc<Index>, pool: deadpool_postgres::Pool<>, block_number: u32) -> anyhow::Result<u32> {
+    log::info!("Checking block hashes are consistent prior to block number: {}", block_number);
     let mut previous_block_number = block_number;
     loop {
       previous_block_number = match previous_block_number.checked_sub(1) {
@@ -1246,19 +1246,19 @@ impl Vermilion {
           return Ok(0);
         }
       };
-      log::info!("Checking previous block number: {}", previous_block_number);
+      log::info!("Checking block number is consistent: {}", previous_block_number);
       let previous_index_block_hash = index.block_hash(Some(previous_block_number))
         .with_context(|| format!("Failed to get prev blockstats for {}", previous_block_number))?
         .ok_or_else(|| anyhow::anyhow!("No prev blockstats found for block {}", previous_block_number))?;
-      log::info!("Previous index block hash: {:?}", previous_index_block_hash.to_string());
+      log::info!("Index block hash: {:?}", previous_index_block_hash.to_string());
       let previous_db_block_hash = Self::get_block_statistics(pool.clone(), previous_block_number as i64)
         .await
         .with_context(|| format!("Failed to get previous block hash from db for block {}", previous_block_number))?
         .block_hash
         .ok_or_else(|| anyhow::anyhow!("No block hash found in db for block {}", previous_block_number))?;
-      log::info!("Previous    db block hash: {:?}", previous_db_block_hash);
+      log::info!("   Db block hash: {:?}", previous_db_block_hash);
       if previous_index_block_hash.to_string() != previous_db_block_hash {
-        log::warn!("Reorg detected at block {}, index block hash: {:?}, db block hash: {:?}. Checking if previous block is good", previous_block_number, previous_index_block_hash, previous_db_block_hash);
+        log::warn!("Conflicting hashes detected at block {}, index: {:?}, db: {:?}. Checking if previous block is consistent", previous_block_number, previous_index_block_hash, previous_db_block_hash);
       } else {
         break;
       }
@@ -1267,7 +1267,6 @@ impl Vermilion {
   }
 
   async fn handle_reorg(pool: deadpool_postgres::Pool<>, last_good_block: u32) -> anyhow::Result<()> {
-    log::info!("Rolling back db to block number: {}", last_good_block);
     // tables to rollback: rest should be fine
     // ordinals
     // - editions
@@ -1291,7 +1290,6 @@ impl Vermilion {
     tx.execute("DELETE FROM ordinals WHERE genesis_height > $1", &[&(last_good_block as i64)]).await?;
     tx.execute("CALL update_trending_weights()", &[]).await?;
     tx.commit().await?;
-    log::info!("Rolled back db to block number: {}", last_good_block);
     Ok(())
   }
 
