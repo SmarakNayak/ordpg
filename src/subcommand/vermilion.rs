@@ -1400,6 +1400,7 @@ impl Vermilion {
                 if commit.is_err() {
                   log::info!("Error committing blockstats into db: {:?}, waiting a minute", commit.unwrap_err());
                 }
+                blockstats = Vec::new();
                 tokio::time::sleep(Duration::from_secs(60)).await;
                 continue;
               } else {
@@ -1416,6 +1417,7 @@ impl Vermilion {
               },
               Err(err) => {
                 log::info!("Error inserting blockstats into db: {:?}, waiting a minute", err);
+                blockstats = Vec::new();
                 tokio::time::sleep(Duration::from_secs(60)).await;
                 continue;
               }
