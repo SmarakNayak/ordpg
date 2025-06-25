@@ -1267,7 +1267,7 @@ impl Vermilion {
   }
 
   async fn handle_reorg(pool: deadpool_postgres::Pool<>, last_good_block: u32) -> anyhow::Result<()> {
-    // tables to rollback: rest should be fine
+    // 1. tables to rollback: rest should be fine
     // ordinals
     // - editions
     // - sat_metadata (SKIP - this data is immutable)
@@ -1278,6 +1278,11 @@ impl Vermilion {
     // transfers
     // inscription_blockstats
     // blockstats
+    // collections (SKIP - ME is the source of truth)
+    // 2. aggregate tables to refresh:
+    // update_trending_weights
+    // update_discover_weights (skipped - too long to recalculate)
+    // update_collection_summary (skipped - ME is the source of truth)
     let mut conn = pool.get().await?;
     let tx = conn.transaction().await?;
     tx.execute("DELETE FROM blockstats WHERE block_number > $1", &[&(last_good_block as i64)]).await?;
