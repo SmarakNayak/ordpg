@@ -213,49 +213,8 @@ pub struct Transfer {
   price: i64,
   tx_fee: i64,
   tx_size: i64,
-  is_genesis: bool
-}
-
-#[derive(Clone, Serialize)]
-pub struct TransferWithMetadata {
-  id: String,
-  block_number: i64,
-  block_timestamp: i64,
-  satpoint: String,
-  tx_offset: i64,
-  transaction: String,
-  vout: i32,
-  offset: i64,
-  address: String,
   is_genesis: bool,
-  content_length: Option<i64>,
-  content_type: Option<String>,
-  content_encoding: Option<String>,
-  content_category: String,
-  genesis_fee: i64,
-  genesis_height: i64,
-  genesis_transaction: String,
-  pointer: Option<i64>,
-  number: i64,
-  sequence_number: Option<i64>,
-  sat: Option<i64>,
-  sat_block: Option<i64>,
-  satributes: Vec<String>,
-  charms: Vec<String>,
-  parents: Vec<String>,
-  delegate: Option<String>,
-  metaprotocol: Option<String>,
-  on_chain_metadata: serde_json::Value,
-  timestamp: i64,
-  sha256: Option<String>,
-  text: Option<String>,
-  referenced_ids: Vec<String>,
-  is_json: bool,
-  is_maybe_json: bool,
-  is_bitmap_style: bool,
-  is_recursive: bool,
-  spaced_rune: Option<String>,
-  raw_properties: serde_json::Value,
+  burn_metadata: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Serialize)]
@@ -594,41 +553,6 @@ pub struct OnChainCollectionHolders {
   collection_holder_count: Option<i64>,
   address: Option<String>,
   address_count: Option<i64>,
-}
-
-#[derive(Serialize)]
-pub struct MetadataWithCollectionMetadata {  
-  sequence_number: i64,
-  id: String,
-  content_length: Option<i64>,
-  content_type: Option<String>,
-  content_encoding: Option<String>,
-  content_category: String,
-  genesis_fee: i64,
-  genesis_height: i64,
-  genesis_transaction: String,
-  pointer: Option<i64>,
-  number: i64,
-  parents: Vec<String>,
-  delegate: Option<String>,
-  metaprotocol: Option<String>,
-  on_chain_metadata: serde_json::Value,
-  sat: Option<i64>,
-  sat_block: Option<i64>,
-  satributes: Vec<String>,
-  charms: Vec<String>,
-  timestamp: i64,
-  sha256: Option<String>,
-  text: Option<String>,
-  referenced_ids: Vec<String>,
-  is_json: bool,
-  is_maybe_json: bool,
-  is_bitmap_style: bool,
-  is_recursive: bool,
-  spaced_rune: Option<String>,
-  raw_properties: serde_json::Value,
-  collection_symbol: String,
-  off_chain_metadata: serde_json::Value,
 }
 
 #[derive(Serialize)]
@@ -1359,8 +1283,8 @@ impl Vermilion {
     let mut seq_point_transfer_details = Vec::new();
     for (sequence_number, tx_offset, old_satpoint, satpoint) in transfers {
       //1. Get ordinal receive address
-      let (address, prev_address, price, tx_fee, tx_size) = if satpoint.outpoint == unbound_outpoint() && (old_satpoint.outpoint == unbound_outpoint() || old_satpoint.outpoint.is_null()) {
-        ("unbound".to_string(), "unbound".to_string(), 0, 0, 0)
+      let (address, prev_address, price, tx_fee, tx_size, burn_metadata) = if satpoint.outpoint == unbound_outpoint() && (old_satpoint.outpoint == unbound_outpoint() || old_satpoint.outpoint.is_null()) {
+        ("unbound".to_string(), "unbound".to_string(), 0, 0, 0, None)
       } else if satpoint.outpoint == unbound_outpoint() {
         let prev_tx = tx_map.get(&old_satpoint.outpoint.txid).unwrap();
         let prev_output = prev_tx
@@ -1374,7 +1298,7 @@ impl Vermilion {
           .address_from_script(&prev_output.script_pubkey)
           .map(|address| address.to_string())
           .unwrap_or_else(|e| e.to_string());
-        ("unbound".to_string(), prev_address, 0, 0, 0)
+        ("unbound".to_string(), prev_address, 0, 0, 0, None)
       } else if old_satpoint.outpoint == unbound_outpoint() || old_satpoint.outpoint.is_null() {
         let tx = tx_map.get(&satpoint.outpoint.txid).unwrap();
         //1. Get address
@@ -1384,11 +1308,18 @@ impl Vermilion {
           .into_iter()
           .nth(satpoint.outpoint.vout.try_into().unwrap())
           .unwrap();
-        let address = settings
+        let mut address = settings
           .chain()
           .address_from_script(&output.script_pubkey)
           .map(|address| address.to_string())
           .unwrap_or_else(|e| e.to_string());
+        let burn_metadata = if output.script_pubkey.is_op_return() {
+          // If the output is an OP_RETURN, it is burned and may contain metadata
+          address = "burned".to_string();
+          Self::raw_burn_metadata(output.script_pubkey).map(|cbor| Self::cbor_to_json(cbor))
+        } else {
+          None
+        };
         //2. Get fee
         let tx_fee = index.get_tx_fee(satpoint.outpoint.txid)
           .with_context(|| format!("Failed to get tx fee for {:?}", satpoint.outpoint.txid))?;
@@ -1397,7 +1328,7 @@ impl Vermilion {
         //4. Get transfer count
         let transfer_count = transfer_counts.get(&satpoint.outpoint.txid).unwrap();
 
-        (address, "unbound".to_string(), 0, tx_fee/transfer_count, (tx_size as u64)/transfer_count)
+        (address, "unbound".to_string(), 0, tx_fee/transfer_count, (tx_size as u64)/transfer_count, burn_metadata)
       } else {
         let tx = tx_map.get(&satpoint.outpoint.txid).unwrap();
         let prev_tx = tx_map.get(&old_satpoint.outpoint.txid).unwrap();
@@ -1408,11 +1339,18 @@ impl Vermilion {
           .into_iter()
           .nth(satpoint.outpoint.vout.try_into().unwrap())
           .unwrap();
-        let address = settings
+        let mut address = settings
           .chain()
           .address_from_script(&output.script_pubkey)
           .map(|address| address.to_string())
           .unwrap_or_else(|e| e.to_string());
+        let burn_metadata = if output.script_pubkey.is_op_return() {
+          // If the output is an OP_RETURN, it is burned and may contain metadata
+          address = "burned".to_string();
+          Self::raw_burn_metadata(output.script_pubkey).map(|cbor| Self::cbor_to_json(cbor))
+        } else {
+          None
+        };
         //1b. Get previous address
         let prev_output = prev_tx
           .clone()
@@ -1489,15 +1427,15 @@ impl Vermilion {
         //5. Get transfer count
         let transfer_count = transfer_counts.get(&satpoint.outpoint.txid).unwrap();
 
-        (address, prev_address, price, tx_fee/transfer_count, (tx_size as u64)/transfer_count)
+        (address, prev_address, price, tx_fee/transfer_count, (tx_size as u64)/transfer_count, burn_metadata)
       };
-      seq_point_transfer_details.push((sequence_number, tx_offset, satpoint, address, prev_address, price, tx_fee, tx_size));
+      seq_point_transfer_details.push((sequence_number, tx_offset, satpoint, address, prev_address, price, tx_fee, tx_size, burn_metadata));
     }
 
     let t4 = Instant::now();
     let block_time = index.block_time(Height(block_number)).unwrap();
     let mut transfer_vec = Vec::new();
-    for (sequence_number, tx_offset, point, address, prev_address, price, tx_fee, tx_size) in seq_point_transfer_details {
+    for (sequence_number, tx_offset, point, address, prev_address, price, tx_fee, tx_size, burn_metadata) in seq_point_transfer_details {
       let entry = index.get_inscription_entry_by_sequence_number(sequence_number).unwrap();
       let id = entry.unwrap().id;
       let transfer = Transfer {
@@ -1514,7 +1452,8 @@ impl Vermilion {
         price: price as i64,
         tx_fee: tx_fee as i64,
         tx_size: tx_size as i64,
-        is_genesis: point.outpoint.txid == id.txid
+        is_genesis: point.outpoint.txid == id.txid,
+        burn_metadata: burn_metadata,
       };
       transfer_vec.push(transfer);
     }
@@ -2156,6 +2095,17 @@ impl Vermilion {
 
   fn raw_inscription_properties(inscription: &Inscription) -> Option<CborValue> {
     ciborium::from_reader(Cursor::new(inscription.properties.as_ref()?)).ok()
+  }
+
+  fn raw_burn_metadata(script_pubkey: ScriptBuf) -> Option<CborValue> {
+    if !script_pubkey.is_op_return() {
+      return None;
+    }
+    let script::Instruction::PushBytes(metadata) = script_pubkey.instructions().nth(1)?.ok()?
+    else {
+      return None;
+    };
+    ciborium::from_reader(Cursor::new(metadata)).ok()
   }
 
   pub(crate) fn extract_ordinal_metadata(index: Arc<Index>, inscription_id: InscriptionId, inscription: Inscription) -> Result<(Metadata, Option<SatMetadata>, Vec<GalleryMetadata>)> {
@@ -3229,6 +3179,7 @@ impl Vermilion {
         tx_fee bigint,
         tx_size bigint,
         is_genesis boolean,
+        burn_metadata jsonb,
         PRIMARY KEY (id, block_number, satpoint)
       )").await?;
     conn.simple_query(r"
@@ -3253,7 +3204,8 @@ impl Vermilion {
       price,
       tx_fee,
       tx_size,
-      is_genesis) FROM STDIN BINARY"#;
+      is_genesis,
+      burn_metadata) FROM STDIN BINARY"#;
     let col_types = vec![
       Type::VARCHAR,
       Type::INT8,
@@ -3268,7 +3220,8 @@ impl Vermilion {
       Type::INT8,
       Type::INT8,
       Type::INT8,
-      Type::BOOL
+      Type::BOOL,
+      Type::JSONB
     ];
     let sink = tx.copy_in(copy_stm).await?;
     let writer = BinaryCopyInWriter::new(sink, &col_types);
@@ -3289,6 +3242,7 @@ impl Vermilion {
       row.push(&m.tx_fee);
       row.push(&m.tx_size);
       row.push(&m.is_genesis);
+      row.push(&m.burn_metadata);
       writer.as_mut().write(&row).await?;
     }
     writer.finish().await?;
@@ -3312,7 +3266,8 @@ impl Vermilion {
         price bigint,
         tx_fee bigint,
         tx_size bigint,
-        is_genesis boolean
+        is_genesis boolean,
+        burn_metadata jsonb
       )").await?;
     conn.simple_query(r"
       CREATE INDEX IF NOT EXISTS index_address ON addresses (address);
@@ -3339,7 +3294,8 @@ impl Vermilion {
       price,
       tx_fee,
       tx_size,
-      is_genesis) FROM STDIN BINARY"#;
+      is_genesis,
+      burn_metadata) FROM STDIN BINARY"#;
     let col_types = vec![
       Type::VARCHAR,
       Type::INT8,
@@ -3354,7 +3310,8 @@ impl Vermilion {
       Type::INT8,
       Type::INT8,
       Type::INT8,
-      Type::BOOL
+      Type::BOOL,
+      Type::JSONB
     ];
     let sink = tx.copy_in(copy_stm).await?;
     let writer = BinaryCopyInWriter::new(sink, &col_types);
@@ -3375,6 +3332,7 @@ impl Vermilion {
       row.push(&m.tx_fee);
       row.push(&m.tx_size);
       row.push(&m.is_genesis);
+      row.push(&m.burn_metadata);
       writer.as_mut().write(&row).await?;
     }
     writer.finish().await?;
@@ -3387,7 +3345,8 @@ impl Vermilion {
       vout = EXCLUDED.vout,
       satpoint_offset = EXCLUDED.satpoint_offset,
       address = EXCLUDED.address,
-      is_genesis = EXCLUDED.is_genesis").await?;
+      is_genesis = EXCLUDED.is_genesis,
+      burn_metadata = EXCLUDED.burn_metadata").await?;
     Ok(())
   }
 
@@ -6135,7 +6094,8 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
       price: result.get("price"),
       tx_fee: result.get("tx_fee"),
       tx_size: result.get("tx_size"),
-      is_genesis: result.get("is_genesis")
+      is_genesis: result.get("is_genesis"),
+      burn_metadata: result.get("burn_metadata")
     };
     Ok(transfer)
   }
@@ -6160,7 +6120,8 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
       price: result.get("price"),
       tx_fee: result.get("tx_fee"),
       tx_size: result.get("tx_size"),
-      is_genesis: result.get("is_genesis")
+      is_genesis: result.get("is_genesis"),
+      burn_metadata: result.get("burn_metadata")
     };
     Ok(transfer)
   }
@@ -6187,7 +6148,8 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
         price: row.get("price"),
         tx_fee: row.get("tx_fee"),
         tx_size: row.get("tx_size"),
-        is_genesis: row.get("is_genesis")
+        is_genesis: row.get("is_genesis"),
+        burn_metadata: row.get("burn_metadata")
       });
     }
     Ok(transfers)
@@ -6215,7 +6177,8 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
         price: row.get("price"),
         tx_fee: row.get("tx_fee"),
         tx_size: row.get("tx_size"),
-        is_genesis: row.get("is_genesis")
+        is_genesis: row.get("is_genesis"),
+        burn_metadata: row.get("burn_metadata")
       });
     }
     Ok(transfers)
@@ -7530,7 +7493,8 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
           price = latest_transfer.price,
           tx_fee = latest_transfer.tx_fee,
           tx_size = latest_transfer.tx_size,
-          is_genesis = latest_transfer.is_genesis
+          is_genesis = latest_transfer.is_genesis,
+          burn_metadata = latest_transfer.burn_metadata
         FROM (
           SELECT * 
           FROM transfers 
