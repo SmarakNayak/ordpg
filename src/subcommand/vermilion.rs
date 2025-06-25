@@ -144,6 +144,7 @@ pub struct Metadata {
   number: i64,
   parents: Vec<String>,
   delegate: Option<String>,
+  delegate_content_type: Option<String>,
   metaprotocol: Option<String>,
   on_chain_metadata: serde_json::Value,
   sat: Option<i64>,
@@ -570,6 +571,7 @@ pub struct FullMetadata {
   number: i64,
   parents: Vec<String>,
   delegate: Option<String>,
+  delegate_content_type: Option<String>,
   metaprotocol: Option<String>,
   on_chain_metadata: serde_json::Value,
   sat: Option<i64>,
@@ -606,6 +608,7 @@ pub struct BoostFullMetadata {
   number: i64,
   parents: Vec<String>,
   delegate: Option<String>,
+  delegate_content_type: Option<String>,
   metaprotocol: Option<String>,
   on_chain_metadata: serde_json::Value,
   sat: Option<i64>,
@@ -2228,7 +2231,17 @@ impl Vermilion {
       Some(text) => Self::is_recursive(&text),
       None => false
     };
-    let content_category = match inscription.content_type() {
+    let delegate = inscription.delegate();
+    let delegate_content_type = if let Some(delegate_id) = delegate {
+      index.get_inscription_by_id(delegate_id)
+        .ok()
+        .flatten()
+        .and_then(|inscription| inscription.content_type().map(str::to_string))
+    } else {
+      None
+    };
+    let content_type_for_category = inscription.content_type().map(str::to_string).or(delegate_content_type.clone());
+    let content_category = match content_type_for_category {
       Some(content_type) => {
         let content_type = content_type.to_string();
         let mut content_category = match content_type.as_str() {
@@ -2300,6 +2313,7 @@ impl Vermilion {
       sequence_number: entry.sequence_number as i64,
       parents: parents,
       delegate: inscription.delegate().map(|x| x.to_string()),
+      delegate_content_type: delegate_content_type,
       metaprotocol: metaprotocol,
       on_chain_metadata: on_chain_metadata,
       sat: sat,
@@ -2436,6 +2450,7 @@ impl Vermilion {
         number bigint,          
         parents varchar(80)[],
         delegate varchar(80),
+        delegate_content_type text,
         metaprotocol text,
         on_chain_metadata jsonb,
         sat bigint,
@@ -2507,6 +2522,7 @@ impl Vermilion {
         number bigint,          
         parents varchar(80)[],
         delegate varchar(80),
+        delegate_content_type text,
         metaprotocol text,
         on_chain_metadata jsonb,
         sat bigint,
@@ -2892,7 +2908,8 @@ impl Vermilion {
       pointer, 
       number, 
       parents, 
-      delegate, 
+      delegate,
+      delegate_content_type,
       metaprotocol, 
       on_chain_metadata, 
       sat,
@@ -2923,6 +2940,7 @@ impl Vermilion {
       Type::INT8,
       Type::VARCHAR_ARRAY,
       Type::VARCHAR,
+      Type::TEXT,
       Type::TEXT,
       Type::JSONB,
       Type::INT8,
@@ -2962,6 +2980,8 @@ impl Vermilion {
       row.push(&m.number);
       row.push(&m.parents);
       row.push(&m.delegate);
+      let clean_delegate_content_type = &m.delegate_content_type.map(|s| s.replace("\0", ""));
+      row.push(clean_delegate_content_type);
       let clean_metaprotocol = &m.metaprotocol.map(|s| s.replace("\0", ""));
       row.push(clean_metaprotocol);
       //let clean_metadata = &m.on_chain_metadata.map(|s| s.replace("\0", ""));
@@ -5176,6 +5196,7 @@ impl Vermilion {
       sequence_number: row.get("sequence_number"),
       parents: row.get("parents"),
       delegate: row.get("delegate"),
+      delegate_content_type: row.get("delegate_content_type"),
       metaprotocol: row.get("metaprotocol"),
       on_chain_metadata: row.get("on_chain_metadata"),
       sat: row.get("sat"),
@@ -5704,6 +5725,7 @@ impl Vermilion {
         sequence_number: row.get("sequence_number"),
         parents: row.get("parents"),
         delegate: row.get("delegate"),
+        delegate_content_type: row.get("delegate_content_type"),
         metaprotocol: row.get("metaprotocol"),
         on_chain_metadata: row.get("on_chain_metadata"),
         sat: row.get("sat"),
@@ -7597,6 +7619,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
           number,          
           parents,
           delegate,
+          delegate_content_type,
           metaprotocol,
           on_chain_metadata,
           sat,
