@@ -1380,32 +1380,24 @@ impl Vermilion {
         let mut price = 0;
         for (input_index, txin) in tx.input.iter().enumerate() {
           if txin.previous_output == old_satpoint.outpoint {
+            // sig is typically the first instruction in the script_sig
+            // but can also be in the witness (where it is also first)
             let first_script_instruction = txin.script_sig.instructions().next();
             let last_sig_byte = match first_script_instruction {
-              Some(first_script_instruction) => {
-                match first_script_instruction.clone() {
-                  Ok(first_script_instruction) => {
-                    let last_sig_byte = first_script_instruction.push_bytes().map(|x| x.as_bytes().last()).flatten().cloned();
-                    last_sig_byte
-                  },
-                  Err(_) => None
-                }
+              Some(Ok(first_script_instruction)) => {
+                first_script_instruction.push_bytes().and_then(|x| x.as_bytes().last().cloned())
               },
-              None => {
-                match txin.witness.nth(0) {
-                  Some(witness_element_bytes) => witness_element_bytes.last().cloned(),
-                  None => None
-                }
-              }
+              Some(Err(_)) => None,
+              None => txin.witness.nth(0).and_then(|bytes| bytes.last().cloned())
             };
             price = match last_sig_byte {
               Some(last_sig_byte) => {                      
                 // IF SIG_SINGLE|ANYONECANPAY (0x83), Then price is on same output index as the ordinal's input index
                 if last_sig_byte == 0x83 {
-                  price = match tx.output.clone().into_iter().nth(input_index) {
+                  price = match tx.output.get(input_index) {
                     Some(output) => {
-                      //Check previous tx value to see if it's splitting off an ordinal within a large UTXO
-                      let prev_tx_value = prev_tx.output.clone().into_iter().nth(old_satpoint.outpoint.vout.try_into().unwrap()).unwrap().value;
+                      //Check previous tx postage value to see if it's splitting off an ordinal within a large UTXO
+                      let prev_tx_value = prev_tx.output.get(old_satpoint.outpoint.vout as usize).unwrap().value;
                       if prev_tx_value.to_sat() > 20000 {
                         0
                       } else {
@@ -1415,7 +1407,22 @@ impl Vermilion {
                     None => 0
                   };
                 }
-                // This gives shoddy data - ignore for now
+                // IF SIG_ALL|ANYONECANPAY (0x81), Then price is on second output index (me snipe protection buys)
+                else if last_sig_byte == 0x81 {
+                  price = match tx.output.get(1) {
+                    Some(output) => {
+                      //Checking postage value is less than 20k sats, just for a sanity check (not necessary like in the 0x83 case)
+                      let prev_tx_value = prev_tx.output.get(old_satpoint.outpoint.vout as usize).unwrap().value;
+                      if prev_tx_value.to_sat() > 20000 {
+                        0
+                      } else {
+                        output.value.to_sat()
+                      }
+                    },
+                    None => 0
+                  };
+                }
+                // This gives shoddy data as sig_all is default - ignore for now
                 // IF SIG_ALL (0x01), Then price is on second output index (for offers)
                 // } else if last_sig_byte == &0x01 {
                 //   price = match tx.output.clone().into_iter().nth(1) {
