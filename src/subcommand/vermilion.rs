@@ -53,6 +53,12 @@ use tokio_postgres::binary_copy::BinaryCopyInWriter;
 use tokio_postgres::types::{ToSql, Type};
 use futures::pin_mut;
 
+use bitcoin::{
+  blockdata::opcodes,
+  blockdata::script::Instruction,
+  secp256k1::Secp256k1
+};
+
 use csv;
 
 mod rune_indexer;
@@ -161,6 +167,7 @@ pub struct Metadata {
   is_recursive: bool,
   spaced_rune: Option<String>,
   raw_properties: serde_json::Value,
+  inscribed_by_address: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -588,6 +595,7 @@ pub struct FullMetadata {
   is_recursive: bool,
   spaced_rune: Option<String>,
   raw_properties: serde_json::Value,
+  inscribed_by_address: Option<String>,
   collection_symbol: Option<String>,
   off_chain_metadata: Option<serde_json::Value>,
   collection_name: Option<String>
@@ -625,6 +633,7 @@ pub struct BoostFullMetadata {
   is_recursive: bool,
   spaced_rune: Option<String>,
   raw_properties: serde_json::Value,
+  inscribed_by_address: Option<String>,
   collection_symbol: Option<String>,
   off_chain_metadata: Option<serde_json::Value>,
   collection_name: Option<String>,
@@ -1080,7 +1089,7 @@ impl Vermilion {
 
           // 4. Process inscriptions
           if block_number >= first_inscription_height {
-            match Self::process_inscriptions(index.clone(), &deadpool_tx, block_number).await {
+            match Self::process_inscriptions(index.clone(), &deadpool_tx, settings.clone(), block_number).await {
               Ok(_) => {},
               Err(err) => {
                 log::info!("Error processing inscriptions for block {:?}: {:?}, waiting a minute", block_number, err);
@@ -1484,7 +1493,7 @@ impl Vermilion {
     Ok(())
   }
 
-  async fn process_inscriptions(index: Arc<Index>, deadpool_tx: &deadpool_postgres::Transaction<'_>, block_number: u32) -> anyhow::Result<()> {
+  async fn process_inscriptions(index: Arc<Index>, deadpool_tx: &deadpool_postgres::Transaction<'_>, settings: Settings, block_number: u32) -> anyhow::Result<()> {
     // 1. Get ids
     let t0 = Instant::now();
     let inscription_ids = index.get_inscriptions_in_block(block_number)
@@ -1514,26 +1523,46 @@ impl Vermilion {
     let cloned_ids = inscription_ids.clone();
     let id_txs: Vec<_> = cloned_ids.into_iter().zip(txs.into_iter()).collect();
     let mut inscriptions: Vec<Inscription> = Vec::new();
+    let mut inscribed_by_addresses: Vec<String> = Vec::new();
+    let secp256k1 = Secp256k1::new();
     for (inscription_id, tx) in id_txs {
-      let inscription = ParsedEnvelope::from_transaction(&tx)
+      // 1. Get inscription
+      let envelope = ParsedEnvelope::from_transaction(&tx)
         .into_iter()
         .nth(inscription_id.index as usize)
-        .map(|envelope| envelope.payload)
-        .unwrap();
+        .ok_or(anyhow!("Failed to get inscription envelope for id: {}", inscription_id))?;
+      let inscription = envelope.payload;
       inscriptions.push(inscription);
+      // 2. Get inscribed by address
+      let tx_input = tx.input
+        .into_iter()
+        .nth(envelope.input as usize)
+        .ok_or(anyhow!("Failed to get tx input for inscription id: {}, input {}", inscription_id, envelope.input))?;
+      let script = unversioned_leaf_script_from_witness(&tx_input.witness)
+        .ok_or(anyhow!("Failed to get script from tx input for inscription id: {}", inscription_id))?;
+      let inscribed_by_address = Self::extract_scriptpath_address(&script, settings.chain().network(), &secp256k1)
+        .unwrap_or("unknown".to_string());
+      inscribed_by_addresses.push(inscribed_by_address);
     }
 
     //3. Get Ordinal metadata
     let t2 = Instant::now();
     let cloned_ids = inscription_ids.clone();
     let cloned_inscriptions = inscriptions.clone();
-    let id_inscriptions: Vec<_> = cloned_ids.into_iter().zip(cloned_inscriptions.into_iter()).collect();
+    let id_inscriptions: Vec<_> = cloned_ids
+      .into_iter()
+      .zip(cloned_inscriptions.into_iter())
+      .zip(inscribed_by_addresses.into_iter())
+      .map(|((a, b), c)| {
+        (a, b, c)
+      })
+      .collect();
 
     let mut metadata_vec: Vec<Metadata> = Vec::new();
     let mut sat_metadata_vec: Vec<SatMetadata> = Vec::new();
     let mut gallery_vec: Vec<GalleryMetadata> = Vec::new();
-    for (inscription_id, inscription) in id_inscriptions {
-      let (metadata, sat_metadata, mut gallery) = Self::extract_ordinal_metadata(index.clone(), inscription_id, inscription.clone())
+    for (inscription_id, inscription, inscribed_by_address) in id_inscriptions {
+      let (metadata, sat_metadata, mut gallery) = Self::extract_ordinal_metadata(index.clone(), inscription_id, inscription.clone(), inscribed_by_address)
         .with_context(|| format!("Failed to extract metadata for inscription id: {}", inscription_id))?;
       metadata_vec.push(metadata);            
       match sat_metadata {
@@ -2111,7 +2140,32 @@ impl Vermilion {
     ciborium::from_reader(Cursor::new(metadata)).ok()
   }
 
-  pub(crate) fn extract_ordinal_metadata(index: Arc<Index>, inscription_id: InscriptionId, inscription: Inscription) -> Result<(Metadata, Option<SatMetadata>, Vec<GalleryMetadata>)> {
+  fn extract_scriptpath_address(tapscript: &Script, network: Network, secp256k1: &Secp256k1<bitcoin::secp256k1::All>) -> Option<String> {
+    let mut instructions = tapscript.instructions();
+    // Get first instruction and validate it's a 32-byte push (OP_PUSHBYTES_32 + 32 bytes)
+    let push_bytes = match instructions.next()?.ok()? {
+      Instruction::PushBytes(push_bytes) if push_bytes.len() == 32 => push_bytes,
+      _ => return None,
+    };
+    
+    // Get second instruction and validate it's OP_CHECKSIG
+    if instructions.next()?.ok()? != Instruction::Op(opcodes::all::OP_CHECKSIG) {
+      return None;
+    }
+    
+    // Create the address
+    let x_only_pubkey = bitcoin::secp256k1::XOnlyPublicKey::from_slice(push_bytes.as_bytes()).ok()?;
+    let tweaked_taproot = bitcoin::Address::p2tr(
+      secp256k1, 
+      x_only_pubkey, 
+      None, 
+      network
+    );
+    
+    Some(tweaked_taproot.to_string())
+  }
+
+  pub(crate) fn extract_ordinal_metadata(index: Arc<Index>, inscription_id: InscriptionId, inscription: Inscription, inscribed_by_address: String) -> Result<(Metadata, Option<SatMetadata>, Vec<GalleryMetadata>)> {
     let t0 = Instant::now();
     let entry = index
       .get_inscription_entry(inscription_id)
@@ -2330,6 +2384,7 @@ impl Vermilion {
       is_recursive: is_recursive,
       spaced_rune: rune.map(|rune| rune.to_string()),
       raw_properties: raw_properties,
+      inscribed_by_address: Some(inscribed_by_address),
     };
     let t2 = Instant::now();
     let sat_metadata = match entry.sat {
@@ -2466,7 +2521,8 @@ impl Vermilion {
         is_bitmap_style boolean,
         is_recursive boolean,
         spaced_rune varchar(100),
-        raw_properties jsonb
+        raw_properties jsonb,
+        inscribed_by_address varchar(80)
       )").await?;
     conn.simple_query(r"
       CREATE INDEX IF NOT EXISTS index_metadata_id ON ordinals (id);
@@ -2486,6 +2542,7 @@ impl Vermilion {
       CREATE INDEX IF NOT EXISTS index_metadata_metaprotocol ON ordinals (metaprotocol);
       CREATE INDEX IF NOT EXISTS index_metadata_text ON ordinals USING GIN (to_tsvector('english', left(text, 800000)));
       CREATE INDEX IF NOT EXISTS index_metadata_referenced_ids ON ordinals USING GIN (referenced_ids);
+      CREATE INDEX IF NOT EXISTS index_metadata_inscribed_by_address ON ordinals (inscribed_by_address);
     ").await?;
     conn.simple_query(r"
       CREATE INDEX IF NOT EXISTS index_metadata_sat_block_sat on ordinals (sat_block, sat);
@@ -2539,6 +2596,7 @@ impl Vermilion {
         is_recursive boolean,
         spaced_rune varchar(100),
         raw_properties jsonb,
+        inscribed_by_address varchar(80),
         collection_symbol varchar(50),
         off_chain_metadata jsonb,
         collection_name text
@@ -2562,6 +2620,7 @@ impl Vermilion {
       CREATE INDEX IF NOT EXISTS index_metadata_full_text ON ordinals_full_t USING GIN (to_tsvector('english', left(text, 800000)));
       CREATE INDEX IF NOT EXISTS index_metadata_full_referenced_ids ON ordinals_full_t USING GIN (referenced_ids);
       CREATE INDEX IF NOT EXISTS index_metadata_full_collection_symbol ON ordinals_full_t (collection_symbol);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_inscribed_by_address ON ordinals_full_t (inscribed_by_address);
     ").await?;
     conn.simple_query(r"
       CREATE INDEX IF NOT EXISTS index_metadata_full_sat_block_sat on ordinals_full_t (sat_block, sat);
@@ -2925,7 +2984,8 @@ impl Vermilion {
       is_bitmap_style, 
       is_recursive,
       spaced_rune,
-      raw_properties) FROM STDIN BINARY"#;
+      raw_properties,
+      inscribed_by_address) FROM STDIN BINARY"#;
     let col_types = vec![
       Type::INT8,
       Type::VARCHAR,
@@ -2956,7 +3016,8 @@ impl Vermilion {
       Type::BOOL,
       Type::BOOL,
       Type::VARCHAR,
-      Type::JSONB
+      Type::JSONB,
+      Type::VARCHAR
     ];
     let insert_start = Instant::now();
 
@@ -3001,6 +3062,7 @@ impl Vermilion {
       row.push(&m.is_recursive);
       row.push(&m.spaced_rune);
       row.push(&m.raw_properties);
+      row.push(&m.inscribed_by_address);
       writer.as_mut().write(&row).await?;
     }
     let finish_start = Instant::now();  
@@ -5213,6 +5275,7 @@ impl Vermilion {
       is_recursive: row.get("is_recursive"),
       spaced_rune: row.get("spaced_rune"),
       raw_properties: row.get("raw_properties"),
+      inscribed_by_address: row.get("inscribed_by_address"),
       collection_symbol: row.get("collection_symbol"),
       off_chain_metadata: row.get("off_chain_metadata"),      
       collection_name: row.get("collection_name"),
@@ -5742,6 +5805,7 @@ impl Vermilion {
         is_recursive: row.get("is_recursive"),
         spaced_rune: row.get("spaced_rune"),
         raw_properties: row.get("raw_properties"),
+        inscribed_by_address: row.get("inscribed_by_address"),
         collection_symbol: row.get("collection_symbol"),
         off_chain_metadata: row.get("off_chain_metadata"),
         collection_name: row.get("collection_name"),
@@ -7636,6 +7700,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
           is_recursive,
           spaced_rune,
           raw_properties,
+          inscribed_by_address,
           collection_symbol,
           off_chain_metadata,
           collection_name
