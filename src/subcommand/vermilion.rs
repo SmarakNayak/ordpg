@@ -1485,7 +1485,7 @@ impl Vermilion {
       transfer_vec.push(transfer);
     }
     let t5 = Instant::now();
-    Self::bulk_insert_transfers(&deadpool_tx, transfer_vec.clone()).await
+    let (transfer_insert, transfer_triggers) = Self::bulk_insert_transfers(&deadpool_tx, transfer_vec.clone()).await
       .map_err(|err| anyhow::anyhow!("Failed to insert transfers for block {}: {}", block_number, err))?;
     let t6 = Instant::now();
     Self::bulk_insert_addresses(&deadpool_tx, transfer_vec).await
@@ -1495,12 +1495,14 @@ impl Vermilion {
       .map_err(|err| anyhow::anyhow!("Failed to insert inscription blockstats for block {}: {}", block_number, err))?;
     let t8 = Instant::now();
     log::info!("Transfer indexer: Indexed block: {:?}", block_number);
-    log::info!("Get transfers: {:?} - Get txs: {:?} - Get addresses {:?} - Create Vec: {:?} - Insert transfers: {:?} - Insert addresses: {:?} - Insert blockstats: {:?} TOTAL: {:?}", 
+    log::info!("Get transfers: {:?} - Get txs: {:?} - Get addresses {:?} - Create Vec: {:?} - Insert transfers: {:?} (ins: {:?} trig: {:?}) - Insert addresses: {:?} - Insert blockstats: {:?} TOTAL: {:?}", 
       t2.duration_since(t1), 
       t3.duration_since(t2), 
       t4.duration_since(t3), 
       t5.duration_since(t4), 
-      t6.duration_since(t5), 
+      t6.duration_since(t5),
+      transfer_insert, 
+      transfer_triggers,
       t7.duration_since(t6), 
       t8.duration_since(t7), 
       t8.duration_since(t1)
@@ -1591,7 +1593,7 @@ impl Vermilion {
     
     //4. Insert metadata
     let t3 = Instant::now();
-    Self::bulk_insert_metadata(&deadpool_tx, metadata_vec.clone()).await
+    let (metadata_insert, metadata_triggers) = Self::bulk_insert_metadata(&deadpool_tx, metadata_vec.clone()).await
       .map_err(|err| anyhow::anyhow!("Failed to insert metadata for block {}: {}", block_number, err))?;
     
     //5. Insert editions
@@ -1665,11 +1667,13 @@ impl Vermilion {
     let first_number = sequence_numbers.first().unwrap_or(&0);
     let last_number = sequence_numbers.last().unwrap_or(&0);
     log::info!("Inscription indexer: Indexed block: {:?}, Sequence numbers: {}-{}", block_number, first_number, last_number);
-    log::info!("Get ids: {:?} - Get inscriptions: {:?} - Get metadata: {:?} - Insert metadata: {:?} - Insert editions: {:?} - Insert sat metadata: {:?} - Insert satributes: {:?} - Insert galleries: {:?} - Upload content: {:?} TOTAL: {:?}", 
+    log::info!("Get ids: {:?} - Get inscriptions: {:?} - Get metadata: {:?} - Insert metadata: {:?} (ins: {:?} trig: {:?}) - Insert editions: {:?} - Insert sat metadata: {:?} - Insert satributes: {:?} - Insert galleries: {:?} - Upload content: {:?} TOTAL: {:?}", 
       t1.duration_since(t0), 
       t2.duration_since(t1),
       t3.duration_since(t2), 
-      t4.duration_since(t3), 
+      t4.duration_since(t3),
+      metadata_insert,
+      metadata_triggers,
       t5.duration_since(t4), 
       t6.duration_since(t5), 
       t7.duration_since(t6), 
@@ -3033,7 +3037,7 @@ impl Vermilion {
     Ok(())
   }
 
-  async fn bulk_insert_metadata(tx: &deadpool_postgres::Transaction<'_>, data: Vec<Metadata>) -> anyhow::Result<()> {
+  async fn bulk_insert_metadata(tx: &deadpool_postgres::Transaction<'_>, data: Vec<Metadata>) -> anyhow::Result<(Duration, Duration)> {
     let copy_stm = r#"COPY ordinals (
       sequence_number, 
       id, 
@@ -3144,11 +3148,10 @@ impl Vermilion {
       row.push(&m.inscribed_by_address);
       writer.as_mut().write(&row).await?;
     }
-    let finish_start = Instant::now();  
+    let insert_finish = Instant::now();  
     let _x = writer.finish().await?;
-    let finish_end = Instant::now();
-    println!("Bulk insert metadata took: {:?} to write rows, {:?} to finish", finish_start.duration_since(insert_start), finish_end.duration_since(finish_start));
-    Ok(())
+    let trigger_finish = Instant::now();
+    Ok((insert_finish.duration_since(insert_start), trigger_finish.duration_since(insert_finish)))
   }
 
   async fn bulk_insert_sat_metadata(tx: &deadpool_postgres::Transaction<'_>, data: Vec<SatMetadata>) -> anyhow::Result<()> {
@@ -3348,7 +3351,7 @@ impl Vermilion {
     Ok(())
   }
   
-  pub(crate) async fn bulk_insert_transfers(tx: &deadpool_postgres::Transaction<'_>, transfer_vec: Vec<Transfer>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+  pub(crate) async fn bulk_insert_transfers(tx: &deadpool_postgres::Transaction<'_>, transfer_vec: Vec<Transfer>) -> Result<(Duration, Duration), Box<dyn std::error::Error + Send + Sync>> {
     let copy_stm = r#"COPY transfers (
       id,
       block_number,
@@ -3382,6 +3385,7 @@ impl Vermilion {
       Type::BOOL,
       Type::JSONB
     ];
+    let insert_start = Instant::now();
     let sink = tx.copy_in(copy_stm).await?;
     let writer = BinaryCopyInWriter::new(sink, &col_types);
     pin_mut!(writer);
@@ -3404,8 +3408,10 @@ impl Vermilion {
       row.push(&m.burn_metadata);
       writer.as_mut().write(&row).await?;
     }
+    let insert_finish = Instant::now();
     writer.finish().await?;
-    Ok(())
+    let trigger_finish = Instant::now();
+    Ok((insert_finish.duration_since(insert_start), trigger_finish.duration_since(insert_finish)))
   }
 
   pub(crate) async fn create_address_table(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
