@@ -1692,25 +1692,29 @@ impl Vermilion {
     Ok(collections)
 }
 
-  async fn get_all_collection_metadata() -> Result<Vec<CollectionMetadata>, Box<dyn std::error::Error>> {
+  async fn get_all_collection_metadata(settings: Settings) -> Result<Vec<CollectionMetadata>, Box<dyn std::error::Error>> {
     let mut collections = Vec::new();
 
-    loop {
-      let url = format!("https://api-mainnet.magiceden.dev/v2/ord/btc/collections");
+    let url = format!("https://api-mainnet.magiceden.dev/v2/ord/btc/collections");
+    let client = reqwest::Client::new();
+    let mut headers = reqwest::header::HeaderMap::new();
+    let token = settings.magiceden_api_key().map(|s| s.to_string()).ok_or("No Magic Eden Api key found")?;
+    headers.insert(reqwest::header::AUTHORIZATION, format!("Bearer {}", token).parse().unwrap());
 
-      let response = reqwest::get(&url).await?;
+    for attempt in 0..10 {
+      let response = client.get(&url).headers(headers.clone()).send().await?;
 
       if response.status() == 429 {
-        log::info!("Rate limit exceeded getting all collections: {}, retrying in 2 minutes", response.status());
+        log::info!("Rate limit exceeded getting all collections: {}, retrying in {} minutes", response.status(), attempt + 1);
         log::info!("{}", response.text().await?);
-        tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(60*(attempt+1))).await;
         continue;
       }
 
       if response.status() != 200 {
-        println!("Error getting all collections: {}, retrying in 2 minutes", response.status());
+        println!("Error getting all collections: {}, retrying in {} minutes", response.status(), attempt + 1);
         println!("{}", response.text().await?);
-        tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(60*(attempt+1))).await;
         continue;
       }
 
@@ -1731,12 +1735,11 @@ impl Vermilion {
           collections.push(metadata);
         }
       }
-
-      break;
+      log::info!("{} collections detected", collections.len());
+      return Ok(collections);
     }
 
-    log::info!("{} collections detected", collections.len());
-    Ok(collections)
+    Err(format!("Failed to fetch all collection metadata after 10 attempts").into())
   }
 
   async fn get_recently_traded_collections() -> Result<Vec<String>, Box<dyn std::error::Error>> {
@@ -2087,7 +2090,7 @@ impl Vermilion {
   }
 
   async fn update_all_tokens(pool: deadpool_postgres::Pool, settings: Settings, force_update: bool) -> Result<bool, Box<dyn std::error::Error>> {
-    let (all_collections, all_collection_metadata) =  match Self::get_all_collection_metadata().await {
+    let (all_collections, all_collection_metadata) =  match Self::get_all_collection_metadata(settings.clone()).await {
       Ok(collections) => {
         let all_collections = collections.clone().into_iter()
           .map(|item| item.collection_symbol)
@@ -3031,7 +3034,6 @@ impl Vermilion {
   }
 
   async fn bulk_insert_metadata(tx: &deadpool_postgres::Transaction<'_>, data: Vec<Metadata>) -> anyhow::Result<()> {
-    //tx.simple_query("CREATE TEMP TABLE inserts_ordinals ON COMMIT DROP AS TABLE ordinals WITH NO DATA").await?;
     let copy_stm = r#"COPY ordinals (
       sequence_number, 
       id, 
@@ -3123,7 +3125,6 @@ impl Vermilion {
       row.push(clean_delegate_content_type);
       let clean_metaprotocol = &m.metaprotocol.map(|s| s.replace("\0", ""));
       row.push(clean_metaprotocol);
-      //let clean_metadata = &m.on_chain_metadata.map(|s| s.replace("\0", ""));
       row.push(&m.on_chain_metadata);
       row.push(&m.sat);
       row.push(&m.sat_block);
@@ -3147,8 +3148,6 @@ impl Vermilion {
     let _x = writer.finish().await?;
     let finish_end = Instant::now();
     println!("Bulk insert metadata took: {:?} to write rows, {:?} to finish", finish_start.duration_since(insert_start), finish_end.duration_since(finish_start));
-    //println!("Finished writing metadata: {:?}", x);
-    //tx.simple_query("INSERT INTO ordinals SELECT * FROM inserts_ordinals ON CONFLICT DO NOTHING").await?;
     Ok(())
   }
 
