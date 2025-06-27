@@ -311,7 +311,7 @@ impl Index {
         let mut tx = database.begin_write()?;
 
         tx.set_durability(durability);
-        tx.set_quick_repair(false);
+        tx.set_quick_repair(true);
 
         tx.open_multimap_table(SAT_TO_SEQUENCE_NUMBER)?;
         tx.open_multimap_table(SCRIPT_PUBKEY_TO_OUTPOINT)?;
@@ -788,7 +788,7 @@ impl Index {
   fn begin_write(&self) -> Result<WriteTransaction> {
     let mut tx = self.database.begin_write()?;
     tx.set_durability(self.durability);
-    tx.set_quick_repair(false);
+    tx.set_quick_repair(true);
     Ok(tx)
   }
 
