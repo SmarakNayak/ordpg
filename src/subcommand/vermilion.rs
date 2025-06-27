@@ -1143,6 +1143,22 @@ impl Vermilion {
             t6.duration_since(t5),
             t6.duration_since(t0)
           );
+          let trigger_timings = match Self::get_trigger_timing_log(deadpool.clone()).await {
+            Ok(timings) => timings,
+            Err(err) => {
+              log::info!("Error getting trigger timings: {:?}, continuing", err);
+              vec![]
+            }
+          };
+          for timing in trigger_timings {
+            log::info!("Trigger: {:?}.{:?}: {:?} - {:?}", timing.0, timing.1, timing.2, Duration::from_micros(timing.3 as u64));
+          }
+          match Self::clear_trigger_timing_log(deadpool.clone()).await {
+            Ok(_) => {},
+            Err(err) => {
+              log::info!("Error clearing trigger timings: {:?}, continuing", err);
+            }
+          }
           block_number += 1;
         }
       })
@@ -2532,6 +2548,7 @@ impl Vermilion {
     Self::create_gallery_table(pool.clone()).await.context("Failed to create gallery table")?;
     
     Self::create_procedure_log(pool.clone()).await.context("Failed to create proc log")?;
+    Self::create_trigger_timing_log(pool.clone()).await.context("Failed to create trigger timing log")?;
     Self::create_collection_summary_procedure(pool.clone()).await.context("Failed to create collection summary proc")?;
     Self::create_edition_procedure(pool.clone()).await.context("Failed to create edition proc")?;
     Self::create_weights_procedure(pool.clone()).await.context("Failed to create weights proc")?;
@@ -7319,11 +7336,24 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
       DECLARE previous_reference_total INTEGER;
       DECLARE inscription_satribute VARCHAR(30);
       DECLARE previous_satribute_total INTEGER;
+      DECLARE t0 TIMESTAMP;
+      DECLARE t1 TIMESTAMP;
+      DECLARE t2 TIMESTAMP;
+      DECLARE t3 TIMESTAMP;
+      DECLARE t4 TIMESTAMP;
+      DECLARE t5 TIMESTAMP;
+      DECLARE t6 TIMESTAMP;
       BEGIN
+        t0 := clock_timestamp();
         -- RAISE NOTICE 'insert_metadata: waiting for lock';
         LOCK TABLE ordinals IN EXCLUSIVE MODE;
         -- RAISE NOTICE 'insert_metadata: lock acquired';
+        t1 := clock_timestamp();
+        INSERT INTO trigger_timing_log (trigger_name, step_number, step_name, step_time_us)
+          VALUES ('before_metadata_insert', 0, 'lock_acquired', EXTRACT(MICROSECONDS FROM (t1 - t0)))
+          ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET step_time_us = step_time_us + EXCLUDED.step_time_us;
 
+        
         -- 1a. Update delegates
         IF NEW.delegate IS NOT NULL THEN
           -- Get the previous total for the same delegate id
@@ -7334,6 +7364,10 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
           -- Insert the new delegate
           INSERT INTO delegates (delegate_id, bootleg_id, bootleg_number, bootleg_sequence_number, bootleg_block_height, bootleg_edition) VALUES (NEW.delegate, NEW.id, NEW.number, NEW.sequence_number, NEW.genesis_height, COALESCE(previous_delegate_total, 0) + 1);
         END IF;
+        t2 := clock_timestamp();
+        INSERT INTO trigger_timing_log (trigger_name, step_number, step_name, step_time_us)
+          VALUES ('before_metadata_insert', 1, 'delegates', EXTRACT(MICROSECONDS FROM (t2 - t1)))
+          ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET step_time_us = step_time_us + EXCLUDED.step_time_us;
 
         -- 1b. Update comments
         IF NEW.delegate IS NOT NULL AND NEW.content_length > 0 THEN
@@ -7345,6 +7379,10 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
           -- Insert the new delegate
           INSERT INTO inscription_comments (delegate_id, comment_id, comment_number, comment_sequence_number, comment_edition) VALUES (NEW.delegate, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_comment_total, 0) + 1);
         END IF;
+        t3 := clock_timestamp();
+        INSERT INTO trigger_timing_log (trigger_name, step_number, step_name, step_time_us)
+          VALUES ('before_metadata_insert', 2, 'comments', EXTRACT(MICROSECONDS FROM (t3 - t2)))
+          ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET step_time_us = step_time_us + EXCLUDED.step_time_us;
 
         -- 2. Update references
         FOREACH ref_id IN ARRAY NEW.referenced_ids
@@ -7362,6 +7400,10 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
           INSERT INTO inscription_references (reference_id, recursive_id, recursive_number, recursive_sequence_number, recursive_edition) 
           VALUES (ref_id, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_reference_total, 0) + 1);
         END LOOP;
+        t4 := clock_timestamp();
+        INSERT INTO trigger_timing_log (trigger_name, step_number, step_name, step_time_us)
+          VALUES ('before_metadata_insert', 3, 'references', EXTRACT(MICROSECONDS FROM (t4 - t3)))
+          ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET step_time_us = step_time_us + EXCLUDED.step_time_us;
 
         -- 3. Update satributes
         FOREACH inscription_satribute IN ARRAY NEW.satributes
@@ -7374,6 +7416,10 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
           -- Insert the new satribute
           INSERT INTO inscription_satributes (satribute, sat, inscription_id, inscription_number, inscription_sequence_number, satribute_edition) VALUES (inscription_satribute, NEW.sat, NEW.id, NEW.number, NEW.sequence_number, COALESCE(previous_satribute_total, 0) + 1);
         END LOOP;
+        t5 := clock_timestamp();
+        INSERT INTO trigger_timing_log (trigger_name, step_number, step_name, step_time_us)
+          VALUES ('before_metadata_insert', 4, 'satributes', EXTRACT(MICROSECONDS FROM (t5 - t4)))
+          ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET step_time_us = step_time_us + EXCLUDED.step_time_us;
 
         -- 4. Update on chain collection summary
         -- Add delta for a single inscription and all transfers (so far)
@@ -7435,6 +7481,10 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
             total_fees = coalesce(ocs.total_fees, 0) + EXCLUDED.total_fees,
             total_on_chain_footprint = coalesce(ocs.total_on_chain_footprint, 0) + EXCLUDED.total_on_chain_footprint;
         END IF;
+        t6 := clock_timestamp();
+        INSERT INTO trigger_timing_log (trigger_name, step_number, step_name, step_time_us)
+          VALUES ('before_metadata_insert', 5, 'on_chain_collection_summary', EXTRACT(MICROSECONDS FROM (t6 - t5)))
+          ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET step_time_us = step_time_us + EXCLUDED.step_time_us;
 
         RETURN NEW;
       END;
@@ -7573,10 +7623,19 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
     conn.simple_query(r"CREATE OR REPLACE FUNCTION before_transfer_insert() RETURNS TRIGGER AS $$
       DECLARE v_collection_symbol TEXT;
       DECLARE v_parents VARCHAR(80)[];
+      DECLARE t0 TIMESTAMP;
+      DECLARE t1 TIMESTAMP;
+      DECLARE t2 TIMESTAMP;
+      DECLARE t3 TIMESTAMP;
       BEGIN
+        t0 := clock_timestamp();
         -- RAISE NOTICE 'insert_transfers: waiting for lock';
         LOCK TABLE transfers IN EXCLUSIVE MODE;
         -- RAISE NOTICE 'insert_transfers: lock acquired';
+        t1 := clock_timestamp();
+        INSERT INTO trigger_timing_log (trigger_name, step_number, step_name, step_time_us)
+          VALUES ('before_transfer_insert', 0, 'lock_acquired', EXTRACT(MICROSECONDS FROM (t1 - t0)))
+          ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET step_time_us = step_time_us + EXCLUDED.step_time_us;
 
         -- 1. Update off chain collections
         SELECT collection_symbol INTO v_collection_symbol FROM collections WHERE id = NEW.id;
@@ -7589,6 +7648,10 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
               total_on_chain_footprint = coalesce(total_on_chain_footprint, 0) + NEW.tx_size
             WHERE collection_symbol = v_collection_symbol;
         END IF;
+        t2 := clock_timestamp();
+        INSERT INTO trigger_timing_log (trigger_name, step_number, step_name, step_time_us)
+          VALUES ('before_transfer_insert', 1, 'off_chain_collection_summary', EXTRACT(MICROSECONDS FROM (t2 - t1)))
+          ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET step_time_us = step_time_us + EXCLUDED.step_time_us;
 
         --2. Update on chain collections
         SELECT parents INTO v_parents FROM ordinals WHERE id = NEW.id;
@@ -7601,6 +7664,10 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
               total_on_chain_footprint = coalesce(total_on_chain_footprint, 0) + NEW.tx_size
             WHERE parents = v_parents;
         END IF;
+        t3 := clock_timestamp();
+        INSERT INTO trigger_timing_log (trigger_name, step_number, step_name, step_time_us)
+          VALUES ('before_transfer_insert', 2, 'on_chain_collection_summary', EXTRACT(MICROSECONDS FROM (t3 - t2)))
+          ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET step_time_us = step_time_us + EXCLUDED.step_time_us;
 
         RETURN NEW;
       END;
@@ -7751,7 +7818,11 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
   async fn create_metadata_full_insert_trigger(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
     conn.simple_query(r"CREATE OR REPLACE FUNCTION after_metadata_insert() RETURNS TRIGGER AS $$
+      DECLARE t0 TIMESTAMP;
+      DECLARE t1 TIMESTAMP;
+      DECLARE t2 TIMESTAMP;
       BEGIN
+        t0 := clock_timestamp();
         INSERT INTO ordinals_full_t (
           sequence_number,
           id,
@@ -7793,8 +7864,16 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
         LEFT JOIN collections c ON o.id = c.id
         LEFT JOIN collection_list l ON c.collection_symbol = l.collection_symbol
         ON CONFLICT (sequence_number) DO NOTHING;
+        t1 := clock_timestamp();
+        INSERT INTO trigger_timing_log (trigger_name, step_number, step_name, step_time_us)
+          VALUES ('before_metadata_insert', 6, 'insert_ordinals_full', EXTRACT(MICROSECONDS FROM (t1 - t0)))
+          ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET step_time_us = step_time_us + EXCLUDED.step_time_us;
 
         CALL update_trending_weights();
+        t2 := clock_timestamp();
+        INSERT INTO trigger_timing_log (trigger_name, step_number, step_name, step_time_us)
+          VALUES ('before_metadata_insert', 7, 'update_trending_weights', EXTRACT(MICROSECONDS FROM (t2 - t1)))
+          ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET step_time_us = step_time_us + EXCLUDED.step_time_us;
 
         RETURN NULL;
       END;
@@ -8651,6 +8730,35 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
         rows_returned int
       )").await?;
     Ok(())
+  }
+
+  async fn create_trigger_timing_log(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query(
+      r"CREATE TABLE IF NOT EXISTS trigger_timing_log (
+        trigger_name varchar(40),
+        step_number int,
+        step_name varchar(40),
+        step_time_us bigint,
+        CONSTRAINT trigger_timing_log_pkey PRIMARY KEY (trigger_name, step_number, step_name)
+      )").await?;
+    Ok(())
+  }
+
+  async fn clear_trigger_timing_log(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.simple_query("TRUNCATE trigger_timing_log").await?;
+    Ok(())
+  }
+
+  async fn get_trigger_timing_log(pool: deadpool_postgres::Pool<>) -> anyhow::Result<Vec<(String, i32, String, i64)>> {
+    let conn = pool.get().await?;
+    let rows = conn.query("SELECT trigger_name, step_number, step_name, step_time_us FROM trigger_timing_log ORDER BY trigger_name, step_number, step_name", &[]).await?;
+    let mut result = Vec::new();
+    for row in rows {
+      result.push((row.get(0), row.get(1), row.get(2), row.get(3)));
+    }
+    Ok(result)
   }
 
   async fn create_ordinals_full_view(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
