@@ -1684,6 +1684,53 @@ impl Vermilion {
     Ok(collections)
 }
 
+  async fn get_all_collection_metadata() -> Result<Vec<CollectionMetadata>, Box<dyn std::error::Error>> {
+    let mut collections = Vec::new();
+
+    loop {
+      let url = format!("https://api-mainnet.magiceden.dev/v2/ord/btc/collections");
+
+      let response = reqwest::get(&url).await?;
+
+      if response.status() == 429 {
+        log::info!("Rate limit exceeded getting all collections: {}, retrying in 2 minutes", response.status());
+        log::info!("{}", response.text().await?);
+        tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+        continue;
+      }
+
+      if response.status() != 200 {
+        println!("Error getting all collections: {}, retrying in 2 minutes", response.status());
+        println!("{}", response.text().await?);
+        tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+        continue;
+      }
+
+      let data: Vec<JsonValue> = response.json().await?;
+
+      for item in data {
+        if let Some(symbol) = item["symbol"].as_str() {
+          if symbol.starts_with("domain_dot") {
+            continue;
+          }
+          if symbol.starts_with("brc20_") {
+            continue;
+          }
+          if symbol == "rare-sats" {
+            continue;
+          }
+          let metadata: CollectionMetadata = serde_json::from_value(item.clone())?;
+          collections.push(metadata);
+        }
+      }
+
+      break;
+    }
+
+    log::info!("{} collections detected", collections.len());
+    Ok(collections)
+  }
+
   async fn get_recently_traded_collections() -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let mut collections = Vec::new();
     let mut offset = 0;
@@ -1807,7 +1854,7 @@ impl Vermilion {
     Err(format!("Failed to fetch metadata after 5 attempts for {}", symbol).into())
   }
 
-  async fn get_bulk_collection_metadata(settings: Settings, collections: Vec<String>) -> Result<Vec<CollectionMetadata>, Box<dyn std::error::Error>> {
+  async fn get_bulk_collection_metadata(settings: Settings, collections: Vec<String>, cached_collection_metadata: Vec<CollectionMetadata>) -> Result<Vec<CollectionMetadata>, Box<dyn std::error::Error>> {
     let mut traded_metadata = Vec::new();
     println!("Getting metadata for traded collections: {}", collections.len());
     let mut t0 = Instant::now();
@@ -1815,6 +1862,10 @@ impl Vermilion {
       // break if ctrl-c is received
       if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
         return Err("Shutting down".into());
+      }
+      if let Some(metadata) = cached_collection_metadata.iter().find(|m| m.collection_symbol == *symbol) {
+        traded_metadata.push(metadata.clone());
+        continue;
       }
       if let Some(metadata) = Self::get_collection_metadata(settings.clone(), symbol).await? {
         traded_metadata.push(metadata);
@@ -2028,9 +2079,21 @@ impl Vermilion {
   }
 
   async fn update_all_tokens(pool: deadpool_postgres::Pool, settings: Settings) -> Result<(), Box<dyn std::error::Error>> {
-    let recently_traded_collections = Self::get_recently_traded_collections().await?;
+    let (all_collections, all_collection_metadata) =  match Self::get_all_collection_metadata().await {
+      Ok(collections) => {
+        let all_collections = collections.clone().into_iter()
+          .map(|item| item.collection_symbol)
+          .collect::<Vec<_>>();
+        (all_collections, collections)
+      },
+      Err(e) => { // Sometimes this magiceden endpoint fails, so we fallback to recently traded collections
+        log::error!("Failed to get all collections, getting recently traded collections instead: {}", e);
+        let recently_traded_collections = Self::get_recently_traded_collections().await?;
+        (recently_traded_collections, Vec::new())
+      }
+    };
     let historical_collections = Self::get_historical_collections().await?;
-    let collections_to_update: Vec<String> = recently_traded_collections.into_iter()
+    let collections_to_update: Vec<String> = all_collections.into_iter()
       .chain(historical_collections)
       .collect::<HashSet<_>>()
       .into_iter()
@@ -2048,7 +2111,7 @@ impl Vermilion {
       return Ok(());
     }
 
-    let collections_to_update_metadata = Self::get_bulk_collection_metadata(settings.clone(), collections_to_update.clone()).await?;
+    let collections_to_update_metadata = Self::get_bulk_collection_metadata(settings.clone(), collections_to_update.clone(), all_collection_metadata).await?;
     let new_symbols = Self::get_new_collection_symbols(pool.clone(), settings.clone(), collections_to_update_metadata.clone()).await?;
     for (i, symbol) in new_symbols.iter().enumerate() {
       let new_tokens = Self::get_tokens(settings.clone(), &symbol).await?;
