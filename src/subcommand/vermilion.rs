@@ -934,22 +934,30 @@ impl Vermilion {
           println!("Error initializing collection tables: {:?}", init_result.unwrap_err());
           return;
         }
+        let mut last_update = std::time::Instant::now() - std::time::Duration::from_secs(86401); // Force initial update
         loop {
           let t0 = Instant::now();
           // break if ctrl-c is received
           if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
             break;
           }
-          match Self::update_all_tokens(pool.clone(), settings.clone()).await {
-            Ok(update) => update,
+          let force_update = t0.duration_since(last_update) >= std::time::Duration::from_secs(86400);
+          match Self::update_all_tokens(pool.clone(), settings.clone(), force_update).await {
+            Ok(update) => {
+              let t1 = Instant::now();
+              if update {
+                last_update = t1;
+                log::info!("Collection indexer: Updated all tokens in {:?}, forced: {}", t1.duration_since(t0), force_update);
+              } else {
+                log::info!("Collection indexer: No updates needed");
+              }
+            },
             Err(err) => {
               log::warn!("Error updating all tokens: {:?}", err);
               tokio::time::sleep(Duration::from_secs(60)).await;
               continue;
             }
           };
-          let t1 = Instant::now();
-          log::info!("Collection indexer: Updated all tokens in {:?}", t1.duration_since(t0));
           tokio::time::sleep(Duration::from_secs(60)).await;
         }
         println!("Collection indexer stopped");
@@ -2078,7 +2086,7 @@ impl Vermilion {
     }
   }
 
-  async fn update_all_tokens(pool: deadpool_postgres::Pool, settings: Settings) -> Result<(), Box<dyn std::error::Error>> {
+  async fn update_all_tokens(pool: deadpool_postgres::Pool, settings: Settings, force_update: bool) -> Result<bool, Box<dyn std::error::Error>> {
     let (all_collections, all_collection_metadata) =  match Self::get_all_collection_metadata().await {
       Ok(collections) => {
         let all_collections = collections.clone().into_iter()
@@ -2106,9 +2114,9 @@ impl Vermilion {
       .filter(|item| !recently_stored_collections.contains(item))
       .map(|item| item.clone())
       .collect::<Vec<_>>();
-    if new_collections.is_empty() {
+    if new_collections.is_empty() && !force_update {
       log::info!("No new collections to update");
-      return Ok(());
+      return Ok(false);
     }
 
     let collections_to_update_metadata = Self::get_bulk_collection_metadata(settings.clone(), collections_to_update.clone(), all_collection_metadata).await?;
@@ -2130,7 +2138,7 @@ impl Vermilion {
     }
     Self::update_collection_summary(pool.clone()).await?;    
     Self::insert_recently_stored_collections(pool, collections_to_update).await?;
-    Ok(())
+    Ok(true)
   }
 
   //Inscription Indexer Helper functions
