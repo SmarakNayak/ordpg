@@ -2181,6 +2181,10 @@ impl Vermilion {
     let collections_to_update_metadata = Self::get_bulk_collection_metadata(settings.clone(), collections_to_update.clone(), all_collection_metadata).await?;
     let new_symbols = Self::get_new_collection_symbols(pool.clone(), settings.clone(), collections_to_update_metadata.clone()).await?;
     for (i, symbol) in new_symbols.iter().enumerate() {
+      // break if ctrl-c is received
+      if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
+        return Err("Shutting down".into());
+      }
       let new_tokens = match Self::get_tokens(settings.clone(), &symbol).await {
         Ok(tokens) => tokens,
         Err(e) => {
