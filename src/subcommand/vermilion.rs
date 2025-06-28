@@ -46,6 +46,7 @@ use serde_json::{Value as JsonValue, value::Number as JsonNumber};
 use ciborium::value::Value as CborValue;
 use base64::engine::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use serde_aux::prelude::*;
 
 use deadpool_postgres::{ManagerConfig, Pool as deadpool, RecyclingMethod};
 use tokio_postgres::NoTls;
@@ -470,7 +471,9 @@ pub struct CollectionMetadata {
   discord: Option<String>,
   #[serde(rename(deserialize = "websiteLink"))]
   website: Option<String>,
+  #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
   min_inscription_number: Option<i64>,
+  #[serde(default, deserialize_with = "deserialize_option_number_from_string")]
   max_inscription_number: Option<i64>,
   #[serde(rename(deserialize = "createdAt"), deserialize_with = "deserialize_date")]
   date_created: i64
