@@ -2079,6 +2079,7 @@ impl Vermilion {
         break;
       }
 
+      retry_count = 0; // reset retry count on successful response
       offset += 100;
       if offset > 25000 {
         tokens = Vec::new();
