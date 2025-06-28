@@ -7893,7 +7893,41 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
           off_chain_metadata,
           collection_name
         )
-        SELECT o.*, c.collection_symbol, c.off_chain_metadata, l.name as collection_name
+        SELECT 
+          o.sequence_number,
+          o.id,
+          o.content_length,
+          o.content_type,
+          o.content_encoding ,
+          o.content_category,
+          o.genesis_fee,
+          o.genesis_height,
+          o.genesis_transaction,
+          o.pointer,
+          o.number,          
+          o.parents,
+          o.delegate,
+          o.delegate_content_type,
+          o.metaprotocol,
+          o.on_chain_metadata,
+          o.sat,
+          o.sat_block,
+          o.satributes,
+          o.charms,
+          o.timestamp,
+          o.sha256,
+          o.text,
+          o.referenced_ids,
+          o.is_json,
+          o.is_maybe_json,
+          o.is_bitmap_style,
+          o.is_recursive,
+          o.spaced_rune,
+          o.raw_properties,
+          o.inscribed_by_address,
+          c.collection_symbol, 
+          c.off_chain_metadata, 
+          l.name as collection_name
         FROM inserted_ordinals o
         LEFT JOIN collections c ON o.id = c.id
         LEFT JOIN collection_list l ON c.collection_symbol = l.collection_symbol
