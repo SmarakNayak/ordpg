@@ -1767,12 +1767,12 @@ impl Vermilion {
           if symbol.starts_with("brc20_") {
             continue;
           }
-          if symbol == "rare-sats" {
+          if symbol == "rare-sats" || symbol == "uncommons" {
             continue;
           }
-          // if symbol == "sub-100" || symbol == "sub-1k" || symbol == "sub-5k"|| symbol == "sub-10k" || symbol == "sub-100k"  {
-          //   continue;
-          // }
+          if symbol == "sub-100" || symbol == "sub-1k" || symbol == "sub-5k"|| symbol == "sub-10k" || symbol == "sub-100k"  {
+            continue;
+          }
           let metadata: CollectionMetadata = serde_json::from_value(item.clone())?;
           collections.push(metadata);
         }
