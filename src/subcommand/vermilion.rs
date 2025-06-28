@@ -1762,6 +1762,9 @@ impl Vermilion {
           if symbol == "rare-sats" {
             continue;
           }
+          // if symbol == "sub-100" || symbol == "sub-1k" || symbol == "sub-5k"|| symbol == "sub-10k" || symbol == "sub-100k"  {
+          //   continue;
+          // }
           let metadata: CollectionMetadata = serde_json::from_value(item.clone())?;
           collections.push(metadata);
         }
@@ -2049,11 +2052,17 @@ impl Vermilion {
 
       let data: JsonValue = response.json().await?;
       if let Some(tokens_data) = data.get("tokens") {
-        let new_tokens: Vec<Collection> = tokens_data.as_array()
+        let new_tokens: Vec<Collection> = match tokens_data.as_array()
           .ok_or("tokens is not an array")?
           .iter()
           .map(|token| serde_json::from_value(token.clone()))
-          .collect::<Result<_, _>>()?;
+          .collect::<Result<_, _>>() {
+          Ok(tokens) => tokens,
+          Err(e) => {
+            log::info!("Failed to parse tokens response for {}: {}, response: {:?}", symbol, e, data);
+            return Err(format!("Failed to parse tokens for {}: {}", symbol, e).into());
+          }
+        };
         tokens.extend(new_tokens.clone());
         if new_tokens.len() < 100 {
           break;
@@ -2164,7 +2173,13 @@ impl Vermilion {
     let collections_to_update_metadata = Self::get_bulk_collection_metadata(settings.clone(), collections_to_update.clone(), all_collection_metadata).await?;
     let new_symbols = Self::get_new_collection_symbols(pool.clone(), settings.clone(), collections_to_update_metadata.clone()).await?;
     for (i, symbol) in new_symbols.iter().enumerate() {
-      let new_tokens = Self::get_tokens(settings.clone(), &symbol).await?;
+      let new_tokens = match Self::get_tokens(settings.clone(), &symbol).await {
+        Ok(tokens) => tokens,
+        Err(e) => {
+          log::info!("Failed to get tokens for {}, skipping: {}", symbol, e);
+          continue;
+        }
+      };
       if new_tokens.is_empty() {
         log::info!("No tokens found for {} in metadata, skipping", symbol);
         continue;
