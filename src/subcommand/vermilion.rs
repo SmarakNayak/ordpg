@@ -8878,11 +8878,11 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
         row.get(2), 
         step_start_time.map(|t| {
           let datetime = chrono::DateTime::<chrono::Utc>::from(t);
-          datetime.to_rfc3339()
+          datetime.format("%H:%M:%S%.6f").to_string()
         }),
         step_end_time.map(|t| {
           let datetime = chrono::DateTime::<chrono::Utc>::from(t);
-          datetime.to_rfc3339()
+          datetime.format("%H:%M:%S%.6f").to_string()
         }),
         row.get(5)
       ));
