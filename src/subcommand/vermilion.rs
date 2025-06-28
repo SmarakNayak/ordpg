@@ -1008,13 +1008,6 @@ impl Vermilion {
             return;
           }
         };
-        let mut conn = match deadpool.get().await {
-          Ok(conn) => conn,
-          Err(err) => {
-            log::info!("Error getting db connection: {:?}, exiting", err);
-            return;
-          }
-        };
         let fetcher = match Fetcher::new(&settings.clone()) {
           Ok(fetcher) => fetcher,
           Err(err) => {
@@ -1042,6 +1035,14 @@ impl Vermilion {
             tokio::time::sleep(Duration::from_secs(60)).await;
             continue;
           }
+          let mut conn = match deadpool.get().await {
+            Ok(conn) => conn,
+            Err(err) => {
+              log::info!("Error getting db connection: {:?}, exiting", err);
+              tokio::time::sleep(Duration::from_secs(60)).await;
+              continue;
+            }
+          };
           let deadpool_tx = match conn.transaction().await {
             Ok(tx) => tx,
             Err(err) => {
