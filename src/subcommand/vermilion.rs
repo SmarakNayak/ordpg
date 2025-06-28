@@ -7396,7 +7396,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
         -- RAISE NOTICE 'insert_metadata: lock acquired';
         t1 := clock_timestamp();
         INSERT INTO trigger_timing_log as log (trigger_name, step_number, step_name, step_start_time, step_end_time, step_time_us)
-          VALUES ('before_metadata_insert', 0, 'lock_acquired', t0, t1, EXTRACT(MICROSECONDS FROM (t1 - t0)))
+          VALUES ('before_metadata_insert', 0, 'lock_acquired', t0, t1, (EXTRACT(EPOCH FROM (t1 - t0)) * 1000000)::bigint)
           ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET
             step_start_time = log.step_start_time,
             step_end_time = EXCLUDED.step_end_time,
@@ -7414,7 +7414,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
         END IF;
         t2 := clock_timestamp();
         INSERT INTO trigger_timing_log as log (trigger_name, step_number, step_name, step_start_time, step_end_time, step_time_us)
-          VALUES ('before_metadata_insert', 1, 'delegates', t1, t2, EXTRACT(MICROSECONDS FROM (t2 - t1)))
+          VALUES ('before_metadata_insert', 1, 'delegates', t1, t2, (EXTRACT(EPOCH FROM (t2 - t1)) * 1000000)::bigint)
           ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET
             step_start_time = log.step_start_time,
             step_end_time = EXCLUDED.step_end_time,
@@ -7432,7 +7432,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
         END IF;
         t3 := clock_timestamp();
         INSERT INTO trigger_timing_log as log (trigger_name, step_number, step_name, step_start_time, step_end_time, step_time_us)
-          VALUES ('before_metadata_insert', 2, 'comments', t2, t3, EXTRACT(MICROSECONDS FROM (t3 - t2)))
+          VALUES ('before_metadata_insert', 2, 'comments', t2, t3, (EXTRACT(EPOCH FROM (t3 - t2)) * 1000000)::bigint)
           ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET
             step_start_time = log.step_start_time,
             step_end_time = EXCLUDED.step_end_time,
@@ -7456,7 +7456,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
         END LOOP;
         t4 := clock_timestamp();
         INSERT INTO trigger_timing_log as log (trigger_name, step_number, step_name, step_start_time, step_end_time, step_time_us)
-          VALUES ('before_metadata_insert', 3, 'references', t3, t4, EXTRACT(MICROSECONDS FROM (t4 - t3)))
+          VALUES ('before_metadata_insert', 3, 'references', t3, t4, (EXTRACT(EPOCH FROM (t4 - t3)) * 1000000)::bigint)
           ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET
             step_start_time = log.step_start_time,
             step_end_time = EXCLUDED.step_end_time,
@@ -7475,7 +7475,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
         END LOOP;
         t5 := clock_timestamp();
         INSERT INTO trigger_timing_log as log (trigger_name, step_number, step_name, step_start_time, step_end_time, step_time_us)
-          VALUES ('before_metadata_insert', 4, 'satributes', t4, t5, EXTRACT(MICROSECONDS FROM (t5 - t4)))
+          VALUES ('before_metadata_insert', 4, 'satributes', t4, t5, (EXTRACT(EPOCH FROM (t5 - t4)) * 1000000)::bigint)
           ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET
             step_start_time = log.step_start_time,
             step_end_time = EXCLUDED.step_end_time,
@@ -7543,7 +7543,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
         END IF;
         t6 := clock_timestamp();
         INSERT INTO trigger_timing_log as log (trigger_name, step_number, step_name, step_start_time, step_end_time, step_time_us)
-          VALUES ('before_metadata_insert', 5, 'on_chain_collection_summary', t5, t6, EXTRACT(MICROSECONDS FROM (t6 - t5)))
+          VALUES ('before_metadata_insert', 5, 'on_chain_collection_summary', t5, t6, (EXTRACT(EPOCH FROM (t6 - t5)) * 1000000)::bigint)
           ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET
             step_start_time = log.step_start_time,
             step_end_time = EXCLUDED.step_end_time,
@@ -7697,7 +7697,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
         -- RAISE NOTICE 'insert_transfers: lock acquired';
         t1 := clock_timestamp();
         INSERT INTO trigger_timing_log as log (trigger_name, step_number, step_name, step_start_time, step_end_time, step_time_us)
-          VALUES ('before_transfer_insert', 0, 'lock_acquired', t0, t1, EXTRACT(MICROSECONDS FROM (t1 - t0)))
+          VALUES ('before_transfer_insert', 0, 'lock_acquired', t0, t1, (EXTRACT(EPOCH FROM (t1 - t0)) * 1000000)::bigint)
           ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET
             step_start_time = log.step_start_time,
             step_end_time = EXCLUDED.step_end_time,
@@ -7716,7 +7716,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
         END IF;
         t2 := clock_timestamp();
         INSERT INTO trigger_timing_log as log (trigger_name, step_number, step_name, step_start_time, step_end_time, step_time_us)
-          VALUES ('before_transfer_insert', 1, 'off_chain_collection_summary', t1, t2, EXTRACT(MICROSECONDS FROM (t2 - t1)))
+          VALUES ('before_transfer_insert', 1, 'off_chain_collection_summary', t1, t2, (EXTRACT(EPOCH FROM (t2 - t1)) * 1000000)::bigint)
           ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET
             step_start_time = log.step_start_time,
             step_end_time = EXCLUDED.step_end_time,
@@ -7735,7 +7735,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
         END IF;
         t3 := clock_timestamp();
         INSERT INTO trigger_timing_log as log (trigger_name, step_number, step_name, step_start_time, step_end_time, step_time_us)
-          VALUES ('before_transfer_insert', 2, 'on_chain_collection_summary', t2, t3, EXTRACT(MICROSECONDS FROM (t3 - t2)))
+          VALUES ('before_transfer_insert', 2, 'on_chain_collection_summary', t2, t3, (EXTRACT(EPOCH FROM (t3 - t2)) * 1000000)::bigint)
           ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET
             step_start_time = log.step_start_time,
             step_end_time = EXCLUDED.step_end_time,
@@ -7972,7 +7972,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
         ON CONFLICT (sequence_number) DO NOTHING;
         t1 := clock_timestamp();
         INSERT INTO trigger_timing_log as log (trigger_name, step_number, step_name, step_start_time, step_end_time, step_time_us)
-          VALUES ('before_metadata_insert', 6, 'insert_ordinals_full', t0, t1, EXTRACT(MICROSECONDS FROM (t1 - t0)))
+          VALUES ('before_metadata_insert', 6, 'insert_ordinals_full', t0, t1, (EXTRACT(EPOCH FROM (t1 - t0)) * 1000000)::bigint)
           ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET
             step_start_time = log.step_start_time,
             step_end_time = EXCLUDED.step_end_time,
@@ -7981,7 +7981,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
         CALL update_trending_weights();
         t2 := clock_timestamp();
         INSERT INTO trigger_timing_log as log (trigger_name, step_number, step_name, step_start_time, step_end_time, step_time_us)
-          VALUES ('before_metadata_insert', 7, 'update_trending_weights', t1, t2, EXTRACT(MICROSECONDS FROM (t2 - t1)))
+          VALUES ('before_metadata_insert', 7, 'update_trending_weights', t1, t2, (EXTRACT(EPOCH FROM (t2 - t1)) * 1000000)::bigint)
           ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET
             step_start_time = log.step_start_time,
             step_end_time = EXCLUDED.step_end_time,
