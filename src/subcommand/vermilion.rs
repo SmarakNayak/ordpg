@@ -1726,6 +1726,10 @@ impl Vermilion {
     headers.insert(reqwest::header::AUTHORIZATION, format!("Bearer {}", token).parse().unwrap());
 
     for attempt in 0..10 {
+      // break if ctrl-c is received
+      if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
+        return Err("Shutting down".into());
+      }
       let response = client.get(&url).headers(headers.clone()).send().await?;
 
       if response.status() == 429 {
@@ -1736,6 +1740,9 @@ impl Vermilion {
       }
 
       if response.status() != 200 {
+        if attempt == 2 {
+          return Err(format!("Failed to fetch all collection metadata after 3 attempts").into());
+        }
         println!("Error getting all collections: {}, retrying in {} minutes", response.status(), attempt + 1);
         println!("{}", response.text().await?);
         tokio::time::sleep(std::time::Duration::from_secs(60*(attempt+1))).await;
@@ -1770,7 +1777,11 @@ impl Vermilion {
     let mut collections = Vec::new();
     let mut offset = 0;
 
-    loop {
+    for _attempt in 0..10  {
+      // break if ctrl-c is received
+      if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
+        return Err("Shutting down".into());
+      }
       let url = format!(
         "https://stats-mainnet.magiceden.io/collection_stats/search/bitcoin?window=30d&limit=1000&offset={}&sort=totalVolume&direction=desc",
         offset
@@ -1837,6 +1848,10 @@ impl Vermilion {
     headers.insert(reqwest::header::AUTHORIZATION, format!("Bearer {}", token).parse().unwrap());
 
     for attempt in 0..10 {
+      // break if ctrl-c is received
+      if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
+        return Err("Shutting down".into());
+      }
       let request_start_time = Instant::now();
       let response = client.get(&url).headers(headers.clone()).send().await?;
       log::debug!(
