@@ -1767,6 +1767,9 @@ impl Vermilion {
           if symbol.starts_with("brc20_") {
             continue;
           }
+          if symbol == "btc-name" {
+            continue;
+          }
           if symbol == "rare-sats" || symbol == "uncommons" {
             continue;
           }
