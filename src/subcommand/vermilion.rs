@@ -8456,25 +8456,26 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
         SELECT MAX(genesis_height) as max FROM ordinals
       ),
       random_sequence AS (
-        SELECT
+        SELECT DISTINCT ON (collection_symbol)
           collection_symbol,
-          FIRST_VALUE(sequence_number) OVER (PARTITION BY collection_symbol ORDER BY RANDOM()) as sequence_number
+          sequence_number as random_sequence_number
         FROM ordinals_full_t
         WHERE genesis_height > ((SELECT max FROM max_height) - 4032)
           AND content_category IN ('image')
           AND spaced_rune IS NULL
           AND collection_symbol IS NOT NULL
+        ORDER BY collection_symbol, RANDOM()
       ),
-      a AS ( 
+      a AS (
         SELECT
           o.collection_symbol,
-          MIN(r.sequence_number) as sequence_number,
+          MIN(r.random_sequence_number) as sequence_number,
           SUM(o.genesis_fee) as fee,
           SUM(CASE WHEN o.delegate IS NULL THEN o.content_length ELSE 580 END) as size,
           (SELECT max FROM max_height) - MAX(o.genesis_height) as block_age,
           MAX(o.timestamp) as most_recent_timestamp
         FROM ordinals_full_t o
-        JOIN random_sequence r ON o.collection_symbol = r.collection_symbol
+        INNER JOIN random_sequence r ON o.collection_symbol = r.collection_symbol
         WHERE o.genesis_height > ((SELECT max FROM max_height) - 4032)
           AND o.content_category IN ('image')
           AND o.spaced_rune IS NULL
@@ -8487,7 +8488,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
 	        sequence_number
         from ordinals o where o.sequence_number in (SELECT sequence_number from a)
       )
-      SELECT a.*, b.id from a left join b on a.sequence_number=b.sequence_number;
+      SELECT a.*, b.id from a inner join b on a.sequence_number=b.sequence_number;
 
       --others
       CREATE TABLE trending_others AS
