@@ -7814,7 +7814,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
       AFTER INSERT ON transfers
       REFERENCING NEW TABLE AS inserted_transfers
       FOR EACH STATEMENT
-      EXECUTE PROCEDURE after_transfer_insert();"#).await?;
+      EXECUTE FUNCTION after_transfer_insert();"#).await?;
     Ok(())
   }
 
