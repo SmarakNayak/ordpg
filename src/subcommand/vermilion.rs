@@ -53,6 +53,7 @@ use tokio_postgres::NoTls;
 use tokio_postgres::binary_copy::BinaryCopyInWriter;
 use tokio_postgres::types::{ToSql, Type};
 use futures::pin_mut;
+use futures::{StreamExt, stream, TryStreamExt};
 
 use bitcoin::{
   blockdata::opcodes,
@@ -763,6 +764,11 @@ impl Vermilion {
     let collection_indexer_clone = self.clone();
     let collection_indexer_thread = collection_indexer_clone.run_collection_indexer(settings.clone());
 
+    //5. Run Trending Weights Worker
+    println!("Trending Weights Worker Starting");
+    let pg_listener_clone = self.clone();
+    let pg_listener_thread = pg_listener_clone.postgres_notification_listener(settings.clone(), index.clone());
+
     //Wait for other threads to finish before exiting
     let server_thread_result = ordinals_server_thread.join();
     println!("Server thread joined");
@@ -770,6 +776,8 @@ impl Vermilion {
     println!("Block thread joined");
     let collection_thread_result = collection_indexer_thread.join();
     println!("Collection thread joined");
+    let pg_listener_thread_result = pg_listener_thread.join();
+    println!("Trending weights thread joined");
     if server_thread_result.is_err() {
       println!("Error joining ordinals server thread: {:?}", server_thread_result.unwrap_err());
     }
@@ -778,6 +786,9 @@ impl Vermilion {
     }
     if collection_thread_result.is_err() {
       println!("Error joining collection indexer thread: {:?}", collection_thread_result.unwrap_err());
+    }
+    if pg_listener_thread_result.is_err() {
+      println!("Error joining postgres notification listener thread: {:?}", pg_listener_thread_result.unwrap_err());
     }
     // Shutdown api server last
     vermilion_handle.graceful_shutdown(Some(Duration::from_millis(1000)));
@@ -999,6 +1010,136 @@ impl Vermilion {
       })
     });
     return address_indexer_thread;
+  }
+
+  pub(crate) fn postgres_notification_listener(self, settings: Settings, index: Arc<Index>) -> JoinHandle<()> {
+    let pg_listener_thread = thread::spawn(move || {
+      let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+      rt.block_on(async move {
+        let pool = match Self::get_deadpool(settings.clone()).await {
+          Ok(deadpool) => deadpool,
+          Err(err) => {
+            println!("Error creating deadpool for trending weights worker: {:?}", err);
+            return;
+          }
+        };
+        
+        // Build connection string for LISTEN/NOTIFY
+        let conn_str = format!(
+          "host={} dbname={} user={} password={}",
+          settings.db_host().unwrap_or("localhost"),
+          settings.db_name().unwrap_or("vermilion"),
+          settings.db_user().unwrap_or("postgres"),
+          settings.db_password().unwrap_or("")
+        );
+        
+        // Set up dedicated listener connection for notifications
+        let (client, mut connection) = match tokio_postgres::connect(&conn_str, NoTls).await {
+          Ok((client, connection)) => (client, connection),
+          Err(err) => {
+            println!("Error creating postgres connection for trending weights worker: {:?}", err);
+            return;
+          }
+        };
+        if let Err(err) = client.execute("LISTEN trending_weights_update", &[]).await {
+          println!("Error setting up postgres LISTEN: {:?}", err);
+          return;
+        }
+        
+        // Set up notification stream
+        let mut stream = stream::poll_fn(move |cx| connection.poll_message(cx))
+          .map_err(|e| println!("ERROR: !! Postgres listen connection error: {} !!", e));
+        let mut needs_update = false;
+        let mut throttle_timer = tokio::time::interval(Duration::from_secs(600)); // 10 minutes throttle
+        throttle_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+          // break if ctrl-c is received
+          if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
+            log::info!("Trending weights worker shutting down");
+            break;
+          }
+          tokio::select! {
+            // Check for notifications
+            msg = stream.next() => {
+              match msg {
+                Some(Ok(tokio_postgres::AsyncMessage::Notice(_))) => {
+                  // ignore notices
+                }
+                Some(Ok(tokio_postgres::AsyncMessage::Notification(notice))) => {
+                  if notice.channel() == "trending_weights_update" {
+                    let is_at_tip = Self::check_if_at_chain_tip(&index, &pool).await;
+                    if is_at_tip {
+                      log::info!("Executing trending weights update (at chain tip)");
+                      let start = std::time::Instant::now();
+                      match client.execute("CALL update_trending_weights()", &[]).await {
+                        Ok(_) => log::info!("Trending weights update completed in {:?}", start.elapsed()),
+                        Err(err) => log::error!("Error executing trending weights: {:?}", err),
+                      }
+                      needs_update = false;
+                    } else {
+                      needs_update = true;
+                      log::debug!("Queuing trending weights update (catching up)");
+                    }
+                  }
+                }
+                Some(Ok(_)) => {
+                  log::info!("Postgres notification stream received unknown message, closing");
+                  break;
+                }
+                Some(Err(err)) => {
+                  log::warn!("Postgres notification stream error, closing: {:?}", err);
+                  break;
+                }
+                None => {
+                  log::info!("Postgres notification stream received none, closing");
+                  break;
+                }
+              }
+            },
+            // Throttled execution for catch-up mode
+            _ = throttle_timer.tick() => {
+              if needs_update {
+                log::info!("Executing throttled trending weights update (catch-up mode)");
+                let start = std::time::Instant::now();
+                match client.execute("CALL update_trending_weights()", &[]).await {
+                  Ok(_) => log::info!("Trending weights update completed in {:?}", start.elapsed()),
+                  Err(err) => log::error!("Error executing trending weights: {:?}", err),
+                }
+                needs_update = false;
+              }
+            },
+          }
+        }
+      });
+    });
+    return pg_listener_thread;
+  }
+
+  async fn check_if_at_chain_tip(index: &Index, pool: &deadpool_postgres::Pool) -> bool {
+    // Get latest block from main index
+    let index_height = match index.block_height() {
+      Ok(Some(height)) => height.n() as i64,
+      _ => return false,
+    };
+    
+    // Get latest block from postgres indexer using fast blockstats query
+    let conn = match pool.get().await {
+      Ok(conn) => conn,
+      Err(_) => return false,
+    };
+    
+    let postgres_height = match conn.query_one("SELECT MAX(block_number) as latest_block FROM blockstats", &[]).await {
+      Ok(row) => row.get::<_, Option<i64>>("latest_block").unwrap_or(0),
+      Err(_) => return false,
+    };
+    
+    // Consider "at tip" if within 2 blocks of main index
+    let blocks_behind = index_height.saturating_sub(postgres_height);
+    blocks_behind <= 2
   }
 
   pub(crate) fn run_block_indexer(self, settings: Settings, index: Arc<Index>) -> JoinHandle<()> {
@@ -8040,10 +8181,10 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
             step_end_time = EXCLUDED.step_end_time,
             step_time_us = log.step_time_us + EXCLUDED.step_time_us;
 
-        CALL update_trending_weights();
+        PERFORM pg_notify('trending_weights_update', 'metadata_insert');
         t2 := clock_timestamp();
         INSERT INTO trigger_timing_log as log (trigger_name, step_number, step_name, step_start_time, step_end_time, step_time_us)
-          VALUES ('before_metadata_insert', 7, 'update_trending_weights', t1, t2, (EXTRACT(EPOCH FROM (t2 - t1)) * 1000000)::bigint)
+          VALUES ('before_metadata_insert', 7, 'notify_trending_weights', t1, t2, (EXTRACT(EPOCH FROM (t2 - t1)) * 1000000)::bigint)
           ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET
             step_start_time = log.step_start_time,
             step_end_time = EXCLUDED.step_end_time,
