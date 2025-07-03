@@ -696,6 +696,34 @@ pub struct ApiServerConfig {
 }
 
 impl Vermilion {
+  // Helper function for conditional timing logs with aggregation on one line
+  fn log_timings_condensed(operation: &str, timings: Vec<(&str, Duration)>, threshold: Duration) {
+    let mut parts = Vec::new();
+    let mut fast_count = 0;
+    let mut fast_total = Duration::new(0, 0);
+    let mut total = Duration::new(0, 0);
+    
+    for (name, duration) in timings {
+      total += duration;
+      if duration >= threshold {
+        parts.push(format!("{}: {:?}", name, duration));
+      } else {
+        fast_count += 1;
+        fast_total += duration;
+      }
+    }
+    
+    // Add aggregated fast operations
+    if fast_count > 0 {
+      parts.push(format!("{} fast ops: {:?}", fast_count, fast_total));
+    }
+    
+    // Add total
+    parts.push(format!("TOTAL: {:?}", total));
+    
+    log::info!("{}: {}", operation, parts.join(" - "));
+  }
+
   pub(crate) fn run(self, settings: Settings) -> SubcommandResult {
     //1. Run Vermilion Server
     println!("Vermilion Server Starting");
@@ -1158,15 +1186,15 @@ impl Vermilion {
               vec![]
             }
           };
+          // Convert trigger timings to format for condensed logging
+          let mut trigger_timing_vec = Vec::new();
           for timing in trigger_timings {
-            let start_time_str = timing.3.as_ref().map(|s| s.as_str()).unwrap_or("N/A");
-            let end_time_str = timing.4.as_ref().map(|s| s.as_str()).unwrap_or("N/A");
-            log::info!("Trigger: {:?}.{:?}: {:?} - Duration: {:?}, Start: {}, End: {}", 
-              timing.0, timing.1, timing.2, 
-              Duration::from_micros(timing.5 as u64),
-              start_time_str,
-              end_time_str
-            );
+            let duration = Duration::from_micros(timing.5 as u64);
+            let name = format!("{}.{}: {}", timing.0, timing.1, timing.2);
+            trigger_timing_vec.push((name.as_str(), duration));
+          }
+          if !trigger_timing_vec.is_empty() {
+            Self::log_timings_condensed("Trigger timings", trigger_timing_vec, Duration::from_secs(1));
           }
           match Self::clear_trigger_timing_log(deadpool.clone()).await {
             Ok(_) => {},
@@ -1526,18 +1554,15 @@ impl Vermilion {
       .map_err(|err| anyhow::anyhow!("Failed to insert inscription blockstats for block {}: {}", block_number, err))?;
     let t8 = Instant::now();
     log::info!("Transfer indexer: Indexed block: {:?}", block_number);
-    log::info!("Get transfers: {:?} - Get txs: {:?} - Get addresses {:?} - Create Vec: {:?} - Insert transfers: {:?} (ins: {:?} trig: {:?}) - Insert addresses: {:?} - Insert blockstats: {:?} TOTAL: {:?}", 
-      t2.duration_since(t1), 
-      t3.duration_since(t2), 
-      t4.duration_since(t3), 
-      t5.duration_since(t4), 
-      t6.duration_since(t5),
-      transfer_insert, 
-      transfer_triggers,
-      t7.duration_since(t6), 
-      t8.duration_since(t7), 
-      t8.duration_since(t1)
-    );
+    Self::log_timings_condensed("Transfer processing", vec![
+      ("Get transfers", t2.duration_since(t1)),
+      ("Get txs", t3.duration_since(t2)),
+      ("Get addresses", t4.duration_since(t3)),
+      ("Create Vec", t5.duration_since(t4)),
+      ("Insert transfers", t6.duration_since(t5)),
+      ("Insert addresses", t7.duration_since(t6)),
+      ("Insert blockstats", t8.duration_since(t7))
+    ], Duration::from_secs(1));
     Ok(())
   }
 
@@ -1698,20 +1723,17 @@ impl Vermilion {
     let first_number = sequence_numbers.first().unwrap_or(&0);
     let last_number = sequence_numbers.last().unwrap_or(&0);
     log::info!("Inscription indexer: Indexed block: {:?}, Sequence numbers: {}-{}", block_number, first_number, last_number);
-    log::info!("Get ids: {:?} - Get inscriptions: {:?} - Get metadata: {:?} - Insert metadata: {:?} (ins: {:?} trig: {:?}) - Insert editions: {:?} - Insert sat metadata: {:?} - Insert satributes: {:?} - Insert galleries: {:?} - Upload content: {:?} TOTAL: {:?}", 
-      t1.duration_since(t0), 
-      t2.duration_since(t1),
-      t3.duration_since(t2), 
-      t4.duration_since(t3),
-      metadata_insert,
-      metadata_triggers,
-      t5.duration_since(t4), 
-      t6.duration_since(t5), 
-      t7.duration_since(t6), 
-      t8.duration_since(t7), 
-      t9.duration_since(t8),
-      t9.duration_since(t0)
-    );
+    Self::log_timings_condensed("Inscription processing", vec![
+      ("Get ids", t1.duration_since(t0)),
+      ("Get inscriptions", t2.duration_since(t1)),
+      ("Get metadata", t3.duration_since(t2)),
+      ("Insert metadata", t4.duration_since(t3)),
+      ("Insert editions", t5.duration_since(t4)),
+      ("Insert sat metadata", t6.duration_since(t5)),
+      ("Insert satributes", t7.duration_since(t6)),
+      ("Insert galleries", t8.duration_since(t7)),
+      ("Upload content", t9.duration_since(t8))
+    ], Duration::from_secs(1));
     Ok(())
   }
 
