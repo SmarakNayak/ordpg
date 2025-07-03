@@ -1187,14 +1187,17 @@ impl Vermilion {
             }
           };
           // Convert trigger timings to format for condensed logging
-          let mut trigger_timing_vec = Vec::new();
-          for timing in trigger_timings {
+          let trigger_timing_vec: Vec<(String, Duration)> = trigger_timings.into_iter().map(|timing| {
             let duration = Duration::from_micros(timing.5 as u64);
             let name = format!("{}.{}: {}", timing.0, timing.1, timing.2);
-            trigger_timing_vec.push((name.as_str(), duration));
-          }
+            (name, duration)
+          }).collect();
+          
           if !trigger_timing_vec.is_empty() {
-            Self::log_timings_condensed("Trigger timings", trigger_timing_vec, Duration::from_secs(1));
+            let borrowed_vec: Vec<(&str, Duration)> = trigger_timing_vec.iter()
+              .map(|(name, duration)| (name.as_str(), *duration))
+              .collect();
+            Self::log_timings_condensed("Trigger timings", borrowed_vec, Duration::from_secs(1));
           }
           match Self::clear_trigger_timing_log(deadpool.clone()).await {
             Ok(_) => {},
