@@ -150,6 +150,7 @@ pub struct Metadata {
   pointer: Option<i64>,
   number: i64,
   parents: Vec<String>,
+  on_chain_collection_id: Option<String>,
   delegate: Option<String>,
   delegate_content_type: Option<String>,
   metaprotocol: Option<String>,
@@ -581,6 +582,7 @@ pub struct FullMetadata {
   pointer: Option<i64>,
   number: i64,
   parents: Vec<String>,
+  on_chain_collection_id: Option<String>,
   delegate: Option<String>,
   delegate_content_type: Option<String>,
   metaprotocol: Option<String>,
@@ -619,6 +621,7 @@ pub struct BoostFullMetadata {
   pointer: Option<i64>,
   number: i64,
   parents: Vec<String>,
+  on_chain_collection_id: Option<String>,
   delegate: Option<String>,
   delegate_content_type: Option<String>,
   metaprotocol: Option<String>,
@@ -2371,6 +2374,16 @@ impl Vermilion {
         .to_string();
       parents.push(parent_entry);
     }
+    
+    // Calculate on_chain_collection_id as SHA256 hash of sorted parents
+    let on_chain_collection_id = if !parents.is_empty() {
+      let mut sorted_parents = parents.clone();
+      sorted_parents.sort();
+      let concatenated = sorted_parents.join(",");
+      Some(digest(concatenated.as_bytes()))
+    } else {
+      None
+    };
     let metaprotocol = inscription.metaprotocol().map_or(None, |str| Some(str.to_string()));
     if let Some(metaprotocol_inner) = metaprotocol.clone() {
       if metaprotocol_inner.len() > 100 {
@@ -2517,6 +2530,7 @@ impl Vermilion {
       number: entry.inscription_number as i64,
       sequence_number: entry.sequence_number as i64,
       parents: parents,
+      on_chain_collection_id: on_chain_collection_id,
       delegate: inscription.delegate().map(|x| x.to_string()),
       delegate_content_type: delegate_content_type,
       metaprotocol: metaprotocol,
@@ -2656,6 +2670,7 @@ impl Vermilion {
         pointer bigint,
         number bigint,          
         parents varchar(80)[],
+        on_chain_collection_id varchar(64),
         delegate varchar(80),
         delegate_content_type text,
         metaprotocol text,
@@ -2686,6 +2701,7 @@ impl Vermilion {
       CREATE INDEX IF NOT EXISTS index_metadata_satributes on ordinals USING GIN (satributes);
       CREATE INDEX IF NOT EXISTS index_metadata_charms on ordinals USING GIN (charms);
       CREATE INDEX IF NOT EXISTS index_metadata_parents ON ordinals USING GIN (parents);
+      CREATE INDEX IF NOT EXISTS index_metadata_on_chain_collection_id ON ordinals (on_chain_collection_id);
       CREATE INDEX IF NOT EXISTS index_metadata_delegate ON ordinals (delegate);
       CREATE INDEX IF NOT EXISTS index_metadata_fee ON ordinals (genesis_fee);
       CREATE INDEX IF NOT EXISTS index_metadata_size ON ordinals (content_length);
@@ -2730,6 +2746,7 @@ impl Vermilion {
         pointer bigint,
         number bigint,          
         parents varchar(80)[],
+        on_chain_collection_id varchar(64),
         delegate varchar(80),
         delegate_content_type text,
         metaprotocol text,
@@ -2763,6 +2780,7 @@ impl Vermilion {
       CREATE INDEX IF NOT EXISTS index_metadata_full_satributes on ordinals_full_t USING GIN (satributes);
       CREATE INDEX IF NOT EXISTS index_metadata_full_charms on ordinals_full_t USING GIN (charms);
       CREATE INDEX IF NOT EXISTS index_metadata_full_parents ON ordinals_full_t USING GIN (parents);
+      CREATE INDEX IF NOT EXISTS index_metadata_full_on_chain_collection_id ON ordinals_full_t (on_chain_collection_id);
       CREATE INDEX IF NOT EXISTS index_metadata_full_delegate ON ordinals_full_t (delegate);
       CREATE INDEX IF NOT EXISTS index_metadata_full_fee ON ordinals_full_t (genesis_fee);
       CREATE INDEX IF NOT EXISTS index_metadata_full_size ON ordinals_full_t (content_length);
@@ -3118,6 +3136,7 @@ impl Vermilion {
       pointer, 
       number, 
       parents, 
+      on_chain_collection_id,
       delegate,
       delegate_content_type,
       metaprotocol, 
@@ -3150,6 +3169,7 @@ impl Vermilion {
       Type::INT8,
       Type::INT8,
       Type::VARCHAR_ARRAY,
+      Type::VARCHAR,
       Type::VARCHAR,
       Type::TEXT,
       Type::TEXT,
@@ -3191,6 +3211,7 @@ impl Vermilion {
       row.push(&m.pointer);
       row.push(&m.number);
       row.push(&m.parents);
+      row.push(&m.on_chain_collection_id);
       row.push(&m.delegate);
       let clean_delegate_content_type = &m.delegate_content_type.map(|s| s.replace("\0", ""));
       row.push(clean_delegate_content_type);
@@ -5407,6 +5428,7 @@ impl Vermilion {
       number: row.get("number"),
       sequence_number: row.get("sequence_number"),
       parents: row.get("parents"),
+      on_chain_collection_id: row.get("on_chain_collection_id"),
       delegate: row.get("delegate"),
       delegate_content_type: row.get("delegate_content_type"),
       metaprotocol: row.get("metaprotocol"),
@@ -5937,6 +5959,7 @@ impl Vermilion {
         number: row.get("number"),
         sequence_number: row.get("sequence_number"),
         parents: row.get("parents"),
+        on_chain_collection_id: row.get("on_chain_collection_id"),
         delegate: row.get("delegate"),
         delegate_content_type: row.get("delegate_content_type"),
         metaprotocol: row.get("metaprotocol"),
@@ -7912,6 +7935,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
           pointer,
           number,          
           parents,
+          on_chain_collection_id,
           delegate,
           delegate_content_type,
           metaprotocol,
@@ -7948,6 +7972,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
           o.pointer,
           o.number,          
           o.parents,
+          o.on_chain_collection_id,
           o.delegate,
           o.delegate_content_type,
           o.metaprotocol,
