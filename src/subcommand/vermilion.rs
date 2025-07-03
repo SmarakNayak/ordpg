@@ -7735,7 +7735,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
 
   async fn create_transfer_insert_trigger(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
-    conn.simple_query(r"CREATE OR REPLACE FUNCTION before_transfer_insert() RETURNS TRIGGER AS $$
+    conn.simple_query(r"CREATE OR REPLACE FUNCTION after_transfer_insert() RETURNS TRIGGER AS $$
       DECLARE t0 TIMESTAMP;
       DECLARE t1 TIMESTAMP;
       DECLARE t2 TIMESTAMP;
@@ -7747,7 +7747,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
         -- RAISE NOTICE 'insert_transfers: lock acquired';
         t1 := clock_timestamp();
         INSERT INTO trigger_timing_log as log (trigger_name, step_number, step_name, step_start_time, step_end_time, step_time_us)
-          VALUES ('before_transfer_insert', 0, 'lock_acquired', t0, t1, (EXTRACT(EPOCH FROM (t1 - t0)) * 1000000)::bigint)
+          VALUES ('after_transfer_insert', 0, 'lock_acquired', t0, t1, (EXTRACT(EPOCH FROM (t1 - t0)) * 1000000)::bigint)
           ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET
             step_start_time = log.step_start_time,
             step_end_time = EXCLUDED.step_end_time,
@@ -7774,7 +7774,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
         
         t2 := clock_timestamp();
         INSERT INTO trigger_timing_log as log (trigger_name, step_number, step_name, step_start_time, step_end_time, step_time_us)
-          VALUES ('before_transfer_insert', 1, 'off_chain_collection_summary', t1, t2, (EXTRACT(EPOCH FROM (t2 - t1)) * 1000000)::bigint)
+          VALUES ('after_transfer_insert', 1, 'off_chain_collection_summary', t1, t2, (EXTRACT(EPOCH FROM (t2 - t1)) * 1000000)::bigint)
           ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET
             step_start_time = log.step_start_time,
             step_end_time = EXCLUDED.step_end_time,
@@ -7800,7 +7800,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
         WHERE on_chain_collection_summary.parents = onchain_totals.parents;
         t3 := clock_timestamp();
         INSERT INTO trigger_timing_log as log (trigger_name, step_number, step_name, step_start_time, step_end_time, step_time_us)
-          VALUES ('before_transfer_insert', 2, 'on_chain_collection_summary', t2, t3, (EXTRACT(EPOCH FROM (t3 - t2)) * 1000000)::bigint)
+          VALUES ('after_transfer_insert', 2, 'on_chain_collection_summary', t2, t3, (EXTRACT(EPOCH FROM (t3 - t2)) * 1000000)::bigint)
           ON CONFLICT (trigger_name, step_number, step_name) DO UPDATE SET
             step_start_time = log.step_start_time,
             step_end_time = EXCLUDED.step_end_time,
@@ -7810,11 +7810,11 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
       END;
       $$ LANGUAGE plpgsql;").await?;
     conn.simple_query(
-      r#"CREATE OR REPLACE TRIGGER before_transfer_insert
-      BEFORE INSERT ON transfers
+      r#"CREATE OR REPLACE TRIGGER after_transfer_insert
+      AFTER INSERT ON transfers
       REFERENCING NEW TABLE AS inserted_transfers
       FOR EACH STATEMENT
-      EXECUTE PROCEDURE before_transfer_insert();"#).await?;
+      EXECUTE PROCEDURE after_transfer_insert();"#).await?;
     Ok(())
   }
 
