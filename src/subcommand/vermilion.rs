@@ -8666,6 +8666,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
       WITH A AS (
           SELECT
               ids,
+              encode(sha256(array_to_string(array(SELECT unnest(ids) ORDER BY 1), ',')::bytea), 'hex') as ids_hash,
               id,
               CAST(sum(fee) AS INT8) as fee,
               CAST(sum(size) AS INT8) as size,
@@ -8676,11 +8677,12 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
           GROUP BY ids, id
       ), children AS (
           SELECT
-              parents,
-              count(*) as children_count
-              from ordinals
-              WHERE parents in (SELECT ids from a)
-              group by parents
+            on_chain_collection_id,
+            parents,
+            count(*) as children_count
+            from ordinals
+          WHERE on_chain_collection_id in (SELECT ids_hash from a)
+          group by on_chain_collection_id, parents
       )
       SELECT 
           a.*,
@@ -8693,7 +8695,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
       FROM a
       left join delegates_total d on d.delegate_id=a.id
       left join inscription_comments_total ic on ic.delegate_id=a.id
-      left join children c on c.parents = a.ids;
+      left join children c on c.on_chain_collection_id = a.ids_hash;
 
       IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'trending_summary') THEN
         alter table trending_summary rename to trending_summary_old;
