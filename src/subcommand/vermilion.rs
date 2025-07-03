@@ -7736,8 +7736,6 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
   async fn create_transfer_insert_trigger(pool: deadpool_postgres::Pool<>) -> anyhow::Result<()> {
     let conn = pool.get().await?;
     conn.simple_query(r"CREATE OR REPLACE FUNCTION before_transfer_insert() RETURNS TRIGGER AS $$
-      DECLARE v_collection_symbol TEXT;
-      DECLARE v_parents VARCHAR(80)[];
       DECLARE t0 TIMESTAMP;
       DECLARE t1 TIMESTAMP;
       DECLARE t2 TIMESTAMP;
@@ -7755,17 +7753,25 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
             step_end_time = EXCLUDED.step_end_time,
             step_time_us = log.step_time_us + EXCLUDED.step_time_us;
 
-        -- 1. Update off chain collections
-        SELECT collection_symbol INTO v_collection_symbol FROM collections WHERE id = NEW.id;
-        IF EXISTS (SELECT 1 FROM collections WHERE id = NEW.id) AND NEW.is_genesis = false THEN
-          UPDATE collection_summary
-          SET total_volume = coalesce(total_volume, 0) + new.price,
-              transfer_fees = coalesce(transfer_fees, 0) + NEW.tx_fee,
-              transfer_footprint = coalesce(transfer_footprint, 0) + NEW.tx_size,
-              total_fees = coalesce(total_fees, 0) + NEW.tx_fee,
-              total_on_chain_footprint = coalesce(total_on_chain_footprint, 0) + NEW.tx_size
-            WHERE collection_symbol = v_collection_symbol;
-        END IF;
+        -- 1. Update off chain collections (batched)
+        UPDATE collection_summary
+        SET total_volume = coalesce(total_volume, 0) + COALESCE(transfer_totals.total_price, 0),
+            transfer_fees = coalesce(transfer_fees, 0) + COALESCE(transfer_totals.total_tx_fee, 0),
+            transfer_footprint = coalesce(transfer_footprint, 0) + COALESCE(transfer_totals.total_tx_size, 0),
+            total_fees = coalesce(total_fees, 0) + COALESCE(transfer_totals.total_tx_fee, 0),
+            total_on_chain_footprint = coalesce(total_on_chain_footprint, 0) + COALESCE(transfer_totals.total_tx_size, 0)
+        FROM (
+          SELECT c.collection_symbol,
+                 SUM(t.price) as total_price,
+                 SUM(t.tx_fee) as total_tx_fee,
+                 SUM(t.tx_size) as total_tx_size
+          FROM inserted_transfers t
+          JOIN collections c ON c.id = t.id
+          WHERE t.is_genesis = false
+          GROUP BY c.collection_symbol
+        ) AS transfer_totals
+        WHERE collection_summary.collection_symbol = transfer_totals.collection_symbol;
+        
         t2 := clock_timestamp();
         INSERT INTO trigger_timing_log as log (trigger_name, step_number, step_name, step_start_time, step_end_time, step_time_us)
           VALUES ('before_transfer_insert', 1, 'off_chain_collection_summary', t1, t2, (EXTRACT(EPOCH FROM (t2 - t1)) * 1000000)::bigint)
@@ -7774,17 +7780,24 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
             step_end_time = EXCLUDED.step_end_time,
             step_time_us = log.step_time_us + EXCLUDED.step_time_us;
 
-        --2. Update on chain collections
-        SELECT parents INTO v_parents FROM ordinals WHERE id = NEW.id;
-        IF array_length(v_parents, 1) > 0 AND NEW.is_genesis = false THEN
-          UPDATE on_chain_collection_summary
-          SET total_volume = coalesce(total_volume, 0) + new.price,
-              transfer_fees = coalesce(transfer_fees, 0) + NEW.tx_fee,
-              transfer_footprint = coalesce(transfer_footprint, 0) + NEW.tx_size,
-              total_fees = coalesce(total_fees, 0) + NEW.tx_fee,
-              total_on_chain_footprint = coalesce(total_on_chain_footprint, 0) + NEW.tx_size
-            WHERE parents = v_parents;
-        END IF;
+        --2. Update on chain collections (batched)
+        UPDATE on_chain_collection_summary
+        SET total_volume = coalesce(total_volume, 0) + COALESCE(onchain_totals.total_price, 0),
+            transfer_fees = coalesce(transfer_fees, 0) + COALESCE(onchain_totals.total_tx_fee, 0),
+            transfer_footprint = coalesce(transfer_footprint, 0) + COALESCE(onchain_totals.total_tx_size, 0),
+            total_fees = coalesce(total_fees, 0) + COALESCE(onchain_totals.total_tx_fee, 0),
+            total_on_chain_footprint = coalesce(total_on_chain_footprint, 0) + COALESCE(onchain_totals.total_tx_size, 0)
+        FROM (
+          SELECT o.parents,
+                 SUM(t.price) as total_price,
+                 SUM(t.tx_fee) as total_tx_fee,
+                 SUM(t.tx_size) as total_tx_size
+          FROM inserted_transfers t
+          JOIN ordinals o ON o.id = t.id
+          WHERE array_length(o.parents, 1) > 0 AND t.is_genesis = false
+          GROUP BY o.parents
+        ) AS onchain_totals
+        WHERE on_chain_collection_summary.parents = onchain_totals.parents;
         t3 := clock_timestamp();
         INSERT INTO trigger_timing_log as log (trigger_name, step_number, step_name, step_start_time, step_end_time, step_time_us)
           VALUES ('before_transfer_insert', 2, 'on_chain_collection_summary', t2, t3, (EXTRACT(EPOCH FROM (t3 - t2)) * 1000000)::bigint)
@@ -7793,13 +7806,14 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
             step_end_time = EXCLUDED.step_end_time,
             step_time_us = log.step_time_us + EXCLUDED.step_time_us;
 
-        RETURN NEW;
+        RETURN NULL;
       END;
       $$ LANGUAGE plpgsql;").await?;
     conn.simple_query(
       r#"CREATE OR REPLACE TRIGGER before_transfer_insert
       BEFORE INSERT ON transfers
-      FOR EACH ROW
+      REFERENCING NEW TABLE AS inserted_transfers
+      FOR EACH STATEMENT
       EXECUTE PROCEDURE before_transfer_insert();"#).await?;
     Ok(())
   }
