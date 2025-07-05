@@ -1233,7 +1233,7 @@ impl Vermilion {
   }
 
   async fn find_last_consistent_block(index: Arc<Index>, pool: deadpool_postgres::Pool<>, block_number: u32) -> anyhow::Result<u32> {
-    log::info!("Checking block hashes are consistent prior to block number: {}", block_number);
+    log::debug!("Checking block hashes are consistent prior to block number: {}", block_number);
     let mut previous_block_number = block_number;
     loop {
       previous_block_number = match previous_block_number.checked_sub(1) {
@@ -1242,20 +1242,21 @@ impl Vermilion {
           return Ok(0);
         }
       };
-      log::info!("Checking block number is consistent: {}", previous_block_number);
+      log::debug!("Checking block number is consistent: {}", previous_block_number);
       let previous_index_block_hash = index.block_hash(Some(previous_block_number))
         .with_context(|| format!("Failed to get prev blockstats for {}", previous_block_number))?
         .ok_or_else(|| anyhow::anyhow!("No prev blockstats found for block {}", previous_block_number))?;
-      log::info!("Index block hash: {:?}", previous_index_block_hash.to_string());
+      log::debug!("Index block hash: {:?}", previous_index_block_hash.to_string());
       let previous_db_block_hash = Self::get_block_statistics(pool.clone(), previous_block_number as i64)
         .await
         .with_context(|| format!("Failed to get previous block hash from db for block {}", previous_block_number))?
         .block_hash
         .ok_or_else(|| anyhow::anyhow!("No block hash found in db for block {}", previous_block_number))?;
-      log::info!("   Db block hash: {:?}", previous_db_block_hash);
+      log::debug!("   Db block hash: {:?}", previous_db_block_hash);
       if previous_index_block_hash.to_string() != previous_db_block_hash {
         log::warn!("Conflicting hashes detected at block {}, index: {:?}, db: {:?}. Checking if previous block is consistent", previous_block_number, previous_index_block_hash, previous_db_block_hash);
       } else {
+        log::debug!("Block number {} is consistent between index and db", previous_block_number);
         break;
       }
     }
