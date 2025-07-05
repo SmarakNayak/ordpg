@@ -1022,16 +1022,6 @@ impl Vermilion {
           println!("Error initializing db tables: {:?}", init_result.unwrap_err());
           return;
         }
-        let init_runes_result = initialize_runes_tables(deadpool.clone()).await;
-        if init_runes_result.is_err() {
-          println!("Error initializing runes table: {:?}", init_runes_result.unwrap_err());
-          return;
-        }
-        let init_transfers_result = Self::initialize_transfer_tables(deadpool.clone()).await;
-        if init_transfers_result.is_err() {
-          println!("Error initializing transfers table: {:?}", init_transfers_result.unwrap_err());
-          return;
-        }
         let mut block_number = match Self::get_start_block(deadpool.clone()).await {
           Ok(block_number) => block_number,
           Err(err) => {
@@ -2645,6 +2635,9 @@ impl Vermilion {
     Self::create_trending_weights_procedure(pool.clone()).await.context("Failed to create trending weights proc")?;
     Self::create_on_chain_collection_summary_procedure(pool.clone()).await.context("Failed to create on chain collection summary proc")?;
     Self::create_single_on_chain_collection_summary_procedure(pool.clone()).await.context("Failed to create single on chain collection summary proc")?;
+
+    Self::initialize_transfer_tables(pool.clone()).await.context("Failed to initialize transfer tables")?;
+    initialize_runes_tables(pool.clone()).await.context("Failed to create runes tables")?;
 
     Self::create_edition_insert_trigger(pool.clone()).await.context("Failed to create edition trigger")?;
     Self::create_metadata_insert_trigger(pool.clone()).await.context("Failed to create metadata trigger")?;
