@@ -764,8 +764,8 @@ impl Vermilion {
     let collection_indexer_clone = self.clone();
     let collection_indexer_thread = collection_indexer_clone.run_collection_indexer(settings.clone());
 
-    //5. Run Trending Weights Worker
-    println!("Trending Weights Worker Starting");
+    //5. Run Postgres Notification Listener
+    println!("Postgres Notification Listener Starting");
     let pg_listener_clone = self.clone();
     let pg_listener_thread = pg_listener_clone.postgres_notification_listener(settings.clone(), index.clone());
 
@@ -777,7 +777,7 @@ impl Vermilion {
     let collection_thread_result = collection_indexer_thread.join();
     println!("Collection thread joined");
     let pg_listener_thread_result = pg_listener_thread.join();
-    println!("Trending weights thread joined");
+    println!("Postgres listener thread joined");
      // Shutdown api server last
     vermilion_handle.graceful_shutdown(Some(Duration::from_millis(1000)));
     let vermilion_thread_result = vermilion_server_thread.join();
@@ -1694,7 +1694,7 @@ impl Vermilion {
       transfer_vec.push(transfer);
     }
     let t5 = Instant::now();
-    let (transfer_insert, transfer_triggers) = Self::bulk_insert_transfers(&deadpool_tx, transfer_vec.clone()).await
+    Self::bulk_insert_transfers(&deadpool_tx, transfer_vec.clone()).await
       .map_err(|err| anyhow::anyhow!("Failed to insert transfers for block {}: {}", block_number, err))?;
     let t6 = Instant::now();
     Self::bulk_insert_addresses(&deadpool_tx, transfer_vec).await
@@ -1799,7 +1799,7 @@ impl Vermilion {
     
     //4. Insert metadata
     let t3 = Instant::now();
-    let (metadata_insert, metadata_triggers) = Self::bulk_insert_metadata(&deadpool_tx, metadata_vec.clone()).await
+    Self::bulk_insert_metadata(&deadpool_tx, metadata_vec.clone()).await
       .map_err(|err| anyhow::anyhow!("Failed to insert metadata for block {}: {}", block_number, err))?;
     
     //5. Insert editions
