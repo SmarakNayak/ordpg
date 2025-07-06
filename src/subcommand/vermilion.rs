@@ -778,6 +778,10 @@ impl Vermilion {
     println!("Collection thread joined");
     let pg_listener_thread_result = pg_listener_thread.join();
     println!("Trending weights thread joined");
+     // Shutdown api server last
+    vermilion_handle.graceful_shutdown(Some(Duration::from_millis(1000)));
+    let vermilion_thread_result = vermilion_server_thread.join();
+    println!("Vermilion api server thread joined");
     if server_thread_result.is_err() {
       println!("Error joining ordinals server thread: {:?}", server_thread_result.unwrap_err());
     }
@@ -790,9 +794,6 @@ impl Vermilion {
     if pg_listener_thread_result.is_err() {
       println!("Error joining postgres notification listener thread: {:?}", pg_listener_thread_result.unwrap_err());
     }
-    // Shutdown api server last
-    vermilion_handle.graceful_shutdown(Some(Duration::from_millis(1000)));
-    let vermilion_thread_result = vermilion_server_thread.join();
     if vermilion_thread_result.is_err() {
       println!("Error joining vermilion server thread: {:?}", vermilion_thread_result.unwrap_err());
     }
@@ -1044,10 +1045,6 @@ impl Vermilion {
             return;
           }
         };
-        if let Err(err) = client.execute("LISTEN trending_weights_update", &[]).await {
-          println!("Error setting up postgres LISTEN: {:?}", err);
-          return;
-        }
         
         // Set up notification stream
         let mut stream = stream::poll_fn(move |cx| connection.poll_message(cx))
@@ -1056,63 +1053,75 @@ impl Vermilion {
         let mut throttle_timer = tokio::time::interval(Duration::from_secs(600)); // 10 minutes throttle
         throttle_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-        loop {
-          // break if ctrl-c is received
-          if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
-            log::info!("Trending weights worker shutting down");
-            break;
-          }
-          tokio::select! {
-            // Check for notifications
-            msg = stream.next() => {
-              match msg {
-                Some(Ok(tokio_postgres::AsyncMessage::Notice(_))) => {
-                  // ignore notices
-                }
-                Some(Ok(tokio_postgres::AsyncMessage::Notification(notice))) => {
-                  if notice.channel() == "trending_weights_update" {
-                    let is_at_tip = Self::check_if_at_chain_tip(&index, &pool).await;
-                    if is_at_tip {
-                      log::info!("Executing trending weights update (at chain tip)");
-                      let start = std::time::Instant::now();
-                      match client.execute("CALL update_trending_weights()", &[]).await {
-                        Ok(_) => log::info!("Trending weights update completed in {:?}", start.elapsed()),
-                        Err(err) => log::error!("Error executing trending weights: {:?}", err),
+        let listener_handle = tokio::spawn(async move {
+          loop {
+            // break if ctrl-c is received
+            if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
+              log::info!("Trending weights worker shutting down");
+              break;
+            }
+            tokio::select! {
+              // Check for notifications
+              msg = stream.next() => {
+                match msg {
+                  Some(Ok(tokio_postgres::AsyncMessage::Notice(_))) => {
+                    // ignore notices
+                  }
+                  Some(Ok(tokio_postgres::AsyncMessage::Notification(notice))) => {
+                    if notice.channel() == "trending_weights_update" {
+                      let is_at_tip = Self::check_if_at_chain_tip(&index, &pool).await;
+                      if is_at_tip {
+                        log::info!("Executing trending weights update (at chain tip)");
+                        let start = std::time::Instant::now();
+                        match Self::update_trending_weights(pool.clone()).await {
+                          Ok(_) => log::info!("Trending weights update completed in {:?}", start.elapsed()),
+                          Err(err) => log::error!("Error executing trending weights: {:?}", err),
+                        }
+                        needs_update = false;
+                      } else {
+                        needs_update = true;
+                        log::debug!("Queuing trending weights update (catching up)");
                       }
-                      needs_update = false;
-                    } else {
-                      needs_update = true;
-                      log::debug!("Queuing trending weights update (catching up)");
                     }
                   }
+                  Some(Ok(_)) => {
+                    log::info!("Postgres notification stream received unknown message, closing");
+                    break;
+                  }
+                  Some(Err(err)) => {
+                    log::warn!("Postgres notification stream error, closing: {:?}", err);
+                    break;
+                  }
+                  None => {
+                    log::info!("Postgres notification stream received none, closing");
+                    break;
+                  }
                 }
-                Some(Ok(_)) => {
-                  log::info!("Postgres notification stream received unknown message, closing");
-                  break;
+              },
+              // Throttled execution for catch-up mode
+              _ = throttle_timer.tick() => {
+                if needs_update {
+                  log::info!("Executing throttled trending weights update (catch-up mode)");
+                  let start = std::time::Instant::now();
+                  match Self::update_trending_weights(pool.clone()).await {
+                    Ok(_) => log::info!("Trending weights update completed in {:?}", start.elapsed()),
+                    Err(err) => log::error!("Error executing trending weights: {:?}", err),
+                  }
+                  needs_update = false;
                 }
-                Some(Err(err)) => {
-                  log::warn!("Postgres notification stream error, closing: {:?}", err);
-                  break;
-                }
-                None => {
-                  log::info!("Postgres notification stream received none, closing");
-                  break;
-                }
-              }
-            },
-            // Throttled execution for catch-up mode
-            _ = throttle_timer.tick() => {
-              if needs_update {
-                log::info!("Executing throttled trending weights update (catch-up mode)");
-                let start = std::time::Instant::now();
-                match client.execute("CALL update_trending_weights()", &[]).await {
-                  Ok(_) => log::info!("Trending weights update completed in {:?}", start.elapsed()),
-                  Err(err) => log::error!("Error executing trending weights: {:?}", err),
-                }
-                needs_update = false;
-              }
-            },
+              },
+            }
           }
+        });
+        
+        if let Err(err) = client.execute("LISTEN trending_weights_update", &[]).await {
+          println!("Error setting up postgres LISTEN: {:?}", err);
+          return;
+        }
+        log::info!("Postgres notification listener started, waiting for notifications...");
+        match listener_handle.await {
+          Ok(_) => log::info!("Postgres notification listener stopped"),
+          Err(err) => log::error!("Postgres notification listener error: {:?}", err),
         }
       });
     });
@@ -1140,6 +1149,12 @@ impl Vermilion {
     // Consider "at tip" if within 2 blocks of main index
     let blocks_behind = index_height.saturating_sub(postgres_height);
     blocks_behind <= 2
+  }
+
+  async fn update_trending_weights(pool: deadpool_postgres::Pool) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    conn.execute("CALL update_trending_weights()", &[]).await?;
+    Ok(())
   }
 
   pub(crate) fn run_block_indexer(self, settings: Settings, index: Arc<Index>) -> JoinHandle<()> {
