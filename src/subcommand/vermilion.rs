@@ -1023,7 +1023,7 @@ impl Vermilion {
         let pool = match Self::get_deadpool(settings.clone()).await {
           Ok(deadpool) => deadpool,
           Err(err) => {
-            println!("Error creating deadpool for trending weights worker: {:?}", err);
+            println!("Error creating deadpool for postgres notification listener: {:?}", err);
             return;
           }
         };
@@ -1041,7 +1041,7 @@ impl Vermilion {
         let (client, mut connection) = match tokio_postgres::connect(&conn_str, NoTls).await {
           Ok((client, connection)) => (client, connection),
           Err(err) => {
-            println!("Error creating postgres connection for trending weights worker: {:?}", err);
+            println!("Error creating postgres connection for postgres notification listener: {:?}", err);
             return;
           }
         };
@@ -1057,7 +1057,7 @@ impl Vermilion {
           loop {
             // break if ctrl-c is received
             if SHUTTING_DOWN.load(atomic::Ordering::Relaxed) {
-              log::info!("Trending weights worker shutting down");
+              log::info!("Postgres notification listener shutting down");
               break;
             }
             tokio::select! {
