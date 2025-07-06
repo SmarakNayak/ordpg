@@ -1000,6 +1000,9 @@ impl Vermilion {
               }
             },
             Err(err) => {
+              if err.to_string() == "Shutting down" {
+                break;
+              }
               log::warn!("Error updating all tokens: {:?}", err);
               tokio::time::sleep(Duration::from_secs(60)).await;
               continue;
