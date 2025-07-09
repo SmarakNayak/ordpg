@@ -5709,7 +5709,7 @@ impl Vermilion {
 
   async fn get_inscription_children(pool: deadpool, inscription_id: String, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
-    let base_query = "SELECT * FROM ordinals_full_v WHERE parents && ARRAY[$1::varchar]".to_string();
+    let base_query = "SELECT * FROM ordinals_full_v o WHERE parents && ARRAY[$1::varchar]".to_string();
     let full_query = Self::create_inscription_query_string(base_query, params);
     let result = conn.query(
       full_query.as_str(), 
@@ -5736,7 +5736,7 @@ impl Vermilion {
 
   async fn get_inscription_referenced_by(pool: deadpool, inscription_id: String, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
-    let base_query = "SELECT * FROM ordinals_full_v WHERE referenced_ids && ARRAY[$1::varchar]".to_string();
+    let base_query = "SELECT * FROM ordinals_full_v o WHERE referenced_ids && ARRAY[$1::varchar]".to_string();
     let full_query = Self::create_inscription_query_string(base_query, params);
     let result = conn.query(
       full_query.as_str(), 
