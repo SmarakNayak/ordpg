@@ -905,7 +905,7 @@ impl Vermilion {
                 if latency.as_millis() > 10 {
                   tracing::event!(TraceLevel::INFO, "Finished processing SLOW request latency={:?} status={:?}", latency, res.status());                    
                 } else {                    
-                  tracing::event!(TraceLevel::INFO, "Finished processing request latency={:?} status={:?}", latency, res.status());
+                  tracing::event!(TraceLevel::DEBUG, "Finished processing request latency={:?} status={:?}", latency, res.status());
                 }
               })
           )
