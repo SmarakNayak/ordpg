@@ -891,6 +891,7 @@ impl Vermilion {
           .route("/search/{search_by_query}", get(Self::search_by_query))
           .route("/block_icon/{block}", get(Self::block_icon))
           .route("/sat_block_icon/{block}", get(Self::sat_block_icon))
+          .route("/block_transfers/{block}", get(Self::block_transfers))
           .route("/submit_package", post(Self::submit_package))
           .route("/get_raw_transaction/{txid}", get(Self::get_raw_transaction))
           .merge(social_router())
@@ -5209,7 +5210,23 @@ impl Vermilion {
       bytes,
     ).into_response()
   }
-  
+
+  async fn block_transfers(Path(block): Path<i64>, State(server_config): State<ApiServerConfig>) -> impl axum::response::IntoResponse {
+    let transfers = match Self::get_block_transfers(server_config.deadpool, block).await {
+      Ok(transfers) => transfers,
+      Err(error) => {
+        log::warn!("Error getting /block_transfers: {}", error);
+        return (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("Error retrieving transfers for block {}", block),
+        ).into_response();
+      }    
+    };
+    (
+      ([(axum::http::header::CONTENT_TYPE, "application/json")]),
+      Json(transfers),
+    ).into_response()
+  }
 
   async fn submit_package(State(server_config): State<ApiServerConfig>, Json(payload): Json<Vec<String>>) -> impl axum::response::IntoResponse {
     // function should extract signed hex txs from the request body
@@ -5590,6 +5607,35 @@ impl Vermilion {
     let id = result.get(0);
     let content = Self::get_ordinal_content(pool, id).await?;
     Ok(content)
+  }
+
+  async fn get_block_transfers(pool: deadpool, block: i64) -> anyhow::Result<Vec<Transfer>> {
+    let conn = pool.get().await?;
+    let rows = conn.query(
+      "SELECT * FROM transfers WHERE block=$1 ORDER BY tx_offset ASC",
+      &[&block]
+    ).await?;
+    let mut transfers = Vec::new();
+    for row in rows {
+      transfers.push(Transfer {
+        id: row.get("id"),
+        block_number: row.get("block_number"),
+        block_timestamp: row.get("block_timestamp"),
+        satpoint: row.get("satpoint"),
+        tx_offset: row.get("tx_offset"),
+        transaction: row.get("transaction"),
+        vout: row.get("vout"),
+        offset: row.get("satpoint_offset"),
+        address: row.get("address"),
+        previous_address: row.get("previous_address"),
+        price: row.get("price"),
+        tx_fee: row.get("tx_fee"),
+        tx_size: row.get("tx_size"),
+        is_genesis: row.get("is_genesis"),
+        burn_metadata: row.get("burn_metadata")
+      });
+    }
+    Ok(transfers)
   }
 
   fn map_row_to_fullmetadata(row: tokio_postgres::Row) -> FullMetadata {
