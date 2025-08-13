@@ -5612,7 +5612,7 @@ impl Vermilion {
   async fn get_block_transfers(pool: deadpool, block: i64) -> anyhow::Result<Vec<Transfer>> {
     let conn = pool.get().await?;
     let rows = conn.query(
-      "SELECT * FROM transfers WHERE block=$1 ORDER BY tx_offset ASC",
+      "SELECT * FROM transfers WHERE block_number=$1 ORDER BY tx_offset ASC",
       &[&block]
     ).await?;
     let mut transfers = Vec::new();
