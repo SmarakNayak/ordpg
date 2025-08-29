@@ -18,12 +18,18 @@ db_host: localhost
 db_name: vermilion
 db_user: username
 db_password: password
+magiceden_api_key: <optional for collection data>
+index_sats: true
+index_transactions: true
+index_addresses: true
+index_runes: true
+hidden:
 ```
 
 ### Running
 `vermilion` is the subcommand that runs the `ordpg` indexer and api on the port specified by `--api-http-port`. `vermilion` also runs the default server on `--http-port`. To get started simply run the following:
 ```
-ord --config /home/ubuntu/ord.yaml --index-sats --index-transactions --index-runes vermilion --http-port 80 --api-http-port 81
+ord --config /home/ubuntu/ord.yaml vermilion --http-port 80 --api-http-port 81
 ```
 
 you can also run the indexer alone via:
