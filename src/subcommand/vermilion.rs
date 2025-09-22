@@ -3877,8 +3877,7 @@ impl Vermilion {
         tx_fee bigint,
         tx_size bigint,
         is_genesis boolean,
-        burn_metadata jsonb,
-        PRIMARY KEY (id, block_number, satpoint)
+        burn_metadata jsonb
       )").await?;
     conn.simple_query(r"
       CREATE INDEX IF NOT EXISTS index_transfers_id ON transfers (id);
