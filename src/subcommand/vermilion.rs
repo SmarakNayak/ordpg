@@ -279,18 +279,6 @@ pub struct BlockStats {
   average_fee: Option<i64>
 }
 
-#[derive(Clone, Serialize)]
-pub struct InscriptionBlockStats {
-  block_number: i64,
-  block_inscription_count: Option<i64>,
-  block_inscription_size: Option<i64>,
-  block_inscription_fees: Option<i64>,
-  block_transfer_count: Option<i64>,
-  block_transfer_size: Option<i64>,
-  block_transfer_fees: Option<i64>,
-  block_volume: Option<i64>,
-}
-
 #[derive(Clone, Serialize, JsonSchema)]
 pub struct CombinedBlockStats {
   block_number: i64,
@@ -318,12 +306,6 @@ pub struct SatBlockStats {
   sat_block_inscription_count: Option<i64>,
   sat_block_inscription_size: Option<i64>,
   sat_block_inscription_fees: Option<i64>,
-}
-
-#[derive(Clone, Serialize)]
-pub struct Content {
-  content: Vec<u8>,
-  content_type: Option<String>
 }
 
 #[derive(Clone, Serialize, JsonSchema)]
@@ -369,17 +351,6 @@ pub struct CommentEdition {
   address: String,
   block_timestamp: i64,
   block_number: i64
-}
-
-#[derive(Clone, Serialize)]
-pub struct InscriptionMetadataForBlock {
-  id: String,
-  content_length: Option<i64>,
-  content_type: Option<String>,
-  genesis_fee: i64,
-  genesis_height: i64,
-  number: i64,
-  timestamp: i64
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -889,32 +860,6 @@ pub struct SearchResult {
   address: Option<String>,
   block: Option<CombinedBlockStats>,
   sat: Option<SatMetadata>
-}
-
-#[derive(Clone,PartialEq, PartialOrd, Ord, Eq)]
-pub struct IndexerTimings {
-  inscription_start: u64,
-  inscription_end: u64,
-  acquire_permit_start: Instant,
-  acquire_permit_end: Instant,
-  get_numbers_start: Instant,
-  get_numbers_end: Instant,
-  get_id_start: Instant,
-  get_id_end: Instant,
-  get_inscription_start: Instant,
-  get_inscription_end: Instant,
-  upload_content_start: Instant,
-  upload_content_end: Instant,
-  get_metadata_start: Instant,
-  get_metadata_end: Instant,
-  retrieval: Duration,
-  insertion: Duration,
-  metadata_insertion: Duration,
-  sat_insertion: Duration,
-  satribute_insertion: Duration,
-  gallery_insertion: Duration,
-  content_insertion: Duration,
-  locking: Duration
 }
 
 #[derive(Clone)]
