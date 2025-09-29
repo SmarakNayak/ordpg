@@ -5330,14 +5330,10 @@ impl Vermilion {
   }
 
   async fn get_inscription_children(pool: deadpool, inscription_id: String, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<FullMetadata>> {
-    let mut conn = pool.get().await?;
-    let tx = conn.transaction().await?;
-    tx.simple_query("SET LOCAL enable_seqscan = off").await?;
-    let check_result = tx.simple_query("SHOW enable_indexscan").await?;  
-    log::info!("enable_seqscan value: {:?}", check_result);
+    let conn = pool.get().await?;
     let base_query = "SELECT * FROM ordinals_full_v o WHERE parents && ARRAY[$1::varchar]".to_string();
-    let full_query = Self::create_inscription_query_string(base_query, params);
-    let result = tx.query(
+    let full_query = Self::create_materialized_inscription_query_string(base_query, params);
+    let result = conn.query(
       full_query.as_str(),
       &[&inscription_id]
     ).await?;
@@ -5363,7 +5359,7 @@ impl Vermilion {
   async fn get_inscription_referenced_by(pool: deadpool, inscription_id: String, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
     let base_query = "SELECT * FROM ordinals_full_v o WHERE referenced_ids && ARRAY[$1::varchar]".to_string();
-    let full_query = Self::create_inscription_query_string(base_query, params);
+    let full_query = Self::create_materialized_inscription_query_string(base_query, params);
     let result = conn.query(
       full_query.as_str(),
       &[&inscription_id]
@@ -6033,6 +6029,76 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
     query
   }
 
+
+  // Postgres optimizer sometimes does a full table scan when using LIMIT/OFFSET rather than the optimal filter index
+  // This function wraps the inner query in a MATERIALIZED CTE to force postgres to use the index to filter first, then apply pagination
+  // see https://dba.stackexchange.com/questions/110636/poor-performance-on-query-with-limit-when-i-add-an-order-by
+  // and https://dba.stackexchange.com/questions/130233/why-would-adding-limit-200-cause-a-query-to-slow-down
+  // We need to materialize the inner query because CTE's are not optimisation fences as of Postgres 12
+  // Another optiion would be to disable seqscan for the session, which would also disable full table scans
+  fn create_materialized_inscription_query_string(base_query: String, params: ParsedInscriptionQueryParams) -> String {
+    let mut inner_query = base_query;
+
+    // Add filters to the inner query
+    if params.content_types.len() > 0 {
+      inner_query.push_str(" AND (");
+      for (i, content_type) in params.content_types.iter().enumerate() {
+        let category = match content_type {
+          ContentType::Text => "o.content_category = 'text'",
+          ContentType::Image => "o.content_category = 'image'",
+          ContentType::Gif => "o.content_category = 'gif'",
+          ContentType::Audio => "o.content_category = 'audio'",
+          ContentType::Video => "o.content_category = 'video'",
+          ContentType::Html => "o.content_category = 'html'",
+          ContentType::Json => "o.content_category = 'json'",
+          ContentType::Namespace => "o.content_category = 'namespace'",
+          ContentType::Javascript => "o.content_category = 'javascript'",
+        };
+        inner_query.push_str(category);
+        if i < params.content_types.len() - 1 {
+          inner_query.push_str(" OR ");
+        }
+      }
+      inner_query.push_str(")");
+    }
+
+    if params.satributes.len() > 0 {
+      inner_query.push_str(format!(" AND (o.satributes && array['{}'::varchar])", params.satributes.join("'::varchar,'")).as_str());
+    }
+
+    if params.charms.len() > 0 {
+      inner_query.push_str(format!(" AND (o.charms && array['{}'::varchar])", params.charms.join("'::varchar,'")).as_str());
+    }
+
+    // Add ordering to the inner query
+    let order_clause = match params.sort_by {
+      InscriptionSortBy::Newest => " ORDER BY o.sequence_number DESC",
+      InscriptionSortBy::Oldest => " ORDER BY o.sequence_number ASC",
+      InscriptionSortBy::NewestSat => " ORDER BY o.sat DESC",
+      InscriptionSortBy::OldestSat => " ORDER BY o.sat ASC",
+      InscriptionSortBy::RarestSat => "",  // No sorting implemented yet
+      InscriptionSortBy::CommonestSat => "",  // No sorting implemented yet
+      InscriptionSortBy::Biggest => " ORDER BY o.content_length DESC",
+      InscriptionSortBy::Smallest => " ORDER BY o.content_length ASC",
+      InscriptionSortBy::HighestFee => " ORDER BY o.genesis_fee DESC",
+      InscriptionSortBy::LowestFee => " ORDER BY o.genesis_fee ASC",
+    };
+    inner_query.push_str(order_clause);
+
+    // Wrap in materialized CTE
+    let mut query = format!("WITH m AS MATERIALIZED ({}) SELECT * FROM m", inner_query);
+
+    // Add pagination to the outer query
+    if params.page_size > 0 {
+      query.push_str(format!(" LIMIT {}", params.page_size).as_str());
+    }
+    if params.page_number > 0 {
+      query.push_str(format!(" OFFSET {}", params.page_number * params.page_size).as_str());
+    }
+
+    query
+  }
+
   async fn get_inscriptions(pool: deadpool, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
     //1. build query
@@ -6508,55 +6574,8 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
 
   async fn get_inscriptions_in_collection(pool: deadpool, collection_symbol: String, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
-    //1. build query
-    let mut query = "with m as MATERIALIZED (SELECT o.* from ordinals_full_v o where o.collection_symbol=$1".to_string();
-    if params.content_types.len() > 0 {
-      query.push_str(" AND (");
-      for (i, content_type) in params.content_types.iter().enumerate() {
-        let category = match content_type {
-          ContentType::Text => "o.content_category = 'text'",
-          ContentType::Image => "o.content_category = 'image'",
-          ContentType::Gif => "o.content_category = 'gif'",
-          ContentType::Audio => "o.content_category = 'audio'",
-          ContentType::Video => "o.content_category = 'video'",
-          ContentType::Html => "o.content_category = 'html'",
-          ContentType::Json => "o.content_category = 'json'",
-          ContentType::Namespace => "o.content_category = 'namespace'",
-          ContentType::Javascript => "o.content_category = 'javascript'",
-        };
-        query.push_str(category);
-        if i < params.content_types.len() - 1 {
-          query.push_str(" OR ");
-        }
-      }
-      query.push_str(")");
-    }
-    if params.satributes.len() > 0 {
-      query.push_str(format!(" AND (o.satributes && array['{}'::varchar])", params.satributes.join("'::varchar,'")).as_str());
-    }
-    if params.charms.len() > 0 {
-      query.push_str(format!(" AND (o.charms && array['{}'::varchar])", params.charms.join("'::varchar,'")).as_str());
-    }
-    let order_clause = match params.sort_by {
-      InscriptionSortBy::Newest => " ORDER BY o.sequence_number DESC",
-      InscriptionSortBy::Oldest => " ORDER BY o.sequence_number ASC",
-      InscriptionSortBy::NewestSat => " ORDER BY o.sat DESC",
-      InscriptionSortBy::OldestSat => " ORDER BY o.sat ASC",
-      InscriptionSortBy::RarestSat => "",  // No sorting implemented yet
-      InscriptionSortBy::CommonestSat => "",  // No sorting implemented yet
-      InscriptionSortBy::Biggest => " ORDER BY o.content_length DESC",
-      InscriptionSortBy::Smallest => " ORDER BY o.content_length ASC",
-      InscriptionSortBy::HighestFee => " ORDER BY o.genesis_fee DESC",
-      InscriptionSortBy::LowestFee => " ORDER BY o.genesis_fee ASC",
-    };
-    query.push_str(order_clause);
-    query.push_str(") SELECT * from m");
-    if params.page_size > 0 {
-      query.push_str(format!(" LIMIT {}", params.page_size).as_str());
-    }
-    if params.page_number > 0 {
-      query.push_str(format!(" OFFSET {}", params.page_number * params.page_size).as_str());
-    }
+    let base_query = "SELECT o.* from ordinals_full_v o where o.collection_symbol=$1".to_string();
+    let query = Self::create_materialized_inscription_query_string(base_query, params);
     println!("Query: {}", query);
     let result = conn.query(
       query.as_str(),
@@ -6821,55 +6840,8 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
 
   async fn get_inscriptions_in_on_chain_collection(pool: deadpool, parents: Vec<String>, params: ParsedInscriptionQueryParams) -> anyhow::Result<Vec<FullMetadata>> {
     let conn = pool.get().await?;
-    //1. build query
-    let mut query = "with m as MATERIALIZED (SELECT o.* from ordinals_full_v o where o.parents=$1".to_string();
-    if params.content_types.len() > 0 {
-      query.push_str(" AND (");
-      for (i, content_type) in params.content_types.iter().enumerate() {
-        let category = match content_type {
-          ContentType::Text => "o.content_category = 'text'",
-          ContentType::Image => "o.content_category = 'image'",
-          ContentType::Gif => "o.content_category = 'gif'",
-          ContentType::Audio => "o.content_category = 'audio'",
-          ContentType::Video => "o.content_category = 'video'",
-          ContentType::Html => "o.content_category = 'html'",
-          ContentType::Json => "o.content_category = 'json'",
-          ContentType::Namespace => "o.content_category = 'namespace'",
-          ContentType::Javascript => "o.content_category = 'javascript'",
-        };
-        query.push_str(category);
-        if i < params.content_types.len() - 1 {
-          query.push_str(" OR ");
-        }
-      }
-      query.push_str(")");
-    }
-    if params.satributes.len() > 0 {
-      query.push_str(format!(" AND (o.satributes && array['{}'::varchar])", params.satributes.join("'::varchar,'")).as_str());
-    }
-    if params.charms.len() > 0 {
-      query.push_str(format!(" AND (o.charms && array['{}'::varchar])", params.charms.join("'::varchar,'")).as_str());
-    }
-    let order_clause = match params.sort_by {
-      InscriptionSortBy::Newest => " ORDER BY o.sequence_number DESC",
-      InscriptionSortBy::Oldest => " ORDER BY o.sequence_number ASC",
-      InscriptionSortBy::NewestSat => " ORDER BY o.sat DESC",
-      InscriptionSortBy::OldestSat => " ORDER BY o.sat ASC",
-      InscriptionSortBy::RarestSat => "",  // No sorting implemented yet
-      InscriptionSortBy::CommonestSat => "",  // No sorting implemented yet
-      InscriptionSortBy::Biggest => " ORDER BY o.content_length DESC",
-      InscriptionSortBy::Smallest => " ORDER BY o.content_length ASC",
-      InscriptionSortBy::HighestFee => " ORDER BY o.genesis_fee DESC",
-      InscriptionSortBy::LowestFee => " ORDER BY o.genesis_fee ASC",
-    };
-    query.push_str(order_clause);
-    query.push_str(") SELECT * from m");
-    if params.page_size > 0 {
-      query.push_str(format!(" LIMIT {}", params.page_size).as_str());
-    }
-    if params.page_number > 0 {
-      query.push_str(format!(" OFFSET {}", params.page_number * params.page_size).as_str());
-    }
+    let base_query = "SELECT o.* from ordinals_full_v o where o.parents=$1".to_string();
+    let query = Self::create_materialized_inscription_query_string(base_query, params);
     println!("Query: {}", query);
     let result = conn.query(
       query.as_str(),
