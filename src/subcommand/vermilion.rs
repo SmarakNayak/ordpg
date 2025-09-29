@@ -6035,7 +6035,7 @@ async fn get_trending_feed_items(pool: deadpool, n: u32, mut already_seen_bands:
   // see https://dba.stackexchange.com/questions/110636/poor-performance-on-query-with-limit-when-i-add-an-order-by
   // and https://dba.stackexchange.com/questions/130233/why-would-adding-limit-200-cause-a-query-to-slow-down
   // We need to materialize the inner query because CTE's are not optimisation fences as of Postgres 12
-  // Another optiion would be to disable seqscan for the session, which would also disable full table scans
+  // Another option would be to 'SET LOCAL enable_indexscan = off;' in a transaction, which may also disable full table scans
   fn create_materialized_inscription_query_string(base_query: String, params: ParsedInscriptionQueryParams) -> String {
     let mut inner_query = base_query;
 
