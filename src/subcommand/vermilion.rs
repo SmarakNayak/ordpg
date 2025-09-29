@@ -5333,6 +5333,8 @@ impl Vermilion {
     let mut conn = pool.get().await?;
     let tx = conn.transaction().await?;
     tx.simple_query("SET LOCAL enable_seqscan = off").await?;
+    let check_result = tx.simple_query("SHOW enable_indexscan").await?;  
+    log::info!("enable_seqscan value: {:?}", check_result);
     let base_query = "SELECT * FROM ordinals_full_v o WHERE parents && ARRAY[$1::varchar]".to_string();
     let full_query = Self::create_inscription_query_string(base_query, params);
     let result = tx.query(
