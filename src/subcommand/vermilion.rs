@@ -8806,7 +8806,7 @@ let full_query = Self::create_inscription_query_string(base_query, params);
         (SELECT g.gallery_id,
                 count(d.bootleg_id) AS boost_count
         FROM inscription_galleries g
-        LEFT JOIN delegates d ON g.inscription_id = d.bootleg_id
+        LEFT JOIN delegates d ON g.gallery_id = d.bootleg_id
         GROUP BY g.gallery_id)
       INSERT INTO gallery_summary (gallery_id, supply, total_inscription_size, total_inscription_fees, first_inscribed_date, last_inscribed_date, gallery_inscribed_date, range_start, range_end, total_volume, transfer_fees, transfer_footprint, total_fees, total_on_chain_footprint, boost_count)
         SELECT a.*,
@@ -8879,7 +8879,7 @@ let full_query = Self::create_inscription_query_string(base_query, params);
             (SELECT g.gallery_id,
                     count(d.bootleg_id) AS boost_count
             FROM inscription_galleries g
-            LEFT JOIN delegates d ON g.inscription_id = d.bootleg_id
+            LEFT JOIN delegates d ON g.gallery_id = d.bootleg_id
             WHERE g.gallery_id = v_gallery_id
             GROUP BY g.gallery_id)
           INSERT INTO gallery_summary (gallery_id, supply, total_inscription_size, total_inscription_fees, first_inscribed_date, last_inscribed_date, gallery_inscribed_date, range_start, range_end, total_volume, transfer_fees, transfer_footprint, total_fees, total_on_chain_footprint, boost_count)
