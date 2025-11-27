@@ -1860,11 +1860,12 @@ impl Vermilion {
     }
 
     let t4 = Instant::now();
-    let block_time = index.block_time(Height(block_number)).unwrap();
+    let block_time = index.block_time(Height(block_number))?;
     let mut transfer_vec = Vec::new();
     for (sequence_number, tx_offset, point, address, prev_address, price, tx_fee, tx_size, burn_metadata) in seq_point_transfer_details {
-      let entry = index.get_inscription_entry_by_sequence_number(sequence_number).unwrap();
-      let id = entry.unwrap().id;
+      let entry = index.get_inscription_entry_by_sequence_number(sequence_number)?
+        .ok_or(anyhow::anyhow!("No inscription entry found for sequence number {} in block {} (likely due to reorg)", sequence_number, block_number))?;
+      let id = entry.id;
       let transfer = Transfer {
         id: id.to_string(),
         block_number: block_number.try_into().unwrap(),
