@@ -1081,7 +1081,7 @@ impl Vermilion {
             TraceLayer::new_for_http()
               .make_span_with(DefaultMakeSpan::new().level(TraceLevel::INFO))
               .on_request(|req: &Request<Body>, _span: &Span| {
-                tracing::event!(TraceLevel::INFO, "Started processing request {}", req.uri().path());
+                tracing::event!(TraceLevel::DEBUG, "Started processing request {}", req.uri().path());
               })
               .on_response(|res: &Response<Body>, latency: Duration, _span: &Span| {
                 if latency.as_millis() > 10 {
@@ -2398,7 +2398,7 @@ impl Vermilion {
         }
       };
 
-      log::info!(
+      log::debug!(
         "Got 100 tokens for {} at offset {} in {:.2} seconds",
         symbol,
         offset,
