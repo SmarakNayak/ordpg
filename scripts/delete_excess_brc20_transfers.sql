@@ -13,38 +13,41 @@
 -- Progress is logged every 100 inscriptions processed.
 -- Safe to interrupt (Ctrl+C) and restart - it will process remaining inscriptions.
 
-DO $$
+CREATE OR REPLACE PROCEDURE delete_excess_brc20_transfers_proc()
+LANGUAGE plpgsql
+AS $$
 DECLARE
   inscription_rec RECORD;
   counter int := 0;
   total_deleted bigint := 0;
   rows_deleted bigint;
+  start_seq_num int := 0;  -- Start from this sequence number
 BEGIN
-  RAISE NOTICE 'Starting BRC-20 transfer cleanup...';
+  RAISE NOTICE 'Starting BRC-20 transfer cleanup from sequence_number %...', start_seq_num;
 
   FOR inscription_rec IN
     SELECT id, sequence_number FROM ordinals
     WHERE text ILIKE '%brc-20%'
+    AND sequence_number >= start_seq_num
     ORDER BY sequence_number
   LOOP
     -- Delete excess transfers for this one inscription
     -- Keeps only the first 2 transfers (genesis + first transfer)
+    -- Uses OFFSET for faster performance
     DELETE FROM transfers
-    WHERE id = inscription_rec.id
-    AND (block_number, tx_offset) NOT IN (
-      SELECT block_number, tx_offset
-      FROM (
-        SELECT block_number, tx_offset,
-               ROW_NUMBER() OVER (ORDER BY block_number ASC, tx_offset ASC) as rn
-        FROM transfers
-        WHERE id = inscription_rec.id
-      ) ranked
-      WHERE rn <= 2
+    WHERE ctid IN (
+      SELECT ctid FROM transfers
+      WHERE id = inscription_rec.id
+      ORDER BY block_number ASC, tx_offset ASC
+      OFFSET 2  -- Skip first 2, delete the rest
     );
 
     GET DIAGNOSTICS rows_deleted = ROW_COUNT;
     total_deleted := total_deleted + rows_deleted;
     counter := counter + 1;
+
+    -- Commit after each iteration
+    COMMIT;
 
     -- Progress update every 100 inscriptions
     IF counter % 100 = 0 THEN
