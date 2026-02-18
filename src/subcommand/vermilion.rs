@@ -2890,7 +2890,7 @@ impl Vermilion {
       genesis_fee: entry.fee.try_into().unwrap(),
       genesis_height: entry.height.try_into().unwrap(),
       genesis_transaction: inscription_id.txid.to_string(),
-      pointer: inscription.pointer().map(|value| { value.try_into().unwrap()}),
+      pointer: inscription.pointer().and_then(|value| value.try_into().ok()),
       number: entry.inscription_number as i64,
       sequence_number: entry.sequence_number as i64,
       parents: parents,
